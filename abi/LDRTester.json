@@ -1,0 +1,82 @@
+[
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_lazyDelegateRegistry",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_token",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_serial",
+                "type": "uint256"
+            }
+        ],
+        "name": "checkDelegatedToken",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_delegateWallet",
+                "type": "address"
+            }
+        ],
+        "name": "getDelegatedWallet",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyDelegateRegistry",
+        "outputs": [
+            {
+                "internalType": "contract ILazyDelegateRegistry",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_lazyDelegateRegistry",
+                "type": "address"
+            }
+        ],
+        "name": "updateLDRContractAddress",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    }
+]

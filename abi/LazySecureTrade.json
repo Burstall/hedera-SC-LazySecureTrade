@@ -1,0 +1,1216 @@
+[
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_lazyToken",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_lazyGasStation",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_lazyDelegateRegistry",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_lshGen1",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_lshGen2",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_lazyCostForTrade",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_lazyBurnPercentage",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "constructor"
+    },
+    {
+        "inputs": [],
+        "name": "AssociationFailed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "BadArguments",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "BatchAssociationFailed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "FailedToInitialize",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "InsufficientFunds",
+        "type": "error"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "enum TokenStaker.TransferDirection",
+                "name": "_direction",
+                "type": "uint8"
+            }
+        ],
+        "name": "NFTTransferFailed",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "SellerCannotBeBuyer",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "TradeAssocationMissing",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "TradeExpired",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "TradeNotFoundOrInvalid",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "UserDoesNotOwnNFT",
+        "type": "error"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "previousOwner",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "newOwner",
+                "type": "address"
+            }
+        ],
+        "name": "OwnershipTransferred",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": false,
+                "internalType": "string",
+                "name": "message",
+                "type": "string"
+            },
+            {
+                "indexed": false,
+                "internalType": "address",
+                "name": "sender",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "value",
+                "type": "uint256"
+            }
+        ],
+        "name": "SecureTradeStatus",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "seller",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "serial",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "nonce",
+                "type": "uint256"
+            }
+        ],
+        "name": "TradeCancelled",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "seller",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "buyer",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "serial",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "nonce",
+                "type": "uint256"
+            }
+        ],
+        "name": "TradeCompleted",
+        "type": "event"
+    },
+    {
+        "anonymous": false,
+        "inputs": [
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "seller",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "buyer",
+                "type": "address"
+            },
+            {
+                "indexed": true,
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "serial",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "tinybarPrice",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "lazyPrice",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "expiryTime",
+                "type": "uint256"
+            },
+            {
+                "indexed": false,
+                "internalType": "uint256",
+                "name": "nonce",
+                "type": "uint256"
+            }
+        ],
+        "name": "TradeCreated",
+        "type": "event"
+    },
+    {
+        "stateMutability": "payable",
+        "type": "fallback"
+    },
+    {
+        "inputs": [],
+        "name": "LSH_GEN1",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "LSH_GEN2",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "_tradeIdList",
+                "type": "bytes32[]"
+            },
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "areTradesValid",
+        "outputs": [
+            {
+                "internalType": "bool[]",
+                "name": "",
+                "type": "bool[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address[]",
+                "name": "tokenIds",
+                "type": "address[]"
+            }
+        ],
+        "name": "batchTokenAssociate",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_tradeId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "cancelTrade",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "contractSunset",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "_buyer",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_serial",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_tinybarPrice",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_lazyPrice",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_expiryTime",
+                "type": "uint256"
+            },
+            {
+                "internalType": "bool",
+                "name": "_associationRequired",
+                "type": "bool"
+            }
+        ],
+        "name": "createTrade",
+        "outputs": [
+            {
+                "internalType": "bytes32",
+                "name": "tradeId",
+                "type": "bytes32"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_tradeId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "executeTrade",
+        "outputs": [],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "_days",
+                "type": "uint256"
+            }
+        ],
+        "name": "extendSunset",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "getTokenExpiryInfo",
+        "outputs": [
+            {
+                "internalType": "int256",
+                "name": "responseCode",
+                "type": "int256"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "int64",
+                        "name": "second",
+                        "type": "int64"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "autoRenewAccount",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "int64",
+                        "name": "autoRenewPeriod",
+                        "type": "int64"
+                    }
+                ],
+                "internalType": "struct IHederaTokenService.Expiry",
+                "name": "expiryInfo",
+                "type": "tuple"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "keyType",
+                "type": "uint256"
+            }
+        ],
+        "name": "getTokenKey",
+        "outputs": [
+            {
+                "internalType": "int64",
+                "name": "responseCode",
+                "type": "int64"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "bool",
+                        "name": "inheritAccountKey",
+                        "type": "bool"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "contractId",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "bytes",
+                        "name": "ed25519",
+                        "type": "bytes"
+                    },
+                    {
+                        "internalType": "bytes",
+                        "name": "ECDSA_secp256k1",
+                        "type": "bytes"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "delegatableContractId",
+                        "type": "address"
+                    }
+                ],
+                "internalType": "struct IHederaTokenService.KeyValue",
+                "name": "key",
+                "type": "tuple"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_token",
+                "type": "address"
+            }
+        ],
+        "name": "getTokenTrades",
+        "outputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "",
+                "type": "bytes32[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "offset",
+                "type": "uint256"
+            },
+            {
+                "internalType": "uint256",
+                "name": "batch",
+                "type": "uint256"
+            }
+        ],
+        "name": "getTokens",
+        "outputs": [
+            {
+                "internalType": "address[]",
+                "name": "",
+                "type": "address[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getTotalTokens",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_tradeId",
+                "type": "bytes32"
+            }
+        ],
+        "name": "getTrade",
+        "outputs": [
+            {
+                "components": [
+                    {
+                        "internalType": "address",
+                        "name": "seller",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "buyer",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "token",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "serial",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "tinybarPrice",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "lazyPrice",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "expiryTime",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "nonce",
+                        "type": "uint256"
+                    }
+                ],
+                "internalType": "struct LazySecureTrade.Trade",
+                "name": "",
+                "type": "tuple"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "_tradeIdList",
+                "type": "bytes32[]"
+            }
+        ],
+        "name": "getTrades",
+        "outputs": [
+            {
+                "components": [
+                    {
+                        "internalType": "address",
+                        "name": "seller",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "buyer",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "token",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "serial",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "tinybarPrice",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "lazyPrice",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "expiryTime",
+                        "type": "uint256"
+                    },
+                    {
+                        "internalType": "uint256",
+                        "name": "nonce",
+                        "type": "uint256"
+                    }
+                ],
+                "internalType": "struct LazySecureTrade.Trade[]",
+                "name": "",
+                "type": "tuple[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "getUserTrades",
+        "outputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "",
+                "type": "bytes32[]"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "grantTokenKyc",
+        "outputs": [
+            {
+                "internalType": "int64",
+                "name": "responseCode",
+                "type": "int64"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "isKyc",
+        "outputs": [
+            {
+                "internalType": "int64",
+                "name": "responseCode",
+                "type": "int64"
+            },
+            {
+                "internalType": "bool",
+                "name": "kycGranted",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_token",
+                "type": "address"
+            }
+        ],
+        "name": "isTokenAssociated",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32",
+                "name": "_tradeId",
+                "type": "bytes32"
+            },
+            {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "isTradeValid",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyBurnPercentage",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyCostForTrade",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyDelegateRegistry",
+        "outputs": [
+            {
+                "internalType": "contract ILazyDelegateRegistry",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyGasStation",
+        "outputs": [
+            {
+                "internalType": "contract ILazyGasStation",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "lazyToken",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address[]",
+                "name": "tokenIds",
+                "type": "address[]"
+            },
+            {
+                "internalType": "address[]",
+                "name": "existingTokenIds",
+                "type": "address[]"
+            }
+        ],
+        "name": "noClashBatchTokenAssociate",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "owner",
+        "outputs": [
+            {
+                "internalType": "address",
+                "name": "",
+                "type": "address"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "pauseToken",
+        "outputs": [
+            {
+                "internalType": "int256",
+                "name": "responseCode",
+                "type": "int256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "renounceOwnership",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "_receiver",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "_amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "retrieveLazy",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "internalType": "address",
+                "name": "account",
+                "type": "address"
+            }
+        ],
+        "name": "revokeTokenKyc",
+        "outputs": [
+            {
+                "internalType": "int64",
+                "name": "responseCode",
+                "type": "int64"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address[]",
+                "name": "tokenIds",
+                "type": "address[]"
+            }
+        ],
+        "name": "safeBatchTokenAssociate",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "_lazyBurnPercentage",
+                "type": "uint256"
+            }
+        ],
+        "name": "setLazyBurnPercentage",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "uint256",
+                "name": "_lazyCostForTrade",
+                "type": "uint256"
+            }
+        ],
+        "name": "setLazyCostForTrade",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "tokenId",
+                "type": "address"
+            }
+        ],
+        "name": "tokenAssociate",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "tradeNonce",
+        "outputs": [
+            {
+                "internalType": "uint256",
+                "name": "",
+                "type": "uint256"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address payable",
+                "name": "receiverAddress",
+                "type": "address"
+            },
+            {
+                "internalType": "uint256",
+                "name": "amount",
+                "type": "uint256"
+            }
+        ],
+        "name": "transferHbar",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "newOwner",
+                "type": "address"
+            }
+        ],
+        "name": "transferOwnership",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            }
+        ],
+        "name": "unpauseToken",
+        "outputs": [
+            {
+                "internalType": "int256",
+                "name": "responseCode",
+                "type": "int256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "int64",
+                        "name": "second",
+                        "type": "int64"
+                    },
+                    {
+                        "internalType": "address",
+                        "name": "autoRenewAccount",
+                        "type": "address"
+                    },
+                    {
+                        "internalType": "int64",
+                        "name": "autoRenewPeriod",
+                        "type": "int64"
+                    }
+                ],
+                "internalType": "struct IHederaTokenService.Expiry",
+                "name": "expiryInfo",
+                "type": "tuple"
+            }
+        ],
+        "name": "updateTokenExpiryInfo",
+        "outputs": [
+            {
+                "internalType": "int256",
+                "name": "responseCode",
+                "type": "int256"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+            },
+            {
+                "components": [
+                    {
+                        "internalType": "uint256",
+                        "name": "keyType",
+                        "type": "uint256"
+                    },
+                    {
+                        "components": [
+                            {
+                                "internalType": "bool",
+                                "name": "inheritAccountKey",
+                                "type": "bool"
+                            },
+                            {
+                                "internalType": "address",
+                                "name": "contractId",
+                                "type": "address"
+                            },
+                            {
+                                "internalType": "bytes",
+                                "name": "ed25519",
+                                "type": "bytes"
+                            },
+                            {
+                                "internalType": "bytes",
+                                "name": "ECDSA_secp256k1",
+                                "type": "bytes"
+                            },
+                            {
+                                "internalType": "address",
+                                "name": "delegatableContractId",
+                                "type": "address"
+                            }
+                        ],
+                        "internalType": "struct IHederaTokenService.KeyValue",
+                        "name": "key",
+                        "type": "tuple"
+                    }
+                ],
+                "internalType": "struct IHederaTokenService.TokenKey[]",
+                "name": "keys",
+                "type": "tuple[]"
+            }
+        ],
+        "name": "updateTokenKeys",
+        "outputs": [
+            {
+                "internalType": "int64",
+                "name": "responseCode",
+                "type": "int64"
+            }
+        ],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "stateMutability": "payable",
+        "type": "receive"
+    }
+]
