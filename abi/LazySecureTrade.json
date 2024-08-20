@@ -57,6 +57,16 @@
     },
     {
         "inputs": [],
+        "name": "ContractSunset",
+        "type": "error"
+    },
+    {
+        "inputs": [],
+        "name": "ExpiryTimeInPast",
+        "type": "error"
+    },
+    {
+        "inputs": [],
         "name": "FailedToInitialize",
         "type": "error"
     },
@@ -301,6 +311,25 @@
     {
         "inputs": [
             {
+                "internalType": "address",
+                "name": "_user",
+                "type": "address"
+            }
+        ],
+        "name": "areAdvancedTradesFree",
+        "outputs": [
+            {
+                "internalType": "bool",
+                "name": "",
+                "type": "bool"
+            }
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
                 "internalType": "bytes32[]",
                 "name": "_tradeIdList",
                 "type": "bytes32[]"
@@ -344,6 +373,19 @@
             }
         ],
         "name": "cancelTrade",
+        "outputs": [],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {
+                "internalType": "bytes32[]",
+                "name": "_tradeIdList",
+                "type": "bytes32[]"
+            }
+        ],
+        "name": "cancelTrades",
         "outputs": [],
         "stateMutability": "nonpayable",
         "type": "function"
