@@ -77,10 +77,6 @@ const main = async () => {
 		return;
 	}
 
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-
 	// import ABI
 	const lstJSON = JSON.parse(
 		fs.readFileSync(
@@ -91,6 +87,10 @@ const main = async () => {
 	const lstIface = new ethers.Interface(lstJSON.abi);
 
 	const contractId = ContractId.fromString(args[0]);
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
 
 	let hash, token, serial;
 

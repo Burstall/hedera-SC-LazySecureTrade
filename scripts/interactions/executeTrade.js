@@ -14,7 +14,7 @@ const readlineSync = require('readline-sync');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getArgFlag, isBytes32 } = require('../../utils/nodeHelpers');
 const { checkMirrorBalance, checkMirrorAllowance, checkHbarAllowances, checkMirrorHbarBalance, getTokenDetails } = require('../../utils/hederaMirrorHelpers');
-const { setFTAllowance, setHbarAllowance } = require('../../utils/hederaHelpers');
+const { setFTAllowance, setHbarAllowance, associateTokenToAccount } = require('../../utils/hederaHelpers');
 
 // Get operator from .env file
 let operatorKey;
@@ -93,10 +93,6 @@ const main = async () => {
 		return;
 	}
 
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-
 	// import ABI
 	const lstJSON = JSON.parse(
 		fs.readFileSync(
@@ -108,6 +104,10 @@ const main = async () => {
 
 	const contractId = ContractId.fromString(args[0]);
 	const lazyToken = TokenId.fromString(LAZY_TOKEN_ID);
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
 
 	// get the $LAZY decimal from mirror node
 	const lazyTokenDetails = await getTokenDetails(env, lazyToken);
@@ -187,7 +187,9 @@ const main = async () => {
 		return;
 	}
 
-	console.log('\n-Trade token:', TokenId.fromString(tradeDets[2]).toString(), 'Serial:', Number(tradeDets[3]));
+	console.log('\n-Seller:', AccountId.fromEvmAddress(0, 0, tradeDets[0]).toString());
+	console.log('\n-Buyer:', tradeDets[1] == ethers.ZeroAddress ? 'Anyone' : AccountId.fromEvmAddress(0, 0, tradeDets[1]).toString());
+	console.log('\n-Trade token:', TokenId.fromSolidityAddress(tradeDets[2]).toString(), 'Serial:', Number(tradeDets[3]));
 
 	// get the cost of the trade
 	const hbarCost = new Hbar(Number(tradeDets[4]), HbarUnit.Tinybar);
@@ -284,6 +286,27 @@ const main = async () => {
 		return;
 	}
 
+	// check if the token to buy is associated to the buyer
+	const tokensToPurchaseAlreadyOwned = await checkMirrorBalance(env, operatorId, TokenId.fromSolidityAddress(tradeDets[2]));
+
+	if (tokensToPurchaseAlreadyOwned == null || tokensToPurchaseAlreadyOwned == undefined) {
+		// ask user to associate the token
+		const associateToken = readlineSync.keyInYNStrict('Token to be purchased not associated - Do you want to associate the token?');
+		if (!associateToken) {
+			console.log('User Aborted');
+			return;
+		}
+
+		const associationResult = await associateTokenToAccount(
+			client,
+			operatorId,
+			operatorKey,
+			TokenId.fromSolidityAddress(tradeDets[2]),
+		);
+
+		console.log('\n-Associating Token:', associationResult);
+	}
+
 	// set 1 tinybar allowance to LST contract
 	const hbarCurrentAllowance = await checkHbarAllowances(
 		env,
@@ -293,8 +316,8 @@ const main = async () => {
 	// iterate to find the LST contract allowance
 	let lstAllowance = 0;
 	for (let i = 0; i < hbarCurrentAllowance.length; i++) {
-		if (hbarCurrentAllowance[i].accountId == contractId.toString()) {
-			lstAllowance = hbarCurrentAllowance[i].allowance;
+		if (hbarCurrentAllowance[i].spender == contractId.toString()) {
+			lstAllowance = hbarCurrentAllowance[i].amount;
 			break;
 		}
 	}
@@ -325,11 +348,11 @@ const main = async () => {
 		lstIface,
 		client,
 		gas,
-		'cancelTrade',
+		'executeTrade',
 		[
 			hash,
 		],
-		new Hbar(hbarCost),
+		hbarCost,
 	);
 
 	if (result[0]?.status?.toString() != 'SUCCESS') {

@@ -92,10 +92,6 @@ const main = async () => {
 		return;
 	}
 
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-
 	// import ABI
 	const lstJSON = JSON.parse(
 		fs.readFileSync(
@@ -107,6 +103,10 @@ const main = async () => {
 
 	const contractId = ContractId.fromString(args[0]);
 	const lazyToken = TokenId.fromString(LAZY_TOKEN_ID);
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
 
 	// get the $LAZY decimal from mirror node
 	const lazyTokenDetails = await getTokenDetails(env, lazyToken);
@@ -138,7 +138,7 @@ const main = async () => {
 		return;
 	}
 
-	if (nftOwnershipDetails.account_id.toString() != operatorId.toString()) {
+	if (nftOwnershipDetails.owner.toString() != operatorId.toString()) {
 		console.log('ERROR: Operator does not own the NFT');
 		return;
 	}
@@ -172,11 +172,15 @@ const main = async () => {
 	// ask the user for the expiry time (default 0 = no expiry)
 	const expiryTime = readlineSync.question('Enter the expiry time (default 0): ');
 
-	const expires = parseInt(expiryTime);
+	let expires = parseInt(expiryTime);
+
+	if (isNaN(expires) || !expires || expires < 0) {
+		expires = 0;
+	}
 
 	let payForAdvanced = false;
 	let lazyCostForTrade = 0;
-	if (!sellToAnyone) {
+	if (sellToAnyone) {
 		// check if the use has to pay for advanced trades
 		// call areAdvancedTradesFree via mirror node
 
@@ -192,6 +196,8 @@ const main = async () => {
 			operatorId,
 			false,
 		);
+
+		console.log('\n-Checking if user has to pay for advanced trades', aF);
 
 		const advancedTradesFree = lstIface.decodeFunctionResult('areAdvancedTradesFree', aF);
 
@@ -219,10 +225,10 @@ const main = async () => {
 	console.log('\n-Selling to:', sellTo == ethers.ZeroAddress ? 'Anyone' : AccountId.fromEvmAddress(0, 0, sellTo).toString());
 	console.log('\n-Price in Hbar:', new Hbar(priceInHbar, HbarUnit.Hbar).toString());
 	console.log('\n-Price in $LAZY:', lazy / 10 ** lazyTokenDecimals);
-	console.log('\n-Expiry time:', expires == 0 ? 'Never' : new Date(expires * 1000).toUTCString());
+	console.log('\n-Expiry time:', expires ? new Date(expires * 1000).toUTCString() : 'Never');
 
-	if (!sellToAnyone) {
-		console.log('\n-Advanced Trades:', payForAdvanced ? 'Yes' : 'No');
+	if (sellToAnyone) {
+		console.log('\n-User pays for advanced trades:', payForAdvanced ? 'Yes' : 'No');
 		if (payForAdvanced) {
 			console.log('\n-Lazy Cost For Advanced Trade:', lazyCostForTrade / 10 ** lazyTokenDecimals);
 		}
@@ -273,7 +279,7 @@ const main = async () => {
 
 	const associated = lstIface.decodeFunctionResult('isTokenAssociated', isTokenAssociated);
 
-	let gas = 300_000;
+	let gas = 500_000;
 
 	if (!associated[0]) {
 		gas += 950_000;
@@ -291,8 +297,8 @@ const main = async () => {
 		'createTrade',
 		[
 			token.toSolidityAddress(),
-			serial,
 			sellTo,
+			serial,
 			tinybars,
 			lazy,
 			expires,
