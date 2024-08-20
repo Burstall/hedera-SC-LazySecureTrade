@@ -1,7 +1,20 @@
 # hedera-SC-LazySecureTrade
 Decentralized NFT Trading without time constraint using Solidity EVM on Hedera via the LazySecureTrade (LST) contract.
 
+This is the building block to a full decentralized marketplace #HelloFuture
+
 version 0.1 - Single NFT per trade.
+
+# Testing
+create .env:
+ENVIRONMENT=test
+ACCOUNT_ID=
+PRIVATE_KEY=
+
+```yarn```
+```yarn run test-trade```
+
+# Deploy Notes
 
 contract has an embedded sunset @ 90 days (extendable) to assist in forcing migration to future versions
 
@@ -37,3 +50,18 @@ Buyer must have a 1 tinybar allowance to LST contract to facilitate the transfer
 	- If a $LAZY payment element [buyer must have sufficient $LAZY allowance to LGS] take $LAZY and pay to seller
 	- Transfer NFT from seller to Smart Contract for hbar value [defaults to 1 tinybar if none set] -- contract pays
 	- Transfer NFT from Smart Contract to Buyer for 1 tinybar
+
+# Scripts
+Plenty of scripts to allow easy usage from the command line. Highlights below.
+ scripts/deployments
+  -> deployLazySecureTrade.js : interactive. allows component reuse via .env file
+  -> extractABI.js : helper to get the ABI post compile
+ scripts/interactions
+  -> cancelTrade.js
+  -> createTrade.js
+  -> executeTrade.js
+  -> getLazySecureTradeLogs.js [writes the emitted events to log file]
+  -> getTokenTrades.js [a list of hashes for trades]
+  -> getTrade.js [get the trade details from a hash]
+  -> getTradesForUser.js
+  -> isTradeValid.js [checks validity of trade based on specified buyer, allowances and expiry if set]
