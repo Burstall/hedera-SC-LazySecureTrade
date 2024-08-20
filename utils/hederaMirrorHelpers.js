@@ -250,8 +250,8 @@ async function getEventsFromMirror(env, contractId, iface) {
 					}
 					output = f == 0 ? output : ' : ' + output;
 					outputStr += output;
-					eventsToReturn.push(outputStr);
 				}
+				eventsToReturn.push(outputStr);
 			});
 			return eventsToReturn;
 		})
@@ -304,6 +304,33 @@ async function checkMirrorHbarBalance(env, _userId) {
 		.catch(function(err) {
 			console.error(err);
 			return null;
+		});
+
+	return rtnVal;
+}
+
+async function checkNFTOwnership(env, _tokenId, _serial) {
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/tokens/${_tokenId.toString()}/nfts/${_serial}`;
+
+	let rtnVal = null;
+	await axios.get(url)
+		.then((response) => {
+			const jsonResponse = response.data;
+			rtnVal = {
+				owner: jsonResponse.account_id,
+				serial: jsonResponse.serial_number,
+				token_id: jsonResponse.token_id,
+				spender: jsonResponse.spender,
+				delegating_spender: jsonResponse.delegating_spender,
+				deleted: jsonResponse.deleted,
+				metadata: jsonResponse.metadata,
+				create_time: jsonResponse.create_timestamp,
+				modified_time: jsonResponse.modified_timestamp,
+			};
+		})
+		.catch(function(err) {
+			console.error(err);
 		});
 
 	return rtnVal;
@@ -445,4 +472,5 @@ module.exports = {
 	checkMirrorHbarBalance,
 	checkMirrorHbarAllowance,
 	checkHbarAllowances,
+	checkNFTOwnership,
 };

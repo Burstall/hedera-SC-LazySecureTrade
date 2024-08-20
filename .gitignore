@@ -11,3 +11,5 @@ typechain-types
 cache
 artifacts
 yarn.lock
+logs/*
+.DS_Store

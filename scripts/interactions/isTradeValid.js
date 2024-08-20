@@ -7,9 +7,8 @@ const {
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
-const readlineSync = require('readline-sync');
-const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
-const { getArgFlag } = require('../../utils/nodeHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+const { getArgFlag, getArg, isBytes32 } = require('../../utils/nodeHelpers');
 
 // Get operator from .env file
 let operatorKey;
@@ -22,10 +21,9 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'LazyNFTStaking';
+const contractName = 'LazySecureTrade';
 
 const env = process.env.ENVIRONMENT ?? null;
-
 let client;
 
 const main = async () => {
@@ -69,78 +67,64 @@ const main = async () => {
 	client.setOperator(operatorId, operatorKey);
 
 	const args = process.argv.slice(2);
-	if (args.length != 2 || getArgFlag('h')) {
-		console.log('Usage: setStakingHODLBonusRate.js 0.0.SSS <periods>');
-		console.log('		0.0.SSS is the LazyNFTStaking contract to update');
-		console.log('		<periods> is the max periods for HODL bonus (default: 8)');
+	if (getArgFlag('h')) {
+		console.log('Usage: isTradeValid.js 0.0.LST <hash> [-user <user>]');
+		console.log('		LST is the Lazy Secure Trade Contract address');
+		console.log('		<hash> is the hash of the trade (token/serial)');
+		console.log('		<user> is the user to check the trade for');
 		return;
 	}
-
-	const contractId = ContractId.fromString(args[0]);
-	const hodlRate = parseInt(args[1]);
-
-	if (hodlRate < 0) {
-		console.log('Invalid HODL Bonus Period:', hodlRate);
-		return;
-	}
-
-	console.log('\n-**SETTING HODL BONUS PERIOD CAP**');
-
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-	console.log('\n-NEW HODL Bonus Period Cap:', hodlRate, '(default: 8');
 
 	// import ABI
-	const lnsJSON = JSON.parse(
+	const lstJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const lnsIface = new ethers.Interface(lnsJSON.abi);
+	const lstIface = new ethers.Interface(lstJSON.abi);
 
-	// get the old burnPercentage from mirror
-	const encodedCommand = lnsIface.encodeFunctionData(
-		'maxBonusTimePeriods',
-		[],
+	const contractId = ContractId.fromString(args[0]);
+
+	const hash = args[1];
+
+	if (!isBytes32(hash)) {
+		throw new Error('Invalid hash: must be a bytes32 string');
+	}
+
+	// Rest of your code
+
+	let user = null;
+	if (getArgFlag('user')) {
+		user = AccountId.fromString(getArg('user'));
+	}
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
+	console.log('\n-Using Hash:', hash);
+	console.log('\n-Using User:', user?.toString());
+
+	user = user ? user.toSolidityAddress() : ethers.ZeroAddress;
+
+
+	// get the current contractSunset from the mirror nodes
+	const encodedCommand = lstIface.encodeFunctionData(
+		'isTradeValid',
+		[hash, user],
 	);
 
-	const ohr = await readOnlyEVMFromMirrorNode(
+	const cS = await readOnlyEVMFromMirrorNode(
 		env,
 		contractId,
 		encodedCommand,
 		operatorId,
+		false,
 	);
 
-	const oldHODLPeriodCap = lnsIface.decodeFunctionResult('maxBonusTimePeriods', ohr);
+	const isValid = lstIface.decodeFunctionResult('isTradeValid', cS);
 
-	console.log('\n-Old HODL Period Cap:', oldHODLPeriodCap, '%');
-
-
-	const proceed = readlineSync.keyInYNStrict('Do you want to update the HODL period Cap (default 8)?');
-	if (!proceed) {
-		console.log('User Aborted');
-		return;
-	}
-
-
-	const result = await contractExecuteFunction(
-		contractId,
-		lnsIface,
-		client,
-		null,
-		'setMaxBonusTimePeriods',
-		[hodlRate],
-	);
-
-	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error setting HODL period cap:', result);
-		return;
-	}
-
-	console.log('HODL Period Cap updated. Transaction ID:', result[2]?.transactionId?.toString());
-
+	console.log('\n-Is Trade Valid:', isValid[0]);
 };
 
 

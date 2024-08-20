@@ -33,6 +33,7 @@ const {
 	setHbarAllowance,
 	setFTAllowance,
 	sweepHbar,
+	sendNFTDefeatRoyalty,
 } = require('../utils/hederaHelpers');
 const { fail } = require('assert');
 const {
@@ -818,7 +819,6 @@ describe('Secure Trades are go...', () => {
 				Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
 				0,
 				0,
-				true,
 			],
 		);
 
@@ -1114,7 +1114,6 @@ describe('Secure Trades are go...', () => {
 				0,
 				23,
 				0,
-				true,
 			],
 		);
 
@@ -1263,7 +1262,6 @@ describe('Secure Trades are go...', () => {
 				Number(new Hbar(2, HbarUnit.Hbar).toTinybars()),
 				11,
 				0,
-				false,
 			],
 		);
 
@@ -1443,7 +1441,6 @@ describe('Secure Trades are go...', () => {
 				Number(new Hbar(1.5, HbarUnit.Hbar).toTinybars()),
 				0,
 				0,
-				false,
 			],
 		);
 
@@ -1481,7 +1478,6 @@ describe('Secure Trades are go...', () => {
 				Number(new Hbar(1.5, HbarUnit.Hbar).toTinybars()),
 				0,
 				0,
-				false,
 			],
 		);
 
@@ -1640,7 +1636,6 @@ describe('Secure Trades are go...', () => {
 				Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
 				0,
 				Math.floor(new Date().getTime() / 1000) + 5,
-				false,
 			],
 		);
 
@@ -1692,6 +1687,309 @@ describe('Secure Trades are go...', () => {
 		encodedCommand = lazySecureTradeIface.encodeFunctionData(
 			'isTradeValid',
 			[tradeHashToCheck, operatorId.toSolidityAddress()],
+		);
+
+		tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.false;
+	});
+
+	it('Operator create a trade, then cancels it', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// rely on NFT allowance being in place StkNFTA_TokenId
+
+		// create a trade for Bob
+		const tradeResult = await contractExecuteFunction(
+			lstContractId,
+			lazySecureTradeIface,
+			client,
+			500_000,
+			'createTrade',
+			[
+				StkNFTA_TokenId.toSolidityAddress(),
+				bobId.toSolidityAddress(),
+				4,
+				Number(new Hbar(3, HbarUnit.Hbar).toTinybars()),
+				0,
+				0,
+			],
+		);
+
+		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+
+		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
+
+		const hashToCheck = tradeResult[1][0];
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is valid for Bob via mirror node, expect true
+		let encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, bobId.toSolidityAddress()],
+		);
+
+		let tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		let tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.true;
+
+		// cancel the trade
+		const cancelResult = await contractExecuteFunction(
+			lstContractId,
+			lazySecureTradeIface,
+			client,
+			300_000,
+			'cancelTrade',
+			[hashToCheck],
+		);
+
+		expect(cancelResult[0].status.toString()).to.be.equal('SUCCESS');
+
+		console.log('Trade cancelled:', cancelResult[2]?.transactionId?.toString());
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is valid for Bob via mirror node, expect false
+		encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, bobId.toSolidityAddress()],
+		);
+
+		tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.false;
+	});
+
+	it('Operator creates a trade then modifies it', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// rely on NFT allowance being in place StkNFTA_TokenId
+
+		// create a trade for Bob
+		const tradeResult = await contractExecuteFunction(
+			lstContractId,
+			lazySecureTradeIface,
+			client,
+			500_000,
+			'createTrade',
+			[
+				StkNFTA_TokenId.toSolidityAddress(),
+				bobId.toSolidityAddress(),
+				4,
+				Number(new Hbar(3, HbarUnit.Hbar).toTinybars()),
+				0,
+				0,
+			],
+		);
+
+		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+
+		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
+
+		const hashToCheck = tradeResult[1][0];
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is valid for Bob via mirror node, expect true
+
+		let encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, bobId.toSolidityAddress()],
+		);
+
+		let tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		let tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.true;
+
+		// modify the trade using createTrade for same token and serial
+		const modifyResult = await contractExecuteFunction(
+			lstContractId,
+			lazySecureTradeIface,
+			client,
+			500_000,
+			'createTrade',
+			[
+				StkNFTA_TokenId.toSolidityAddress(),
+				aliceId.toSolidityAddress(),
+				4,
+				Number(new Hbar(5, HbarUnit.Hbar).toTinybars()),
+				10,
+				0,
+			],
+		);
+
+		expect(modifyResult[0].status.toString()).to.be.equal('SUCCESS');
+
+		console.log('Trade modified:', modifyResult[2]?.transactionId?.toString());
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is now invalid for Bob via mirror node, expect false
+
+		encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, bobId.toSolidityAddress()],
+		);
+
+		tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.false;
+
+		// check trade is valid for Alice via mirror node, expect true
+
+		encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[modifyResult[1][0], aliceId.toSolidityAddress()],
+		);
+
+		tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.true;
+	});
+
+	it('Operator creates a trade for Alice, sends NFT to Bob, Alice can not execute', async () => {
+		client.setOperator(operatorId, operatorKey);
+
+		// rely on NFT allowance being in place StkNFTA_TokenId
+
+		// create a trade for Alice
+		const tradeResult = await contractExecuteFunction(
+			lstContractId,
+			lazySecureTradeIface,
+			client,
+			500_000,
+			'createTrade',
+			[
+				StkNFTA_TokenId.toSolidityAddress(),
+				aliceId.toSolidityAddress(),
+				3,
+				Number(new Hbar(0.25, HbarUnit.Hbar).toTinybars()),
+				0,
+				0,
+			],
+		);
+
+		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+
+		console.log('Trade created:', tradeResult[2]?.transactionId?.toString());
+
+		const hashToCheck = tradeResult[1][0];
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is valid for Alice via mirror node, expect true
+		let encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, aliceId.toSolidityAddress()],
+		);
+
+		let tradeValid = await readOnlyEVMFromMirrorNode(
+			env,
+			lstContractId,
+			encodedCommand,
+			operatorId,
+			false,
+		);
+
+		let tradeValidResult = lazySecureTradeIface.decodeFunctionResult(
+			'isTradeValid',
+			tradeValid,
+		);
+
+		expect(tradeValidResult[0]).to.be.true;
+
+		// transfer the NFT to Bob
+
+		const NFTTransferResult = await sendNFTDefeatRoyalty(
+			client,
+			operatorId,
+			bobId,
+			bobPK,
+			StkNFTA_TokenId,
+			[3],
+		);
+
+		expect(NFTTransferResult).to.be.equal('SUCCESS');
+
+		// let mirror node catch up
+		await sleep(5000);
+
+		// check trade is valid for Alice via mirror node, expect false
+		encodedCommand = lazySecureTradeIface.encodeFunctionData(
+			'isTradeValid',
+			[hashToCheck, aliceId.toSolidityAddress()],
 		);
 
 		tradeValid = await readOnlyEVMFromMirrorNode(

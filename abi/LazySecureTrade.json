@@ -392,11 +392,6 @@
                 "internalType": "uint256",
                 "name": "_expiryTime",
                 "type": "uint256"
-            },
-            {
-                "internalType": "bool",
-                "name": "_associationRequired",
-                "type": "bool"
             }
         ],
         "name": "createTrade",

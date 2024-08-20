@@ -36,7 +36,7 @@ const main = async () => {
 
 	const args = process.argv.slice(2);
 	if (args.length != 4 || getArgFlag('h')) {
-		console.log('Usage: checkLiveFTAllowance,js.js 0.0.CCC 0.0.TOKEN 0.0.OWNER 0.0.SPENDER');
+		console.log('Usage: checkLiveFTAllowance.js 0.0.CCC 0.0.TOKEN 0.0.OWNER 0.0.SPENDER');
 		console.log('       CCC is the LazyAllowanceUtility address');
 		console.log('       0.0.TOKEN is the FT token we are checking All Serials for');
 		console.log('       0.0.OWNER is the owner of the NFT token(s)');

@@ -72,6 +72,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     error UserDoesNotOwnNFT();
 	error InsufficientFunds();
 	error SellerCannotBeBuyer();
+	error ContractSunset();
+	error ExpiryTimeInPast();
 
     mapping(address => EnumerableSet.Bytes32Set) private userTradesMap;
     mapping(address => EnumerableSet.Bytes32Set) private tokenTradesMap;
@@ -108,38 +110,20 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 		contractSunset = block.timestamp + 90 days;
     }
 
-	modifier pruneInvalidTrades() {
-		// remove all trades that are expired or invalid due to approval / ownership
-		// keeps state clean and allows for faster trade lookup
-		// not the most efficient way to do this, but it is a start vis version 0.1
-
-		uint256 length = userTradesMap[msg.sender].length();
-
-		for (uint256 i = 0; i < length; ) {
-			bytes32 tradeId = userTradesMap[msg.sender].at(i);
-
-			if (!isTradeValid(tradeId, msg.sender)) {
-				cancelTrade(tradeId);
-			}
-
-			unchecked {
-				++i;
-			}
-		}
-		_;
-	}	
-
     function createTrade(
         address _token,
         address _buyer,
         uint256 _serial,
         uint256 _tinybarPrice,
         uint256 _lazyPrice,
-        uint256 _expiryTime,
-        bool _associationRequired
-    ) external nonReentrant pruneInvalidTrades returns (bytes32 tradeId) {
+        uint256 _expiryTime
+    ) external nonReentrant returns (bytes32 tradeId) {
+		if (block.timestamp > contractSunset) {
+			revert ContractSunset();
+		}
+
         if (_expiryTime != 0 && _expiryTime < block.timestamp) {
-            revert BadArguments();
+            revert ExpiryTimeInPast();
         }
 
 		if (_buyer == address(0) && _tinybarPrice == 0 && _lazyPrice == 0) {
@@ -147,7 +131,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 			revert BadArguments();
 		}
 
-        if (_associationRequired) {
+        if (!tokens.contains(_token)) {
             tokenAssociate(_token);
             tokens.add(_token);
         }
@@ -161,10 +145,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 		// charge the user for the trade (paid in $LAZY via the LazyGasStation)
 		if (_buyer == address(0)) {
 			// check if the user does not own an LSH Gen 1 or Gen 2
-			if (IERC721(LSH_GEN1).balanceOf(msg.sender) == 0 &&
-					 IERC721(LSH_GEN2).balanceOf(msg.sender)== 0 &&
-					 lazyDelegateRegistry.getSerialsDelegatedTo(msg.sender, LSH_GEN1).length == 0 &&
-					 lazyDelegateRegistry.getSerialsDelegatedTo(msg.sender, LSH_GEN2).length == 0) {
+			if (!areAdvancedTradesFree(msg.sender)) {
 				
 				// if not then charge the user for the trade
 				lazyGasStation.drawLazyFrom(msg.sender, lazyCostForTrade, lazyBurnPercentage);
@@ -210,16 +191,29 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     function cancelTrade(bytes32 _tradeId) public {
         Trade memory trade = allTradesMap[_tradeId];
 
-        // user should be able to cancel trade as long as it is their trade
+        // user should be able to cancel trade as long 
+		// as they are the seller or buyer
         // does not matter if they own the NFT or not
-        if (trade.seller != msg.sender) {
-            revert TradeNotFoundOrInvalid();
-        }
+        if (trade.seller != msg.sender && trade.buyer != msg.sender) {
+			revert TradeNotFoundOrInvalid();
+		}
 
         removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
 
         emit TradeCancelled(msg.sender, trade.token, trade.serial, trade.nonce);
     }
+
+	function cancelTrades(bytes32[] memory _tradeIdList) external {
+		uint256 length = _tradeIdList.length;
+
+		for (uint256 i = 0; i < length; ) {
+			cancelTrade(_tradeIdList[i]);
+
+			unchecked {
+				++i;
+			}
+		}
+	}
 
 	function executeTrade(bytes32 _tradeId) external nonReentrant payable {
 		Trade memory trade = allTradesMap[_tradeId];
@@ -358,6 +352,11 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 	function isTradeValid(bytes32 _tradeId, address _user) public view returns (bool) {
 		Trade memory trade = allTradesMap[_tradeId];
 
+		// if trade does not exist, then it is invalid
+		if (trade.seller == address(0)) {
+			return false;
+		}
+
 		if (trade.expiryTime != 0 && trade.expiryTime < block.timestamp) {
 			return false;
 		}
@@ -407,6 +406,16 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 		return validTrades;
 	}
 
+	function areAdvancedTradesFree(address _user) public view returns (bool) {
+		if (IERC721(LSH_GEN1).balanceOf(_user) == 0 &&
+				 IERC721(LSH_GEN2).balanceOf(_user)== 0 &&
+				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN1).length == 0 &&
+				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN2).length == 0) {
+			return false;
+		}
+
+		return true;
+	}
 
     function isTokenAssociated(address _token) external view returns (bool) {
         return tokens.contains(_token);

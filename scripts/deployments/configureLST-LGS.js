@@ -7,7 +7,7 @@ const {
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { contractExecuteFunction } = require('../../utils/solidityHelpers');
 // const { hethers } = require('@hashgraph/hethers');
 require('dotenv').config();
 
@@ -21,19 +21,22 @@ try {
 catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
-const contractName = 'MissionFactory';
-const missionTemplateName = 'Mission';
+
+const lazyGasStationName = 'LazyGasStation';
 
 const env = process.env.ENVIRONMENT ?? null;
 
-let factoryContractId, missionTemplateId;
+let lstContractId;
 let client;
+let lazyGasStationId;
+let lazyGasStationIface;
 
 try {
-	factoryContractId = ContractId.fromString(process.env.MISSION_FACTORY_CONTRACT_ID);
+	lstContractId = ContractId.fromString(process.env.LAZY_SECURE_TRADE_CONTRACT_ID);
+	lazyGasStationId = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
 }
 catch (err) {
-	console.log('ERROR: Must specify MISSION_FACTORY_CONTRACT_ID in the .env file');
+	console.log('ERROR: Must specify LAZY_SECURE_TRADE_CONTRACT_ID and LAZY_GAS_STATION_CONTRACT_ID in the .env file');
 }
 
 const main = async () => {
@@ -79,70 +82,42 @@ const main = async () => {
 	client.setOperator(operatorId, operatorKey);
 	// deploy the contract
 	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Factory Contract:', factoryContractId.toString());
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to deploy the new mission template and update the mission factory?');
+	console.log('\n-Using Lazy Secure Trade Contract:', lstContractId.toString());
+	console.log('-Using Lazy Gas Station Contract:', lazyGasStationId.toString());
+
+	const lazyGasStationJSON = JSON.parse(
+		fs.readFileSync(
+			`./artifacts/contracts/${lazyGasStationName}.sol/${lazyGasStationName}.json`,
+		),
+	);
+
+	lazyGasStationIface = new ethers.Interface(lazyGasStationJSON.abi);
+
+	const proceed = readlineSync.keyInYNStrict('Do you want to update the Gas Station for this Lazy Secure Trade Contract?');
 
 	if (!proceed) {
-		console.log('Aborting');
+		console.log('Exiting...');
 		return;
 	}
 
-	const gasLimit = 1_500_000;
-
-	// deploy mission template
-	const missionTemplateJson = JSON.parse(
-		fs.readFileSync(
-			`./artifacts/contracts/${missionTemplateName}.sol/${missionTemplateName}.json`,
-		),
-	);
-
-	const missionTemplateBytecode = missionTemplateJson.bytecode;
-
-	console.log(
-		'\n- Deploying contract...',
-		missionTemplateName,
-		'\n\tgas@',
-		gasLimit,
-	);
-
-	[missionTemplateId] = await contractDeployFunction(
-		client,
-		missionTemplateBytecode,
-		gasLimit,
-	);
-
-	console.log(
-		`Mission Template contract created with ID: ${missionTemplateId} / ${missionTemplateId.toSolidityAddress()}`,
-	);
-
-	// now update the mission Factory with the new mission template
-	const missionFactoryJson = JSON.parse(
-		fs.readFileSync(
-			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
-		),
-	);
-
-	const missionFactoryIface = new ethers.Interface(missionFactoryJson.abi);
-
+	// add the Mission Factory to the lazy gas station as an authorizer
 	const rslt = await contractExecuteFunction(
-		factoryContractId,
-		missionFactoryIface,
+		lazyGasStationId,
+		lazyGasStationIface,
 		client,
 		null,
-		'updateMissionTemplate',
-		[missionTemplateId.toSolidityAddress()],
+		'addContractUser',
+		[lstContractId.toSolidityAddress()],
 	);
 
-	if (rslt[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Mission Factory failed to connect to Mission Template:', rslt);
-		return;
+	if (rslt[0]?.status.toString() != 'SUCCESS') {
+		console.log('ERROR adding LST to LGS:', rslt);
 	}
 
-	console.log('Mission Factory connected to Mission Template:', rslt[2].transactionId.toString());
+	console.log('Lazy Secure Trade Contract added to Lazy Gas Station:', rslt[2].transactionId.toString());
 
 };
-
 
 main()
 	.then(() => process.exit(0))

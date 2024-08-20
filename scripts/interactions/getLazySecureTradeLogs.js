@@ -1,12 +1,12 @@
 const {
 	AccountId,
 	ContractId,
-	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
-const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+const readlineSync = require('readline-sync');
+const { getEventsFromMirror } = require('../../utils/hederaMirrorHelpers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 
 // Get operator from .env file
@@ -18,7 +18,7 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'LazyNFTStaking';
+const contractName = 'LazySecureTrade';
 
 const env = process.env.ENVIRONMENT ?? null;
 
@@ -36,8 +36,8 @@ const main = async () => {
 
 	const args = process.argv.slice(2);
 	if (args.length != 1 || getArgFlag('h')) {
-		console.log('Usage: getStakableCollections.js 0.0.LNS');
-		console.log('       LNS is the LazyStakingNFTs Contract address');
+		console.log('Usage: getLazySecureTradeLogs.js 0.0.LST');
+		console.log('       LST is the contract address');
 		return;
 	}
 
@@ -48,36 +48,40 @@ const main = async () => {
 	console.log('\n-Using Contract:', contractId.toString());
 
 	// import ABI
-	const boostManagerJSON = JSON.parse(
+	const missionJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const boostManagerIface = new ethers.Interface(boostManagerJSON.abi);
+	const lstIface = new ethers.Interface(missionJSON.abi);
 
-	// query the EVM via mirror node (readOnlyEVMFromMirrorNode)
+	// Call the function to fetch logs
+	const logs = await getEventsFromMirror(env, contractId, lstIface);
 
-	const encodedCommand = boostManagerIface.encodeFunctionData(
-		'getStakableCollections',
-		[],
-	);
+	const proceed = readlineSync.keyInYNStrict('Do you want to write logs to file?');
+	if (!proceed) {
+		if (logs) {
+			for (const log of logs) {
+				console.log(log);
+			}
+		}
+		else { console.log('ERROR: No logs found'); }
+		return;
+	}
 
-	const result = await readOnlyEVMFromMirrorNode(
-		env,
-		contractId,
-		encodedCommand,
-		operatorId,
-		false,
-	);
-
-	const tokens = boostManagerIface.decodeFunctionResult(
-		'getStakableCollections',
-		result,
-	);
-	console.log('Raw:', tokens);
-	console.log('Stakeable Collections:', tokens[0].map((u) => TokenId.fromString(u).toString()).join(', '));
-
+	// Write logs to a text file
+	const now = new Date();
+	const dateHour = `${now.getFullYear()}-${now.getMonth() + 1}-${now.getDate()}-${now.getHours()}`;
+	const outputFile = `./logs/LazySecureTrade-logs-${contractId}-${dateHour}.txt`;
+	try {
+		fs.writeFileSync(outputFile, logs.join('\n'));
+	}
+	catch (err) {
+		console.error(err);
+		console.log('Error writing logs to file - check smart-contracts/logs directory exists');
+	}
+	console.log(`Logs have been written to ${outputFile}`);
 };
 
 main()

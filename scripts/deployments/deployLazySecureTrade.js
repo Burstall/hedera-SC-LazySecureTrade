@@ -23,24 +23,24 @@ try {
 catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
-const contractName = 'MissionFactory';
-const lazyContractCreator = 'LAZYTokenCreator';
-const boostManagerName = 'BoostManager';
-const lazyGasStationName = 'LazyGasStation';
-const prngName = 'PrngSystemContract';
-const missionTemplateName = 'Mission';
-const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 
+const lazyContractCreator = 'LAZYTokenCreator';
+const lazyGasStationName = 'LazyGasStation';
+const contractName = 'LazySecureTrade';
+const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 const env = process.env.ENVIRONMENT ?? null;
 const LAZY_BURN_PERCENT = process.env.LAZY_BURN_PERCENT ?? 25;
+const LAZY_COST_FOR_TRADE = process.env.LAZY_COST_FOR_TRADE ?? 400;
 const LAZY_DECIMAL = process.env.LAZY_DECIMALS ?? 1;
+const LAZY_MAX_SUPPLY = process.env.LAZY_MAX_SUPPLY ?? 250_000_000;
 
-let factoryContractId, boostManagerId, prngId, missionTemplateId, ldrId;
+
+let ldrId;
 let lazyTokenId;
 let client;
 let lazySCT;
 let lazyGasStationId;
-let lazyIface, boostManagerIface, lazyGasStationIface;
+let lazyIface, lazyGasStationIface;
 
 const main = async () => {
 	// configure the client object
@@ -133,9 +133,9 @@ const main = async () => {
 			'Test_Lazy',
 			'TLazy',
 			'Test Lazy FT',
-			2_500_000_000,
+			LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
 			LAZY_DECIMAL,
-			2_500_000_000,
+			LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
 			30,
 		);
 		console.log('$LAZY Token minted:', lazyTokenId.toString());
@@ -230,136 +230,48 @@ const main = async () => {
 		);
 	}
 
-	const boostManagerJson = JSON.parse(
-		fs.readFileSync(
-			`./artifacts/contracts/${boostManagerName}.sol/${boostManagerName}.json`,
-		),
-	);
-
-	boostManagerIface = new ethers.Interface(boostManagerJson.abi);
-
-	if (process.env.BOOST_MANAGER_CONTRACT_ID) {
-		console.log(
-			'\n-Using existing Boost Manager:',
-			process.env.BOOST_MANAGER_CONTRACT_ID,
-		);
-		boostManagerId = ContractId.fromString(
-			process.env.BOOST_MANAGER_CONTRACT_ID,
-		);
+	// check the LSH Gen 1 / 2 Tokens are in the .env file
+	let LSH_GEN1, LSH_GEN2;
+	if (process.env.LSH_GEN1_TOKEN_ID) {
+		LSH_GEN1 = TokenId.fromString(process.env.LSH_GEN1_TOKEN_ID);
+		console.log('LSH_GEN1_TOKEN_ID -> ', LSH_GEN1.toString());
 	}
 	else {
-		console.log('BOOST_MANAGER_CONTRACT_ID ->', process.env.BOOST_MANAGER_CONTRACT_ID);
-		console.log('LAZY_BURN_PERCENT (env) ->', process.env.LAZY_BURN_PERCENT);
-		console.log('LAZY_BURN_PERCENT (to use) ->', LAZY_BURN_PERCENT);
-
-		const proceed = readlineSync.keyInYNStrict('No Boost Manager found, do you want to deploy it?');
-
-		if (!proceed) {
-			console.log('Aborting');
-			return;
-		}
-
-		const gasLimit = 1_800_000;
-		console.log(
-			'\n- Deploying contract...',
-			boostManagerName,
-			'\n\tgas@',
-			gasLimit,
-		);
-
-		const boostManagerBytecode = boostManagerJson.bytecode;
-
-		const boostManagerParams = new ContractFunctionParameters()
-			.addAddress(lazyTokenId.toSolidityAddress())
-			.addAddress(lazyGasStationId.toSolidityAddress())
-			.addAddress(ldrId.toSolidityAddress())
-			.addUint256(LAZY_BURN_PERCENT);
-
-		[boostManagerId] = await contractDeployFunction(
-			client,
-			boostManagerBytecode,
-			gasLimit,
-			boostManagerParams,
-		);
-
-		console.log(
-			`Boost Manager contract created with ID: ${boostManagerId} / ${boostManagerId.toSolidityAddress()}`,
-		);
+		console.log('LSH_GEN1_TOKEN_ID -> ', process.env.LSH_GEN1_TOKEN_ID);
+		console.log('Missing from .env file, please deploy the LSH Gen 1 Token first');
+		return;
 	}
 
-	if (process.env.PRNG_CONTRACT_ID) {
-		console.log('\n-Using existing PRNG:', process.env.PRNG_CONTRACT_ID);
-		prngId = ContractId.fromString(process.env.PRNG_CONTRACT_ID);
+	if (process.env.LSH_GEN2_TOKEN_ID) {
+		LSH_GEN2 = TokenId.fromString(process.env.LSH_GEN2_TOKEN_ID);
+		console.log('LSH_GEN2_TOKEN_ID -> ', LSH_GEN2.toString());
 	}
 	else {
-		console.log('PRNG_CONTRACT_ID ->', process.env.PRNG_CONTRACT_ID);
-		const proceed = readlineSync.keyInYNStrict('No PRNG found, do you want to deploy it?');
-
-		if (!proceed) {
-			console.log('Aborting');
-			return;
-		}
-
-		const gasLimit = 800_000;
-		console.log('\n- Deploying contract...', prngName, '\n\tgas@', gasLimit);
-		const prngJson = JSON.parse(
-			fs.readFileSync(
-				`./artifacts/contracts/${prngName}.sol/${prngName}.json`,
-			),
-		);
-
-		const prngBytecode = prngJson.bytecode;
-
-		[prngId] = await contractDeployFunction(client, prngBytecode, gasLimit);
-
-		console.log(
-			`PRNG contract created with ID: ${prngId} / ${prngId.toSolidityAddress()}`,
-		);
+		console.log('LSH_GEN2_TOKEN_ID -> ', process.env.LSH_GEN2_TOKEN_ID);
+		console.log('Missing from .env file, please deploy the LSH Gen 2 Token first');
+		return;
 	}
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to deploy the Mission Factory (and mission template)?');
+	console.log('BURN_PERCENT:', LAZY_BURN_PERCENT);
+	console.log('COST_FOR_TRADE:', LAZY_COST_FOR_TRADE / 10 ** LAZY_DECIMAL, '$LAZY');
+
+	const proceed = readlineSync.keyInYNStrict('Do you want to deploy Lazy Secure Trade Contract?');
 
 	if (!proceed) {
 		console.log('Aborting');
 		return;
 	}
 
-	const gasLimit = 1_500_000;
-
-	// deploy mission template
-	const missionTemplateJson = JSON.parse(
-		fs.readFileSync(
-			`./artifacts/contracts/${missionTemplateName}.sol/${missionTemplateName}.json`,
-		),
-	);
-
-	const missionTemplateBytecode = missionTemplateJson.bytecode;
-
-	console.log(
-		'\n- Deploying contract...',
-		missionTemplateName,
-		'\n\tgas@',
-		gasLimit,
-	);
-
-	[missionTemplateId] = await contractDeployFunction(
-		client,
-		missionTemplateBytecode,
-		gasLimit,
-	);
-
-	console.log(
-		`Mission Template contract created with ID: ${missionTemplateId} / ${missionTemplateId.toSolidityAddress()}`,
-	);
+	const gasLimit = 2_500_000;
 
 	// now deploy main contract
-	const missionFactoryJson = JSON.parse(
+	const lazySecureTradeJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const contractBytecode = missionFactoryJson.bytecode;
+	const contractBytecode = lazySecureTradeJSON.bytecode;
 
 	console.log(
 		'\n- Deploying contract...',
@@ -370,72 +282,39 @@ const main = async () => {
 
 	const constructorParams = new ContractFunctionParameters()
 		.addAddress(lazyTokenId.toSolidityAddress())
-		.addAddress(boostManagerId.toSolidityAddress())
 		.addAddress(lazyGasStationId.toSolidityAddress())
-		.addAddress(missionTemplateId.toSolidityAddress())
-		.addAddress(prngId.toSolidityAddress())
-		.addAddress(ldrId.toSolidityAddress());
+		.addAddress(ldrId.toSolidityAddress())
+		.addAddress(LSH_GEN1.toSolidityAddress())
+		.addAddress(LSH_GEN2.toSolidityAddress())
+		.addUint256(LAZY_COST_FOR_TRADE)
+		.addUint256(LAZY_BURN_PERCENT);
 
-	[factoryContractId] = await contractDeployFunction(
+	const [lstContractId, lstContractAddress] = await contractDeployFunction(
 		client,
 		contractBytecode,
 		gasLimit,
 		constructorParams,
 	);
 
-
-	console.log(`Mission Factory Contract created with ID: ${factoryContractId} / ${factoryContractId.toSolidityAddress()}`);
-
-	// update the Boost Manager with the mission factory contract
-	let rslt = await contractExecuteFunction(
-		boostManagerId,
-		boostManagerIface,
-		client,
-		null,
-		'setMissionFactory',
-		[factoryContractId.toSolidityAddress()],
+	console.log(
+		`Lazy Secure Trade Contract created with ID: ${lstContractId} / ${lstContractAddress}`,
 	);
-
-	if (rslt[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Boost Manager failed to connect to Mission Factory:', rslt);
-		return;
-	}
-
-	console.log('Boost Manager connected to Mission Factory:', rslt[2].transactionId.toString());
 
 	// add the Mission Factory to the lazy gas station as an authorizer
-	rslt = await contractExecuteFunction(
-		lazyGasStationId,
-		lazyGasStationIface,
-		client,
-		null,
-		'addAuthorizer',
-		[factoryContractId.toSolidityAddress()],
-	);
-
-	if (rslt[0]?.status.toString() != 'SUCCESS') {
-		console.log('ERROR adding factory to LGS:', rslt);
-		return;
-	}
-
-	console.log('Mission Factory added to Lazy Gas Station:', rslt[2].transactionId.toString());
-
-	// add the Boost Manager to the lazy gas station as a contract user
-	rslt = await contractExecuteFunction(
+	const rslt = await contractExecuteFunction(
 		lazyGasStationId,
 		lazyGasStationIface,
 		client,
 		null,
 		'addContractUser',
-		[boostManagerId.toSolidityAddress()],
+		[lstContractId.toSolidityAddress()],
 	);
 
 	if (rslt[0]?.status.toString() != 'SUCCESS') {
-		console.log('ERROR adding Boost Manager to LGS:', rslt);
-		return;
+		console.log('ERROR adding LNS to LGS:', rslt);
 	}
 
-	console.log('Boost Manager added to Lazy Gas Station:', rslt[2].transactionId.toString());
+	console.log('Lazy Secure Trade added to Lazy Gas Station:', rslt[2].transactionId.toString());
 
 };
 

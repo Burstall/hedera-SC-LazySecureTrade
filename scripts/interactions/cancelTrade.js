@@ -3,13 +3,14 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
-const { getArgFlag } = require('../../utils/nodeHelpers');
+const { getArgFlag, isBytes32 } = require('../../utils/nodeHelpers');
 
 // Get operator from .env file
 let operatorKey;
@@ -22,10 +23,9 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'LazyNFTStaking';
+const contractName = 'LazySecureTrade';
 
 const env = process.env.ENVIRONMENT ?? null;
-
 let client;
 
 const main = async () => {
@@ -69,78 +69,118 @@ const main = async () => {
 	client.setOperator(operatorId, operatorKey);
 
 	const args = process.argv.slice(2);
-	if (args.length != 3 || getArgFlag('h')) {
-		console.log('Usage: setStakingBurnPercentage.js 0.0.SSS <rate>');
-		console.log('		0.0.SSS is the LazyNFTStaking contract to update');
-		console.log('		<rate> is the percentage of the staking reward to burn [0-100]');
+	if (args.length != 2 || getArgFlag('h')) {
+		console.log('Usage: cancelTrade.js 0.0.LST [-i | <hash>');
+		console.log('		LST is the Lazy Secure Trade Contract address');
+		console.log('		-i to interactively to enter token/serial to obtain hash');
+		console.log('		<hash> is the hash of the trade (token/serial)');
 		return;
 	}
-
-	const contractId = ContractId.fromString(args[0]);
-	const burnPercentage = parseInt(args[1]);
-
-	if (burnPercentage < 0 || burnPercentage > 100) {
-		console.log('Invalid burn percentage:', burnPercentage);
-		return;
-	}
-
-	console.log('\n-**SETTING STAKING BURN PERCENTAGE**');
 
 	console.log('\n-Using ENIVRONMENT:', env);
 	console.log('\n-Using Operator:', operatorId.toString());
 	console.log('\n-Using Contract:', contractId.toString());
-	console.log('\n-NEW Burn Percentage:', burnPercentage, '%');
 
 	// import ABI
-	const lnsJSON = JSON.parse(
+	const lstJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const lnsIface = new ethers.Interface(lnsJSON.abi);
+	const lstIface = new ethers.Interface(lstJSON.abi);
 
-	// get the old burnPercentage from mirror
-	const encodedCommand = lnsIface.encodeFunctionData(
-		'burnPercentage',
-		[],
+	const contractId = ContractId.fromString(args[0]);
+
+	let hash, token, serial;
+
+	if (getArgFlag('i')) {
+		// interactively get the token and serial
+
+
+		// ask the user for the token to sell
+		const tokenToCancel = readlineSync.question('Enter the token to cancel: ');
+		const serialToCancel = readlineSync.question('Enter the serial number: ');
+
+		token = TokenId.fromString(tokenToCancel);
+		serial = parseInt(serialToCancel);
+
+		console.log('\n-Using Token:', token.toString());
+		console.log('\n-Using Serial:', serial);
+
+		console.log('\n\t...fetching trade details for token:', token.toString(), 'serial:', serial);
+
+		hash = ethers.solidityPackedKeccak256(['address', 'uint256'], [token.toSolidityAddress(), serial]);
+	}
+	else {
+		hash = args[1];
+
+		if (!isBytes32(hash)) {
+			throw new Error('Invalid hash: must be a bytes32 string');
+		}
+	}
+
+	console.log('\n-Using Hash:', hash);
+
+	const eC = lstIface.encodeFunctionData(
+		'getTrade',
+		[hash],
 	);
 
-	const obr = await readOnlyEVMFromMirrorNode(
+	const cS = await readOnlyEVMFromMirrorNode(
 		env,
 		contractId,
-		encodedCommand,
+		eC,
 		operatorId,
+		false,
 	);
 
-	const oldBurnPercentage = lnsIface.decodeFunctionResult('burnPercentage', obr);
+	const tradeDets = lstIface.decodeFunctionResult('getTrade', cS)[0];
 
-	console.log('\n-Old Burn Percentage:', oldBurnPercentage, '%');
+	// check if the trade exists [seller <> ZeroAddress]
+	if (tradeDets[0] == ethers.ZeroAddress) {
+		console.log('Trade does not exist - exiting');
+		return;
+	}
+
+	console.log('\n-Trade Details:', tradeDets);
+
+	// check if user is seller or buyer
+	const isSeller = tradeDets[0].slice(2).toLowerCase() == operatorId.toSolidityAddress();
+	const isBuyer = tradeDets[1].slice(2).toLowerCase() == operatorId.toSolidityAddress();
+
+	if (!isSeller && !isBuyer) {
+		console.log('ERROR: Operator is not the seller or buyer - unable to cancel - exiting');
+		return;
+	}
 
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to update the Stakable Burn %?');
+	const proceed = readlineSync.keyInYNStrict('Do you want to cancel the trade?');
 	if (!proceed) {
 		console.log('User Aborted');
 		return;
 	}
 
 
+	const gas = 300_000;
+
 	const result = await contractExecuteFunction(
 		contractId,
-		lnsIface,
+		lstIface,
 		client,
-		null,
-		'setBurnPercentage',
-		[burnPercentage],
+		gas,
+		'cancelTrade',
+		[
+			hash,
+		],
 	);
 
 	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error setting Burn %:', result);
+		console.log('Error cancelling trade:', result);
 		return;
 	}
 
-	console.log('Burn updated. Transaction ID:', result[2]?.transactionId?.toString());
-
+	console.log('Trade Cancelled. Transaction ID:', result[2]?.transactionId?.toString());
 };
 
 

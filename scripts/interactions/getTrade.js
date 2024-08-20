@@ -3,12 +3,13 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
-const { contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 
 // Get operator from .env file
@@ -22,10 +23,9 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'Mission';
+const contractName = 'LazySecureTrade';
 
 const env = process.env.ENVIRONMENT ?? null;
-const LAZY_DECIMALS = process.env.LAZY_DECIMALS ?? 1;
 let client;
 
 const main = async () => {
@@ -69,61 +69,63 @@ const main = async () => {
 	client.setOperator(operatorId, operatorKey);
 
 	const args = process.argv.slice(2);
-	if (args.length != 5 || getArgFlag('h')) {
-		console.log('Usage: setDecreasingEntryFee.js 0.0.MMMM <start> <min> <decrement> <interval>');
-		console.log('		MMM is the mission address');
-		console.log('		<start> is the start timestamps');
-		console.log('		<min> is the minimum fee in $LAZY');
-		console.log('		<decrement> is the decrement amount');
-		console.log('		<interval> is the decrement interval (seconds)');
+	if (getArgFlag('h')) {
+		console.log('Usage: getTrade.js 0.0.LST <hash> [-i]');
+		console.log('		LST is the Lazy Secure Trade Contract address');
+		console.log('		<hash> is the hash of the trade (token/serial)');
+		console.log('		-i enter interactove mode to enter token address and serial');
 		return;
 	}
 
-	const contractId = ContractId.fromString(args[0]);
-	const startTimestamp = parseInt(args[1]);
-	const minFee = parseInt(args[2]);
-	const decrement = parseInt(args[3]);
-	const interval = parseInt(args[4]);
-
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-	console.log('\n-Using Start:', startTimestamp, '->', new Date(startTimestamp * 1000).toISOString());
-	console.log('\n-Using Min:', minFee / 10 ** LAZY_DECIMALS, '$LAZY');
-	console.log('\n-Using Decrement:', decrement / 10 ** LAZY_DECIMALS, '$LAZY');
-	console.log('\n-Using Interval:', interval, 'seconds / ', interval / 60, 'minutes / ', interval / 60 / 60, 'hours / ', interval / 60 / 60 / 24, 'days');
-
 	// import ABI
-	const missionJSON = JSON.parse(
+	const lstJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const missionIface = new ethers.Interface(missionJSON.abi);
+	const lstIface = new ethers.Interface(lstJSON.abi);
 
+	const contractId = ContractId.fromString(args[0]);
+	let hash;
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to add decreasing entry cost to the mission?');
-	if (!proceed) {
-		console.log('User Aborted');
-		return;
+	if (getArgFlag('i')) {
+		// user readline-sync to request token address
+		const userTokenInput = readlineSync.question('Enter the token address: ');
+		const userSerialInput = readlineSync.question('Enter the serial number: ');
+		const token = TokenId.fromString(userTokenInput);
+		const serial = parseInt(userSerialInput);
+
+		hash = ethers.solidityPackedKeccak256(['address', 'uint256'], [token.toSolidityAddress(), serial]);
+	}
+	else {
+		hash = args[1];
 	}
 
-	const result = await contractExecuteFunction(
-		contractId,
-		missionIface,
-		client,
-		500_000,
-		'setDecreasingEntryFee',
-		[startTimestamp, minFee, decrement, interval],
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
+	console.log('\n-Using Hash:', hash);
+
+
+	// get the current contractSunset from the mirror nodes
+	const encodedCommand = lstIface.encodeFunctionData(
+		'getTrade',
+		[hash],
 	);
 
-	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error setting up dutch auction:', result);
-		return;
-	}
+	const cS = await readOnlyEVMFromMirrorNode(
+		env,
+		contractId,
+		encodedCommand,
+		operatorId,
+		false,
+	);
 
-	console.log('Dutch Auction Engaged. Transaction ID:', result[2]?.transactionId?.toString());
+	const tradeDets = lstIface.decodeFunctionResult('getTrade', cS);
+
+	console.log('\n-Trade Details:', tradeDets[0]);
 };
 
 

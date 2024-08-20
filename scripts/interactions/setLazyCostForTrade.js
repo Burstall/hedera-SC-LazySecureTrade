@@ -3,6 +3,7 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
@@ -10,25 +11,23 @@ const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
+const { getTokenDetails } = require('../../utils/hederaMirrorHelpers');
 
 // Get operator from .env file
 let operatorKey;
 let operatorId;
-let signingKey;
 try {
 	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 	operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
-	// EDCSA key - ED25519 key is not supported
-	signingKey = PrivateKey.fromStringECDSA(process.env.SIGNING_KEY);
 }
 catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'LazyNFTStaking';
+const contractName = 'LazySecureTrade';
+const LAZY_TOKEN_ID = process.env.LAZY_TOKEN_ID;
 
 const env = process.env.ENVIRONMENT ?? null;
-
 let client;
 
 const main = async () => {
@@ -37,13 +36,16 @@ const main = async () => {
 		operatorKey === undefined ||
 		operatorKey == null ||
 		operatorId === undefined ||
-		operatorId == null ||
-		signingKey === undefined ||
-		signingKey == null
+		operatorId == null
 	) {
 		console.log(
-			'Environment required, please specify PRIVATE_KEY & ACCOUNT_ID & SIGNING_KEY in the .env file',
+			'Environment required, please specify PRIVATE_KEY & ACCOUNT_ID in the .env file',
 		);
+		process.exit(1);
+	}
+
+	if (!LAZY_TOKEN_ID) {
+		console.log('ERROR: Must specify LAZY_TOKEN_ID in the .env file');
 		process.exit(1);
 	}
 
@@ -74,72 +76,80 @@ const main = async () => {
 	client.setOperator(operatorId, operatorKey);
 
 	const args = process.argv.slice(2);
-	if (args.length != 1 || getArgFlag('h')) {
-		console.log('Usage: setStakingSigningWallet.js 0.0.SSS');
-		console.log('		0.0.SSS is the LazyNFTStaking contract to update');
-		console.log('		expect SIGNING_KEY to be set in .env');
+	if (args.length != 2 || getArgFlag('h')) {
+		console.log('Usage: setLazyCostForTrade.js 0.0.LST <cost>');
+		console.log('		LST is the Lazy Secure Trade Contract address');
+		console.log('		<cost> in $LAZY');
 		return;
 	}
 
-	const contractId = ContractId.fromString(args[0]);
-
-	console.log('\n-**SETTING STAKING BURN PERCENTAGE**');
-
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-	console.log('\n-Using new signing key: ', signingKey.publicKey.toEvmAddress(), '(Public key!)');
-
 	// import ABI
-	const lnsJSON = JSON.parse(
+	const lstJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const lnsIface = new ethers.Interface(lnsJSON.abi);
+	const lstIface = new ethers.Interface(lstJSON.abi);
 
-	// get the old systemWallet from Mirror Node
-	const encodedCommand = lnsIface.encodeFunctionData(
-		'systemWallet',
+	const contractId = ContractId.fromString(args[0]);
+	const lazy = Number(args[1]);
+	const lazyToken = TokenId.fromString(LAZY_TOKEN_ID);
+
+	// get the $LAZY decimal from mirror node
+	const lazyTokenDetails = await getTokenDetails(env, lazyToken);
+	const lazyTokenDecimals = lazyTokenDetails.decimals;
+
+	if (lazyTokenDecimals == null || lazyTokenDecimals == undefined) {
+		console.log('ERROR: Unable to get $LAZY decimals');
+		return;
+	}
+
+	// get the current contractSunset from the mirror nodes
+	const encodedCommand = lstIface.encodeFunctionData(
+		'lazyCostForTrade',
 		[],
 	);
 
-	const osw = await readOnlyEVMFromMirrorNode(
+	const cS = await readOnlyEVMFromMirrorNode(
 		env,
 		contractId,
 		encodedCommand,
 		operatorId,
+		false,
 	);
 
-	const oldSystemWallet = lnsIface.decodeFunctionResult('burnPercentage', osw);
+	const currentLazyCost = Number(lstIface.decodeFunctionResult('lazyCostForTrade', cS)[0]);
 
-	console.log('\n-Old System Wallet (signing public key):', oldSystemWallet[0].toString());
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
+	console.log('\n-Using $LAZY:', lazy);
+	console.log('\n-Current cost:', currentLazyCost / 10 ** lazyTokenDecimals, '$LAZY');
+	console.log('\n-New value (allowing for decimal):', Math.floor(lazy * 10 ** lazyTokenDecimals));
 
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to update the System Signing Wallet?');
+	const proceed = readlineSync.keyInYNStrict('Do you want to update the cost?');
 	if (!proceed) {
 		console.log('User Aborted');
 		return;
 	}
 
-
 	const result = await contractExecuteFunction(
 		contractId,
-		lnsIface,
+		lstIface,
 		client,
-		null,
-		'setSystemWallet',
-		[signingKey.publicKey.toEvmAddress()],
+		300_000,
+		'setLazyCostForTrade',
+		[Math.floor(lazy * 10 ** lazyTokenDecimals)],
 	);
 
 	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error setting new system wallet:', result);
+		console.log('Error updating:', result);
 		return;
 	}
 
-	console.log('System Wallet updated. Transaction ID:', result[2]?.transactionId?.toString());
-
+	console.log('$LAZY cost updated. Transaction ID:', result[2]?.transactionId?.toString());
 };
 
 

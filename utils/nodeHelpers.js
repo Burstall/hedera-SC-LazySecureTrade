@@ -24,4 +24,8 @@ async function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-module.exports = { getArgFlag, getArg, sleep };
+function isBytes32(str) {
+	return /^0x([A-Fa-f0-9]{64})$/.test(str);
+}
+
+module.exports = { getArgFlag, getArg, sleep, isBytes32 };

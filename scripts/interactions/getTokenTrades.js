@@ -3,12 +3,12 @@ const {
 	AccountId,
 	PrivateKey,
 	ContractId,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const fs = require('fs');
 const { ethers } = require('ethers');
-const readlineSync = require('readline-sync');
-const { contractExecuteFunction, readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
+const { readOnlyEVMFromMirrorNode } = require('../../utils/solidityHelpers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 
 // Get operator from .env file
@@ -22,10 +22,9 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-const contractName = 'LazyNFTStaking';
+const contractName = 'LazySecureTrade';
 
 const env = process.env.ENVIRONMENT ?? null;
-
 let client;
 
 const main = async () => {
@@ -70,43 +69,37 @@ const main = async () => {
 
 	const args = process.argv.slice(2);
 	if (args.length != 2 || getArgFlag('h')) {
-		console.log('Usage: setStakingBoostRateCap.js 0.0.SSS <cap>');
-		console.log('		0.0.SSS is the LazyNFTStaking contract to update');
-		console.log('		<cap> is the max boost rate allowed [>=0]');
-		return;
+		console.log('Usage: getTokenTraders.js 0.0.LST <user>');
+		console.log('		LST is the Lazy Secure Trade Contract address');
+		console.log('		<token> is the token to request trades for');
 	}
-
-	const contractId = ContractId.fromString(args[0]);
-	const brc = parseInt(args[1]);
-
-	if (brc < 0) {
-		console.log('Invalid burn percentage:', brc);
-		return;
-	}
-
-	console.log('\n-**SETTING BOOST RATE CAP**');
-
-	console.log('\n-Using ENIVRONMENT:', env);
-	console.log('\n-Using Operator:', operatorId.toString());
-	console.log('\n-Using Contract:', contractId.toString());
-	console.log('\n-NEW Boost Rate Cap:', brc);
 
 	// import ABI
-	const lnsJSON = JSON.parse(
+	const lstJSON = JSON.parse(
 		fs.readFileSync(
 			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
 		),
 	);
 
-	const lnsIface = new ethers.Interface(lnsJSON.abi);
+	const lstIface = new ethers.Interface(lstJSON.abi);
 
-	// get the old burnPercentage from mirror
-	const encodedCommand = lnsIface.encodeFunctionData(
-		'boostRateCap',
-		[],
+	const contractId = ContractId.fromString(args[0]);
+	const token = TokenId.fromString(args[1]);
+
+
+	console.log('\n-Using ENIVRONMENT:', env);
+	console.log('\n-Using Operator:', operatorId.toString());
+	console.log('\n-Using Contract:', contractId.toString());
+	console.log('\n-Using Token:', token.toString());
+
+
+	// get the current contractSunset from the mirror nodes
+	const encodedCommand = lstIface.encodeFunctionData(
+		'getTokenTrades',
+		[token.toSolidityAddress()],
 	);
 
-	const obr = await readOnlyEVMFromMirrorNode(
+	const cS = await readOnlyEVMFromMirrorNode(
 		env,
 		contractId,
 		encodedCommand,
@@ -114,32 +107,9 @@ const main = async () => {
 		false,
 	);
 
-	const oldBurnPercentage = lnsIface.decodeFunctionResult('boostRateCap', obr);
-	console.log('\n-Old Boost Rate Cap (mirror):', oldBurnPercentage);
+	const tradeHashes = lstIface.decodeFunctionResult('getTokenTrades', cS);
 
-	const proceed = readlineSync.keyInYNStrict('Do you want to update the Stakable Boost Rate Cap?');
-	if (!proceed) {
-		console.log('User Aborted');
-		return;
-	}
-
-
-	const result = await contractExecuteFunction(
-		contractId,
-		lnsIface,
-		client,
-		null,
-		'setBoostRateCap',
-		[brc],
-	);
-
-	if (result[0]?.status?.toString() != 'SUCCESS') {
-		console.log('Error setting Boost Cap:', result);
-		return;
-	}
-
-	console.log('Boost Rate Cap updated. Transaction ID:', result[2]?.transactionId?.toString());
-
+	console.log('\n-Trade Hashes:', tradeHashes[0]);
 };
 
 
