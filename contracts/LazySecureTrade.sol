@@ -83,6 +83,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
 	address public immutable LSH_GEN1;
 	address public immutable LSH_GEN2;
+	address public immutable LSH_GEN1_MUTANT;
 
     // each trade has a unique nonce
     uint256 public tradeNonce;
@@ -96,6 +97,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         address _lazyDelegateRegistry,
 		address _lshGen1,
 		address _lshGen2,
+		address _lshGen1Mutant,
 		uint256 _lazyCostForTrade,
 		uint256 _lazyBurnPercentage
     ) {
@@ -104,6 +106,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
 		LSH_GEN1 = _lshGen1;
 		LSH_GEN2 = _lshGen2;
+		LSH_GEN1_MUTANT = _lshGen1Mutant;
 
 		lazyCostForTrade = _lazyCostForTrade;
 		lazyBurnPercentage = _lazyBurnPercentage;
@@ -489,8 +492,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 	function areAdvancedTradesFree(address _user) public view returns (bool) {
 		if (IERC721(LSH_GEN1).balanceOf(_user) == 0 &&
 				 IERC721(LSH_GEN2).balanceOf(_user)== 0 &&
+				 IERC721(LSH_GEN1_MUTANT).balanceOf(_user) == 0 &&
 				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN1).length == 0 &&
-				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN2).length == 0) {
+				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN2).length == 0 &&
+				 lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN1_MUTANT).length == 0) {
 			return false;
 		}
 

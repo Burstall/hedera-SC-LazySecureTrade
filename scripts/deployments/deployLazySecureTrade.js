@@ -230,8 +230,8 @@ const main = async () => {
 		);
 	}
 
-	// check the LSH Gen 1 / 2 Tokens are in the .env file
-	let LSH_GEN1, LSH_GEN2;
+	// check the LSH Gen 1 / 2 Tokens + Mutants are in the .env file
+	let LSH_GEN1, LSH_GEN2, LSH_GEN1_MUTANT;
 	if (process.env.LSH_GEN1_TOKEN_ID) {
 		LSH_GEN1 = TokenId.fromString(process.env.LSH_GEN1_TOKEN_ID);
 		console.log('LSH_GEN1_TOKEN_ID -> ', LSH_GEN1.toString());
@@ -249,6 +249,16 @@ const main = async () => {
 	else {
 		console.log('LSH_GEN2_TOKEN_ID -> ', process.env.LSH_GEN2_TOKEN_ID);
 		console.log('Missing from .env file, please deploy the LSH Gen 2 Token first');
+		return;
+	}
+
+	if (process.env.LSH_GEN1_MUTANT_TOKEN_ID) {
+		LSH_GEN1_MUTANT = TokenId.fromString(process.env.LSH_GEN1_MUTANT_TOKEN_ID);
+		console.log('LSH_GEN1_MUTANT_TOKEN_ID -> ', LSH_GEN1_MUTANT.toString());
+	}
+	else {
+		console.log('LSH_GEN1_MUTANT_TOKEN_ID -> ', process.env.LSH_GEN1_MUTANT_TOKEN_ID);
+		console.log('Missing from .env file, please deploy the LSH Gen 1 Mutant Token first');
 		return;
 	}
 
@@ -286,6 +296,7 @@ const main = async () => {
 		.addAddress(ldrId.toSolidityAddress())
 		.addAddress(LSH_GEN1.toSolidityAddress())
 		.addAddress(LSH_GEN2.toSolidityAddress())
+		.addAddress(LSH_GEN1_MUTANT.toSolidityAddress())
 		.addUint256(LAZY_COST_FOR_TRADE)
 		.addUint256(LAZY_BURN_PERCENT);
 

@@ -396,6 +396,7 @@ describe('Deployment', () => {
 			.addAddress(ldrAddress.toSolidityAddress())
 			.addAddress(StkNFTB_TokenId.toSolidityAddress())
 			.addAddress(StkNFTC_TokenId.toSolidityAddress())
+			.addAddress(StkNFTC_TokenId.toSolidityAddress())
 			.addUint256(LAZY_COST_FOR_TRADE)
 			.addUint256(LAZY_BURN_PERCENT);
 
