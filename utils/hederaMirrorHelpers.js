@@ -339,13 +339,13 @@ async function checkNFTOwnership(env, _tokenId, _serial) {
 /**
  * Get the token decimal form mirror
  * @param {string} env
- * @param {TokenId} _tokenId
+ * @param {TokenId|string} _tokenId
  * @returns {Object} details of the token
  */
 async function getTokenDetails(env, _tokenId) {
+	const tokenAsString = typeof _tokenId === 'string' ? _tokenId : _tokenId.toString();
 	const baseUrl = getBaseURL(env);
-	const url = `${baseUrl}/api/v1/tokens/${_tokenId}`;
-
+	const url = `${baseUrl}/api/v1/tokens/${tokenAsString}`;
 	let rtnVal = null;
 	await axios.get(url)
 		.then((response) => {
