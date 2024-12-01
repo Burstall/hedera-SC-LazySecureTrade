@@ -20,9 +20,10 @@ const env = process.env.ENVIRONMENT ?? null;
 const main = async () => {
 
 	const args = process.argv.slice(2);
-	if (args.length != 1 || getArgFlag('h')) {
-		console.log('Usage: getLiveTradesFromEvents.js 0.0.STC');
+	if ((args.length > 2 || args.length < 1) || getArgFlag('h')) {
+		console.log('Usage: getLiveTradesFromEvents.js 0.0.STC [-exclude]');
 		console.log('       STC is the secure trade contract');
+		console.log('       -exclude will exclude completed and cancelled trades');
 		return;
 	}
 
@@ -45,9 +46,11 @@ const main = async () => {
 	const tradesMap = await getEventsFromMirror(contractId, stcIface);
 
 	// filter out the completed and cancelled trades
-	for (const trade of tradesMap) {
-		if (trade[1].completed || trade[1].cancelled) {
-			tradesMap.delete(trade[0]);
+	if (getArgFlag('exclude')) {
+		for (const trade of tradesMap) {
+			if (trade[1].completed || trade[1].cancelled) {
+				tradesMap.delete(trade[0]);
+			}
 		}
 	}
 
