@@ -209,7 +209,7 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 	while (url);
 
 	// post the last timestamp to the events table to enable status to persist across restarts
-	await postLastestTimestampToDirectus(contractId.toString(), maxTimestamp);
+	if (maxTimestamp != 0) await postLastestTimestampToDirectus(contractId.toString(), maxTimestamp);
 
 	return tradesMap;
 }
