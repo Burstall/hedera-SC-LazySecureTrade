@@ -17,6 +17,7 @@ const eventsTable = process.env.SECURE_TRADE_EVENTS_TABLE ?? 'secureTradeEvents'
 const cacheTable = process.env.SECURE_TRADE_CACHE_TABLE ?? 'SecureTradesCache';
 const client = createDirectus(process.env.DIRECTUS_DB_URL).with(rest());
 const writeClient = createDirectus(process.env.DIRECTUS_DB_URL).with(staticToken(process.env.DIRECTUS_TOKEN)).with(rest());
+const supressLogs = process.env.SECURE_TRADE_SUPRESS_LOGS === '1' || process.env.SECURE_TRADE_SUPRESS_LOGS === 'true';
 
 const main = async () => {
 
@@ -50,15 +51,15 @@ const main = async () => {
 
 	const contractId = ContractId.fromString(secureTradeContract);
 
-	console.log('\n-Using ENIVRONMENT:', env, 'operatorId:', operatorId, 'contractId:', contractId.toString());
+	if (!supressLogs) console.log('\n-Using ENIVRONMENT:', env, 'operatorId:', operatorId, 'contractId:', contractId.toString());
 
 	// look up the last hash from the EVENTS table
 	const lastRecord = await getLastHashFromDirectus(contractId.toString());
 
 	if (!lastRecord) {
-		console.log('INFO: No last timestamp found in the events table - fetching all logs');
+		if (!supressLogs) console.log('INFO: No last timestamp found in the events table - fetching all logs');
 	}
-	else {
+	else if (!supressLogs) {
 		console.log('INFO: Last timestamp found in the events table:', lastRecord, '[', new Date(lastRecord * 1000).toUTCString(), ']');
 	}
 
@@ -73,17 +74,17 @@ const main = async () => {
 	// Call the function to fetch logs
 	let tradesMap = await getEventsFromMirror(contractId, stcIface, lastRecord);
 
-	console.log('Found', tradesMap.size, 'trades');
+	if (!supressLogs) console.log('Found', tradesMap.size, 'trades');
 
 	// get the max nonce from the cache table
 	const maxNonce = await getMaxNonceFromDirectus(contractId.toString());
 
-	console.log('Max nonce in cache table:', maxNonce);
+	if (!supressLogs) console.log('Max nonce in cache table:', maxNonce);
 
 	// filter out trades that have nonce less than the max nonce
 	tradesMap = new Map([...tradesMap].filter(([, value]) => value.nonce > maxNonce));
 
-	console.log('POST FILTER: Found', tradesMap.size, 'trades');
+	if (!supressLogs) console.log('POST FILTER: Found', tradesMap.size, 'trades');
 
 	if (tradesMap) {
 		// split the trades into batches of 100
@@ -95,10 +96,10 @@ const main = async () => {
 		}
 
 		for (const [hash, trade] of tradesMap) {
-			console.log(hash, '->', trade.toString());
+			if (!supressLogs) console.log(hash, '->', trade.toString());
 		}
 	}
-	else { console.log('INFO: No new trades found'); }
+	else if (!supressLogs) { console.log('INFO: No new trades found'); }
 };
 
 async function getEventsFromMirror(contractId, iface, lastTimestamp) {
@@ -388,7 +389,7 @@ class TradeObject {
 
 main()
 	.then(() => {
-		console.log('INFO: Completed @', new Date().toUTCString());
+		if (!supressLogs) console.log('INFO: Completed @', new Date().toUTCString());
 		process.exit(0);
 	})
 	.catch((error) => {
