@@ -5,7 +5,6 @@ const {
 	HbarUnit,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
-const fs = require('fs');
 const { ethers } = require('ethers');
 const { getArgFlag } = require('../../utils/nodeHelpers');
 const { getBaseURL } = require('../../utils/hederaMirrorHelpers');
@@ -13,9 +12,6 @@ const { default: axios } = require('axios');
 const { createDirectus, rest, readItems, staticToken, updateItem, createItem, createItems } = require('@directus/sdk');
 
 const operatorId = process.env.ACCOUNT_ID ?? '0.0.888';
-
-const contractName = 'LazySecureTrade';
-
 const env = process.env.SECURE_TRADE_ENV ?? null;
 const eventsTable = process.env.SECURE_TRADE_EVENTS_TABLE ?? 'secureTradeEvents';
 const cacheTable = process.env.SECURE_TRADE_CACHE_TABLE ?? 'SecureTradesCache';
@@ -66,14 +62,13 @@ const main = async () => {
 		console.log('INFO: Last timestamp found in the events table:', lastRecord, '[', new Date(lastRecord * 1000).toUTCString(), ']');
 	}
 
-	// import ABI
-	const stcJSON = JSON.parse(
-		fs.readFileSync(
-			`./artifacts/contracts/${contractName}.sol/${contractName}.json`,
-		),
+	const stcIface = new ethers.Interface(
+		[
+			'event TradeCreated(address indexed seller, address indexed buyer, address indexed token, uint256 serial, uint256 tinybarPrice, uint256 lazyPrice, uint256 expiryTime, uint256 nonce)',
+			'event TradeCancelled(address indexed seller, address indexed token, uint256 serial, uint256 nonce)',
+			'event TradeCompleted(address indexed seller, address indexed buyer, address indexed token, uint256 serial, uint256 nonce)',
+		],
 	);
-
-	const stcIface = new ethers.Interface(stcJSON.abi);
 
 	// Call the function to fetch logs
 	let tradesMap = await getEventsFromMirror(contractId, stcIface, lastRecord);
