@@ -2,13 +2,13 @@ const { AccountId } = require('@hashgraph/sdk');
 const { default: axios } = require('axios');
 
 function getBaseURL(env) {
-	if (env.toLowerCase() == 'test') {
+	if (env.toLowerCase() == 'test' || env.toLowerCase() == 'testnet') {
 		return 'https://testnet.mirrornode.hedera.com';
 	}
-	else if (env.toLowerCase() == 'main') {
+	else if (env.toLowerCase() == 'main' || env.toLowerCase() == 'mainnet') {
 		return 'https://mainnet-public.mirrornode.hedera.com';
 	}
-	else if (env.toLowerCase() == 'preview') {
+	else if (env.toLowerCase() == 'preview' || env.toLowerCase() == 'previewnet') {
 		return 'https://previewnet.mirrornode.hedera.com';
 	}
 	else if (env.toLowerCase() == 'local') {

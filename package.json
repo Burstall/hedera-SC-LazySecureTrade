@@ -29,6 +29,7 @@
     "solidity-coverage": "^0.8.5"
   },
   "dependencies": {
+    "@directus/sdk": "^15",
     "@hashgraph/sdk": "^2.18.3",
     "@nomicfoundation/hardhat-toolbox": "^3.0.0",
     "@openzeppelin/contracts": "^4.6.0",
