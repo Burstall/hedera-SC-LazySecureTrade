@@ -6,8 +6,6 @@ const {
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const { ethers } = require('ethers');
-const { getArgFlag } = require('../../utils/nodeHelpers');
-const { getBaseURL } = require('../../utils/hederaMirrorHelpers');
 const { default: axios } = require('axios');
 const { createDirectus, rest, readItems, staticToken, updateItem, createItem, createItems } = require('@directus/sdk');
 
@@ -103,7 +101,7 @@ const main = async () => {
 };
 
 async function getEventsFromMirror(contractId, iface, lastTimestamp) {
-	const baseUrl = getBaseURL(env);
+	const baseUrl = getBaseURL();
 
 	let url;
 
@@ -384,6 +382,25 @@ class TradeObject {
 
 	toString() {
 		return `Seller: ${this.seller}, Buyer: ${this.buyer}, TokenId: ${this.tokenId}, Serial: ${this.serial}, Price: ${new Hbar(this.tinybarPrice, HbarUnit.Tinybar).toString()}, LazyPrice: ${this.lazyPrice / 10} $LAZY, ExpiryTime: ${this.expiryTime ? new Date(this.expiryTime * 1000).toUTCString() : 'NONE'}, Nonce: ${this.nonce}, Completed: ${this.completed}, Cancelled: ${this.canceled}`;
+	}
+}
+
+function getArgFlag(flag) {
+	return process.argv.includes(`--${flag}`);
+}
+
+function getBaseURL() {
+	switch (env) {
+	case 'mainnet':
+		return 'https://mainnet-public.mirrornode.hedera.com';
+	case 'testnet':
+		return 'https://testnet.mirrornode.hedera.com';
+	case 'previewnet':
+		return 'https://previewnet.mirrornode.hedera.com';
+	case 'local':
+		return 'http://localhost:5551';
+	default:
+		throw new Error(`Unknown environment: ${env}`);
 	}
 }
 
