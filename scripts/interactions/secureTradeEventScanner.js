@@ -198,7 +198,9 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 			}
 		});
 
-		url = jsonResponse.next;
+		if (!jsonResponse.links || !jsonResponse.links.next) break;
+
+		url = `${baseUrl}${jsonResponse.links.next}`;
 	}
 	while (url);
 
