@@ -1,8 +1,8 @@
 const {
 	ContractId,
-	AccountId,
 	Hbar,
 	HbarUnit,
+	TokenId,
 } = require('@hashgraph/sdk');
 require('dotenv').config();
 const { ethers } = require('ethers');
@@ -16,6 +16,9 @@ const cacheTable = process.env.SECURE_TRADE_CACHE_TABLE ?? 'SecureTradesCache';
 const client = createDirectus(process.env.DIRECTUS_DB_URL).with(rest());
 const writeClient = createDirectus(process.env.DIRECTUS_DB_URL).with(staticToken(process.env.DIRECTUS_TOKEN)).with(rest());
 const supressLogs = process.env.SECURE_TRADE_SUPRESS_LOGS === '1' || process.env.SECURE_TRADE_SUPRESS_LOGS === 'true';
+
+const evmToHederaMap = new Map();
+evmToHederaMap.set(ethers.ZeroAddress, '0.0.0');
 
 const main = async () => {
 
@@ -71,6 +74,11 @@ const main = async () => {
 
 	// Call the function to fetch logs
 	let tradesMap = await getEventsFromMirror(contractId, stcIface, lastRecord);
+
+	// initialize the account numbers
+	for (const [, trade] of tradesMap) {
+		await trade.initialize();
+	}
 
 	if (!supressLogs) console.log('Found', tradesMap.size, 'trades');
 
@@ -163,8 +171,8 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 
 			// hash = ethers.solidityPackedKeccak256(['address', 'uint256'], [token.toSolidityAddress(), serial]);
 			switch (event.name) {
-			case 'TradeCreated':
-				tradesMap.set(ethers.solidityPackedKeccak256(['address', 'uint256'], [event.args[2], event.args[3]]), new TradeObject(
+			case 'TradeCreated': {
+				const tradeObj = new TradeObject(
 					event.args[0],
 					event.args[1],
 					event.args[2],
@@ -173,8 +181,10 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 					event.args[5],
 					event.args[6],
 					event.args[7],
-				));
+				);
+				tradesMap.set(ethers.solidityPackedKeccak256(['address', 'uint256'], [event.args[2], event.args[3]]), tradeObj);
 				break;
+			}
 			case 'TradeCompleted':
 				// if the trade is not in the map then it was created before the last timestamp
 				// so we just need to update the DB with markTradeAsCompletedInDb
@@ -302,6 +312,7 @@ async function uploadTradesToDirectus(tradeContractId, trades) {
 	const tradesToUpload = trades.map(trade => {
 		return {
 			tradeContract: tradeContractId,
+			hash: trade.hash,
 			seller: trade.seller,
 			buyer: trade.buyer,
 			token: trade.tokenId,
@@ -357,9 +368,10 @@ async function getLastHashFromDirectus(tradeContractId) {
 
 class TradeObject {
 	constructor(seller, buyer, tokenId, serial, tinybarPrice, lazyPrice, expiryTime, nonce) {
-		this.seller = AccountId.fromEvmAddress(0, 0, seller).toString();
-		this.buyer = AccountId.fromEvmAddress(0, 0, buyer).toString();
-		this.tokenId = AccountId.fromEvmAddress(0, 0, tokenId).toString();
+		this.hash = ethers.solidityPackedKeccak256(['address', 'uint256'], [tokenId, serial]);
+		this.seller = seller;
+		this.buyer = buyer;
+		this.tokenId = TokenId.fromSolidityAddress(tokenId).toString();
 		this.serial = parseInt(serial);
 		this.tinybarPrice = Number(tinybarPrice);
 		this.lazyPrice = Number(lazyPrice);
@@ -368,6 +380,11 @@ class TradeObject {
 
 		this.completed = false;
 		this.canceled = false;
+	}
+
+	async initialize() {
+		this.seller = await homebrewPopulateAccountNum(this.seller);
+		this.buyer = await homebrewPopulateAccountNum(this.buyer);
 	}
 
 	isPublicTrade() {
@@ -383,9 +400,37 @@ class TradeObject {
 	}
 
 	toString() {
-		return `Seller: ${this.seller}, Buyer: ${this.buyer}, TokenId: ${this.tokenId}, Serial: ${this.serial}, Price: ${new Hbar(this.tinybarPrice, HbarUnit.Tinybar).toString()}, LazyPrice: ${this.lazyPrice / 10} $LAZY, ExpiryTime: ${this.expiryTime ? new Date(this.expiryTime * 1000).toUTCString() : 'NONE'}, Nonce: ${this.nonce}, Completed: ${this.completed}, Cancelled: ${this.canceled}`;
+		return `Hash: ${this.hash}, Seller: ${this.seller}, Buyer: ${this.buyer}, TokenId: ${this.tokenId}, Serial: ${this.serial}, Price: ${new Hbar(this.tinybarPrice, HbarUnit.Tinybar).toString()}, LazyPrice: ${this.lazyPrice / 10} $LAZY, ExpiryTime: ${this.expiryTime ? new Date(this.expiryTime * 1000).toUTCString() : 'NONE'}, Nonce: ${this.nonce}, Completed: ${this.completed}, Cancelled: ${this.canceled}`;
 	}
 }
+
+const homebrewPopulateAccountNum = async function(evmAddress, counter = 0) {
+	if (evmToHederaMap.has(evmAddress)) {
+		return evmToHederaMap.get(evmAddress);
+	}
+
+	if (evmAddress === null) {
+		throw new Error('field `evmAddress` should not be null');
+	}
+
+	const mirrorUrl = getBaseURL();
+
+	try {
+		const url = `${mirrorUrl}/api/v1/accounts/${evmAddress}`;
+
+		const acct = (await axios.get(url)).data.account;
+
+		evmToHederaMap.set(evmAddress, acct);
+
+		return acct;
+	}
+	catch (error) {
+		console.error(counter, ': ERROR: Unable to fetch account number for', evmAddress);
+		// back off for 0.5-3 seconds
+		await new Promise(resolve => setTimeout(resolve, Math.random() * 2500 + 500));
+		return homebrewPopulateAccountNum(evmAddress, counter + 1);
+	}
+};
 
 function getArgFlag(flag) {
 	return process.argv.includes(`--${flag}`);
