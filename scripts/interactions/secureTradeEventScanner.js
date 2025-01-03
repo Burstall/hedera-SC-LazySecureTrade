@@ -127,6 +127,7 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 
 	do {
 		const response = await axios.get(url);
+		console.log('INFO: Fetching logs from', url);
 		const jsonResponse = response.data;
 		jsonResponse.logs.forEach(log => {
 			// decode the event data
@@ -216,29 +217,40 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 
 	// post the last timestamp to the events table to enable status to persist across restarts
 	if (maxTimestamp != 0) await postLastestTimestampToDirectus(contractId.toString(), maxTimestamp);
+	console.log('INFO: Max timestamp:', maxTimestamp, '[', new Date(maxTimestamp * 1000).toUTCString(), ']');
 
 	return tradesMap;
 }
 
 async function postLastestTimestampToDirectus(tradeContractId, timestamp) {
-	const response = await client.request(readItems(eventsTable, {
-		fields: ['id'],
-		filter: {
-			tradeContract: {
-				_eq: tradeContractId.toString(),
+	console.log('INFO: Posting latest timestamp to Directus', timestamp, tradeContractId.toString(), eventsTable);
+	try {
+		const response = await client.request(readItems(eventsTable, {
+			fields: ['id'],
+			filter: {
+				tradeContract: {
+					_eq: tradeContractId.toString(),
+				},
+				environment: {
+					_eq: env,
+				},
 			},
-			environment: {
-				_eq: env,
-			},
-		},
-		limit: 1,
-	}));
+			limit: 1,
+		}));
 
-	if (!response || response.length == 0) {
-		await writeClient.request(createItem(eventsTable, { tradeContract: tradeContractId, lastTimestamp: timestamp, environment: env }));
+		console.log('INFO: Response from Directus', response);
+
+		if (!response || response.length == 0) {
+			await writeClient.request(createItem(eventsTable, { tradeContract: tradeContractId, lastTimestamp: timestamp, environment: env }));
+		}
+		else {
+			await writeClient.request(updateItem(eventsTable, response[0].id, { lastTimestamp: timestamp }));
+		}
 	}
-	else {
-		await writeClient.request(updateItem(eventsTable, response[0].id, { lastTimestamp: timestamp }));
+	catch (error) {
+		console.log('ERROR: Unable to post latest timestamp to Directus');
+		console.error(error);
+		process.exit(1);
 	}
 }
 
@@ -280,25 +292,32 @@ async function markTradeAsCompletedOrCancelledInDb(tradeContractId, tokenId, ser
 }
 
 async function getMaxNonceFromDirectus(tradeContractId) {
-	const response = await client.request(readItems(cacheTable, {
-		fields: ['nonce'],
-		filter: {
-			tradeContract: {
-				_eq: tradeContractId.toString(),
+	try {
+		const response = await client.request(readItems(cacheTable, {
+			fields: ['nonce'],
+			filter: {
+				tradeContract: {
+					_eq: tradeContractId.toString(),
+				},
+				environment: {
+					_eq: env,
+				},
 			},
-			environment: {
-				_eq: env,
-			},
-		},
-		sort: ['-nonce'],
-		limit: 1,
-	}));
+			sort: ['-nonce'],
+			limit: 1,
+		}));
 
-	if (!response || response.length == 0) {
-		return 0;
+		if (!response || response.length == 0) {
+			return 0;
+		}
+
+		return response[0].nonce;
 	}
-
-	return response[0].nonce;
+	catch (error) {
+		console.log('ERROR: Unable to fetch max nonce from Directus');
+		console.error(error);
+		process.exit(1);
+	}
 }
 
 /**
