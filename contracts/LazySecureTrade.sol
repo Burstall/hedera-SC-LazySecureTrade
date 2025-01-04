@@ -179,7 +179,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             tinybarPrice: _tinybarPrice,
             lazyPrice: _lazyPrice,
             expiryTime: _expiryTime,
-            nonce: tradeNonce++
+            nonce: ++tradeNonce
         });
 
         allTradesMap[tradeId] = trade;
