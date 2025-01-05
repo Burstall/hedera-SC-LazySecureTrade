@@ -281,15 +281,17 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 			lazyGasStation.drawLazyFromPayTo(msg.sender, trade.lazyPrice, 0, trade.seller);
 		}
 
-		// use TokenStaker moveNFTs to move the NFT from seller to the Smart Contract
-		// then use moveNFTs to move the NFT from the Smart Contract to the buyer
+		// use TokenStaker batchMoveNFTs to move the NFT from seller to the Smart Contract
+		// then use batchMoveNFTs to move the NFT from the Smart Contract to the buyer
+		// USING BATCHMOVE FOR A SINGLE NFT IS OVERKILL - but it is a good pattern to follow
+		// as it hooks into the refill() modifier to ensure the contract has sufficient HBAR
 
 		// single serial for now (version 0.1)
 		uint256[] memory serials = new uint256[](1);
 		serials[0] = trade.serial;
 
 		// Seller to Smart Contract
-		moveNFTs(
+		batchMoveNFTs(
 			TransferDirection.STAKING,
 			trade.token,
 			serials,
@@ -298,7 +300,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 			int64(Math.max(trade.tinybarPrice, 1).toUint64()));
 
 		// Smart Contract to Buyer
-		moveNFTs(
+		batchMoveNFTs(
 			TransferDirection.WITHDRAWAL,
 			trade.token,
 			serials,

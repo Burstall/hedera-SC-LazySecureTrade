@@ -65,6 +65,8 @@ contract TokenStaker is HederaTokenService {
         }
     }
 
+    // **DOES NOT HAVE REFILL MODIFIER**
+    // USE BATCHMOVE FOR REFILLING first
     //function to transfer NFTs
     function moveNFTs(
         TransferDirection _direction,
