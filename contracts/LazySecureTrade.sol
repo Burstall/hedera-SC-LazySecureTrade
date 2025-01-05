@@ -9,6 +9,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {EnumerableMap} from "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
@@ -294,7 +295,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 			serials,
 			trade.seller,
 			false,
-			int64(trade.tinybarPrice.toUint64()));
+			int64(Math.max(trade.tinybarPrice, 1).toUint64()));
 
 		// Smart Contract to Buyer
 		moveNFTs(
