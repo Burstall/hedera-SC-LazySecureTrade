@@ -162,6 +162,12 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     error EmptyBatchNotAllowed();
     error NonAtomicBatchNotSupported(); // Use createMultipleTrades instead
 
+    // Payment and Transfer Errors
+    error OnlySelfCallAllowed();
+    error HBARRefundFailed();
+    error HBARPaymentFailed();
+    error SellerPaymentFailed();
+
     mapping(address => EnumerableSet.Bytes32Set) private userTradesMap;
     mapping(address => EnumerableSet.Bytes32Set) private tokenTradesMap;
     mapping(bytes32 => Trade) private allTradesMap;
@@ -184,7 +190,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     uint256 public contractSunset;
 
     // v0.2 Configuration Parameters
-    uint256 public arbitrageSplit = 5000; // 50.00% in basis points (owner configurable)
     uint256 public constant MAX_NEW_TOKEN_ASSOCIATIONS = 6; // Hard limit per batch operation
 
     constructor(
@@ -802,7 +807,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             (bool success, ) = payable(msg.sender).call{
                 value: msg.value - totalHbarUsed
             }("");
-            require(success, "HBAR refund failed");
+            if (!success) revert HBARRefundFailed();
         }
 
         emit MultipleTradesExecuted(
@@ -819,7 +824,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
      * @param _buyer The buyer address
      */
     function _executeSingleTrade(bytes32 _tradeId, address _buyer) external {
-        require(msg.sender == address(this), "Only self-call allowed");
+        if (msg.sender != address(this)) revert OnlySelfCallAllowed();
 
         Trade storage trade = allTradesMap[_tradeId];
 
@@ -856,7 +861,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             (bool success, ) = payable(trade.seller).call{
                 value: trade.tinybarPrice
             }("");
-            require(success, "HBAR payment failed");
+            if (!success) revert HBARPaymentFailed();
         }
 
         if (trade.lazyPrice > 0) {
@@ -1318,26 +1323,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // Ensure atomic execution by checking all prerequisites first
         _validateBatchTradeExecution(batchTrade);
 
-        // Calculate arbitrage payments if applicable
-        uint256 arbitrageTinybar = 0;
-        uint256 arbitrageLazy = 0;
-        if (batchTrade.buyer == address(0)) {
-            arbitrageTinybar =
-                (batchTrade.totalTinybarPrice * arbitrageSplit) /
-                10000;
-            arbitrageLazy =
-                (batchTrade.totalLazyPrice * arbitrageSplit) /
-                10000;
-        }
-
         // Execute all transfers atomically
-        try
-            this._executeBatchTransfers(
-                _batchId,
-                arbitrageTinybar,
-                arbitrageLazy
-            )
-        {
+        try this._executeBatchTransfers(_batchId) {
             // Clean up storage
             _cleanupBatchTrade(_batchId, batchTrade);
 
@@ -1417,15 +1404,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     /***
      * @notice Internal function to execute all batch transfers
      * @param _batchId The batch trade ID
-     * @param arbitrageTinybar Arbitrage payment in tinybar
-     * @param arbitrageLazy Arbitrage payment in $LAZY
      */
-    function _executeBatchTransfers(
-        bytes32 _batchId,
-        uint256 arbitrageTinybar,
-        uint256 arbitrageLazy
-    ) external {
-        require(msg.sender == address(this), "Only self-call allowed");
+    function _executeBatchTransfers(bytes32 _batchId) external {
+        if (msg.sender != address(this)) revert OnlySelfCallAllowed();
 
         BatchTrade storage batchTrade = batchTradesMap[_batchId];
 
@@ -1455,43 +1436,21 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             }
         }
 
-        // Handle payments
+        // Handle payments - direct payment to seller (no arbitrage logic)
         if (batchTrade.totalTinybarPrice > 0) {
-            uint256 sellerAmount = batchTrade.totalTinybarPrice -
-                arbitrageTinybar;
-
-            if (arbitrageTinybar > 0) {
-                // Send arbitrage to caller
-                (bool arbitrageSuccess, ) = payable(tx.origin).call{
-                    value: arbitrageTinybar
-                }("");
-                require(arbitrageSuccess, "Arbitrage payment failed");
-            }
-
-            // Send payment to seller
+            // Send full payment to seller
             (bool sellerSuccess, ) = payable(batchTrade.seller).call{
-                value: sellerAmount
+                value: batchTrade.totalTinybarPrice
             }("");
-            require(sellerSuccess, "Seller payment failed");
+            if (!sellerSuccess) revert SellerPaymentFailed();
         }
 
         if (batchTrade.totalLazyPrice > 0) {
-            uint256 sellerAmount = batchTrade.totalLazyPrice - arbitrageLazy;
-
-            if (arbitrageLazy > 0) {
-                // Transfer arbitrage to caller
-                IERC20(lazyToken).transferFrom(
-                    msg.sender,
-                    tx.origin,
-                    arbitrageLazy
-                );
-            }
-
-            // Transfer payment to seller
+            // Transfer full payment to seller
             IERC20(lazyToken).transferFrom(
                 msg.sender,
                 batchTrade.seller,
-                sellerAmount
+                batchTrade.totalLazyPrice
             );
         }
     }
