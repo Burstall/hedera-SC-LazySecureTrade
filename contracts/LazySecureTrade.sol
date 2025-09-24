@@ -1738,7 +1738,29 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // Create trade ID
         tradeId = keccak256(abi.encodePacked(_token, _serial));
 
-        // Create the trade (overwrite any existing trade for this NFT)
+        // Check if trade already exists and clean up before overwriting
+        Trade storage existingTrade = allTradesMap[tradeId];
+        bool tradeExists = existingTrade.seller != address(0);
+
+        if (tradeExists) {
+            // Always emit TradeCancelled event for the old trade before overwriting
+            emit TradeCancelled(
+                msg.sender,
+                _token,
+                _serial,
+                existingTrade.nonce
+            );
+
+            // Clean up old mappings
+            userTradesMap[existingTrade.seller].remove(tradeId);
+            if (existingTrade.buyer != address(0)) {
+                userTradesMap[existingTrade.buyer].remove(tradeId);
+            } else {
+                tokenTradesMap[_token].remove(tradeId);
+            }
+        }
+
+        // Create/overwrite the trade
         Trade storage trade = allTradesMap[tradeId];
         trade.seller = msg.sender;
         trade.buyer = _buyer;
@@ -1749,7 +1771,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         trade.expiryTime = _expiryTime;
         trade.nonce = ++tradeNonce;
 
-        // Add to user mappings
+        // Add to appropriate mappings (always add since we cleaned up above if trade existed)
         userTradesMap[msg.sender].add(tradeId);
         if (_buyer != address(0)) {
             userTradesMap[_buyer].add(tradeId);

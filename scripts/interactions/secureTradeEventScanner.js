@@ -1,3 +1,22 @@
+/**
+ * LazySecureTrade Event Scanner v0.2
+ *
+ * Scans Hedera Mirror Node for LazySecureTrade contract events and caches them in Directus DB.
+ *
+ * v0.1 Features:
+ * - Individual trade scanning (TradeCreated, TradeCancelled, TradeCompleted)
+ * - Trade overwrite detection with automatic cleanup
+ * - Incremental scanning with timestamp persistence
+ *
+ * v0.2 NEW Features:
+ * - Batch trade events (BatchTradeCreated, BatchTradeExecuted, BatchTradeCancelled)
+ * - Multiple operation events (MultipleTradesCreated, MultipleTradesExecuted, MultipleTradesCancelled)
+ * - Token association events (TokenAssociationBatch)
+ * - Enhanced ABI with all v0.2 event definitions
+ *
+ * Usage: node secureTradeEventScanner.js [0.0.ContractId]
+ */
+
 const {
 	ContractId,
 	Hbar,
@@ -66,9 +85,23 @@ const main = async () => {
 
 	const stcIface = new ethers.Interface(
 		[
+			// v0.1 Core Trade Events
 			'event TradeCreated(address indexed seller, address indexed buyer, address indexed token, uint256 serial, uint256 tinybarPrice, uint256 lazyPrice, uint256 expiryTime, uint256 nonce)',
 			'event TradeCancelled(address indexed seller, address indexed token, uint256 serial, uint256 nonce)',
 			'event TradeCompleted(address indexed seller, address indexed buyer, address indexed token, uint256 serial, uint256 nonce)',
+
+			// v0.2 NEW: Batch Trade Events
+			'event BatchTradeCreated(bytes32 indexed batchId, address indexed seller, address indexed buyer, uint256 itemCount, uint256 totalTinybarPrice, uint256 totalLazyPrice)',
+			'event BatchTradeExecuted(bytes32 indexed batchId, address indexed buyer, uint256 itemCount, uint256 totalTinybarPrice, uint256 totalLazyPrice)',
+			'event BatchTradeCancelled(bytes32 indexed batchId, address indexed canceller, uint256 itemCount)',
+
+			// v0.2 NEW: Multiple Operation Events
+			'event MultipleTradesCreated(address indexed seller, address indexed buyer, uint256 successCount, uint256 totalLazyCost)',
+			'event MultipleTradesExecuted(address indexed buyer, uint256 executedCount, uint256 failedCount, uint256 totalHbarUsed)',
+			'event MultipleTradesCancelled(address indexed canceller, uint256 cancelledCount)',
+
+			// v0.2 NEW: Token Association Events
+			'event TokenAssociationBatch(address[] tokens, uint256 associationCount, uint256 gasCost)',
 		],
 	);
 
@@ -204,7 +237,42 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 				}
 				tradesMap.get(ethers.solidityPackedKeccak256(['address', 'uint256'], [event.args[1], event.args[2]]))?.cancel();
 				break;
+
+			// v0.2 NEW: Batch Trade Events
+			case 'BatchTradeCreated':
+				if (!supressLogs) console.log('v0.2 BatchTradeCreated:', event.args[0], 'seller:', event.args[1], 'buyer:', event.args[2], 'items:', event.args[3].toString());
+				// Note: BatchTrades require separate handling - they don't fit the individual trade model
+				// Consider implementing BatchTradeObject class for full batch trade caching
+				break;
+
+			case 'BatchTradeExecuted':
+				if (!supressLogs) console.log('v0.2 BatchTradeExecuted:', event.args[0], 'buyer:', event.args[1], 'items:', event.args[2].toString());
+				break;
+
+			case 'BatchTradeCancelled':
+				if (!supressLogs) console.log('v0.2 BatchTradeCancelled:', event.args[0], 'canceller:', event.args[1], 'items:', event.args[2].toString());
+				break;
+
+			// v0.2 NEW: Multiple Operation Events (Summary events)
+			case 'MultipleTradesCreated':
+				if (!supressLogs) console.log('v0.2 MultipleTradesCreated: seller:', event.args[0], 'buyer:', event.args[1], 'success:', event.args[2].toString(), 'lazyCost:', event.args[3].toString());
+				break;
+
+			case 'MultipleTradesExecuted':
+				if (!supressLogs) console.log('v0.2 MultipleTradesExecuted: buyer:', event.args[0], 'executed:', event.args[1].toString(), 'failed:', event.args[2].toString(), 'hbarUsed:', event.args[3].toString());
+				break;
+
+			case 'MultipleTradesCancelled':
+				if (!supressLogs) console.log('v0.2 MultipleTradesCancelled: canceller:', event.args[0], 'count:', event.args[1].toString());
+				break;
+
+			// v0.2 NEW: Token Association Events
+			case 'TokenAssociationBatch':
+				if (!supressLogs) console.log('v0.2 TokenAssociationBatch: tokens:', event.args[0].length, 'associated:', event.args[1].toString(), 'gasCost:', event.args[2].toString());
+				break;
+
 			default:
+				if (!supressLogs) console.log('Unknown event:', event.name);
 				break;
 			}
 		});
@@ -423,7 +491,7 @@ class TradeObject {
 	}
 }
 
-const homebrewPopulateAccountNum = async function(evmAddress, counter = 0) {
+const homebrewPopulateAccountNum = async function (evmAddress, counter = 0) {
 	if (evmToHederaMap.has(evmAddress)) {
 		return evmToHederaMap.get(evmAddress);
 	}
