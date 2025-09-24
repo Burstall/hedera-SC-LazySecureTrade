@@ -10,8 +10,7 @@
  *
  * v0.2 NEW Features:
  * - Batch trade events (BatchTradeCreated, BatchTradeExecuted, BatchTradeCancelled)
- * - Multiple operation events (MultipleTradesCreated, MultipleTradesExecuted, MultipleTradesCancelled)
- * - Token association events (TokenAssociationBatch)
+ * - Token association events (TokenAssociated)
  * - Enhanced ABI with all v0.2 event definitions
  *
  * Usage: node secureTradeEventScanner.js [0.0.ContractId]
@@ -95,13 +94,8 @@ const main = async () => {
 			'event BatchTradeExecuted(bytes32 indexed batchId, address indexed buyer, uint256 itemCount, uint256 totalTinybarPrice, uint256 totalLazyPrice)',
 			'event BatchTradeCancelled(bytes32 indexed batchId, address indexed canceller, uint256 itemCount)',
 
-			// v0.2 NEW: Multiple Operation Events
-			'event MultipleTradesCreated(address indexed seller, address indexed buyer, uint256 successCount, uint256 totalLazyCost)',
-			'event MultipleTradesExecuted(address indexed buyer, uint256 executedCount, uint256 failedCount, uint256 totalHbarUsed)',
-			'event MultipleTradesCancelled(address indexed canceller, uint256 cancelledCount)',
-
 			// v0.2 NEW: Token Association Events
-			'event TokenAssociationBatch(address[] tokens, uint256 associationCount, uint256 gasCost)',
+			'event TokenAssociated(address indexed token, address indexed account)',
 		],
 	);
 
@@ -253,22 +247,9 @@ async function getEventsFromMirror(contractId, iface, lastTimestamp) {
 				if (!supressLogs) console.log('v0.2 BatchTradeCancelled:', event.args[0], 'canceller:', event.args[1], 'items:', event.args[2].toString());
 				break;
 
-			// v0.2 NEW: Multiple Operation Events (Summary events)
-			case 'MultipleTradesCreated':
-				if (!supressLogs) console.log('v0.2 MultipleTradesCreated: seller:', event.args[0], 'buyer:', event.args[1], 'success:', event.args[2].toString(), 'lazyCost:', event.args[3].toString());
-				break;
-
-			case 'MultipleTradesExecuted':
-				if (!supressLogs) console.log('v0.2 MultipleTradesExecuted: buyer:', event.args[0], 'executed:', event.args[1].toString(), 'failed:', event.args[2].toString(), 'hbarUsed:', event.args[3].toString());
-				break;
-
-			case 'MultipleTradesCancelled':
-				if (!supressLogs) console.log('v0.2 MultipleTradesCancelled: canceller:', event.args[0], 'count:', event.args[1].toString());
-				break;
-
 			// v0.2 NEW: Token Association Events
-			case 'TokenAssociationBatch':
-				if (!supressLogs) console.log('v0.2 TokenAssociationBatch: tokens:', event.args[0].length, 'associated:', event.args[1].toString(), 'gasCost:', event.args[2].toString());
+			case 'TokenAssociated':
+				if (!supressLogs) console.log('v0.2 TokenAssociated: token:', event.args[0], 'payer:', event.args[1]);
 				break;
 
 			default:

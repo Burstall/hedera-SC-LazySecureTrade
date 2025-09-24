@@ -45,13 +45,8 @@ const lazySecureTradeABI = [
   'event BatchTradeExecuted(bytes32 indexed batchId, address indexed buyer, uint256 itemCount, uint256 totalTinybarPrice, uint256 totalLazyPrice)',
   'event BatchTradeCancelled(bytes32 indexed batchId, address indexed canceller, uint256 itemCount)',
   
-  // v0.2 Multiple Operation Events  
-  'event MultipleTradesCreated(address indexed seller, address indexed buyer, uint256 successCount, uint256 totalLazyCost)',
-  'event MultipleTradesExecuted(address indexed buyer, uint256 executedCount, uint256 failedCount, uint256 totalHbarUsed)',
-  'event MultipleTradesCancelled(address indexed canceller, uint256 cancelledCount)',
-  
-  // v0.2 Token Association Events
-  'event TokenAssociationBatch(address[] tokens, uint256 associationCount, uint256 gasCost)'
+  // v0.2 Token Association Events (account = who paid for the association)
+  'event TokenAssociated(address indexed token, address indexed account)'
 ];
 
 const contractInterface = new ethers.Interface(lazySecureTradeABI);
@@ -215,7 +210,7 @@ event TradeCompleted(
 ```
 
 **When Emitted:**
-- Successful trade execution via `executeTrade()` or `sweepTrades()`
+- Successful trade execution via `executeTrade()` or `executeTrades()`
 - Batch trade execution (one event per NFT in batch)
 
 **Cache Actions:**
@@ -338,78 +333,17 @@ contract.on('BatchTradeCancelled', (batchId, canceller, itemCount) => {
 });
 ```
 
-### 3. Multiple Operation Events
+### 3. Atomic Trade Operations
 
-#### MultipleTradesCreated Event
-```solidity
-event MultipleTradesCreated(
-    address indexed seller,
-    address indexed buyer,
-    uint256 successCount,
-    uint256 totalLazyCost
-);
-```
+#### Execute Trades (Atomic Execution)
 
-**When Emitted:**
-- Bulk individual trade creation via `createMultipleTrades()`
+Execute trades now execute atomically - all trades succeed or the entire transaction reverts. Individual `TradeExecuted` events are emitted for each successful trade execution, providing granular tracking without the need for summary events.
 
 **Cache Actions:**
 ```javascript
-contract.on('MultipleTradesCreated', (seller, buyer, successCount, totalLazyCost) => {
-  // This is a summary event - individual TradeCreated events handle the actual cache updates
-  // Can be used for analytics or progress tracking
-  cache.recordBulkOperation('multiple_trades_created', {
-    seller,
-    buyer,
-    successCount,
-    totalLazyCost,
-    timestamp: new Date()
-  });
-});
-```
-
-#### MultipleTradesExecuted Event
-```solidity
-event MultipleTradesExecuted(
-    address indexed buyer,
-    uint256 executedCount,
-    uint256 failedCount,
-    uint256 totalHbarUsed
-);
-```
-
-**Cache Actions:**
-```javascript
-contract.on('MultipleTradesExecuted', (buyer, executedCount, failedCount, totalHbarUsed) => {
-  // Summary event - individual TradeCompleted events handle cache updates
-  cache.recordBulkOperation('sweep_executed', {
-    buyer,
-    executedCount,
-    failedCount,
-    totalHbarUsed,
-    timestamp: new Date()
-  });
-});
-```
-
-#### MultipleTradesCancelled Event
-```solidity
-event MultipleTradesCancelled(
-    address indexed canceller,
-    uint256 cancelledCount
-);
-```
-
-**Cache Actions:**
-```javascript
-contract.on('MultipleTradesCancelled', (canceller, cancelledCount) => {
-  // Summary event - individual TradeCancelled events handle cache updates
-  cache.recordBulkOperation('bulk_cancellation', {
-    canceller,
-    cancelledCount,
-    timestamp: new Date()
-  });
-});
+// No specific summary event - rely on individual TradeExecuted events
+// Bulk operations are identified by multiple TradeExecuted events 
+// in the same transaction block
 ```
 
 ## Critical Workflow: Trade Overwriting
