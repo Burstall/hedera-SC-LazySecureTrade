@@ -24,9 +24,30 @@ PRIVATE_KEY=
 ```yarn```
 ```yarn run test-trade```
 
-# Deploy Notes
+# Platform Fee System (v0.2)
 
-contract has an embedded sunset @ 90 days (extendable) to assist in forcing migration to future versions
+**LazySecureTrade now features a sophisticated tiered platform fee system:**
+
+## Fee Structure (HBAR Trades Only)
+- **Base Rate**: 1% (100 basis points) for users without LSH tokens
+- **LSH Gen2 Holders**: 50% discount → **0.5% effective fee**
+- **LSH Mutant Holders**: 75% discount → **0.25% effective fee** 
+- **LSH Gen1 Holders**: 100% discount → **FREE TRADES** 🎉
+
+## Key Features
+- ✅ **LAZY Trades Excluded**: $LAZY trades remain **completely fee-free** (gives $LAZY additional utility)
+- ✅ **Delegation Support**: Delegated LSH tokens count towards fee discounts
+- ✅ **Lifetime Analytics**: Contract tracks total HBAR/LAZY volume processed
+- ✅ **Owner Withdrawals**: Platform fees withdrawable via `withdrawPlatformFees()`
+- ✅ **Mathematical Safety**: 100% discount calculations protected against edge cases
+
+## Fee Calculation Example (1000 tinybar trade)
+- **No LSH**: Pays 10 tinybar fee, seller receives 990 tinybar
+- **LSH Gen2**: Pays 5 tinybar fee, seller receives 995 tinybar  
+- **LSH Mutant**: Pays 2.5 tinybar fee, seller receives 997.5 tinybar
+- **LSH Gen1**: Pays 0 tinybar fee, seller receives 1000 tinybar (**FREE!**)
+
+*Note: Contract sunset mechanism has been removed - no more time constraints!*
 
 # Create Trade
 - User sets an allowance for the NFT (per serial of all serials) to the LST
@@ -36,6 +57,13 @@ contract has an embedded sunset @ 90 days (extendable) to assist in forcing migr
 	- If specific buyer specified, service is *FREE* to use
 	- If <any> buyer specified (address(0)) then there is a cost of [x] $LAZY **ensure allowance to Lazy Gas Station (LGS)** *unless user owns/has delegated LSH Gen 1 / 2 tokens*
 	- creating a trade will iterate a users existing trades and prune them [could be gas heavy if there is massive usage]
+
+## Platform Fee Application (v0.2)
+**Trade Creation**: No fees applied during trade creation (same as before)
+**Trade Execution**: Platform fees are automatically deducted during trade execution:
+- **HBAR Trades**: Subject to tiered platform fees based on seller's LSH token ownership
+- **$LAZY Trades**: Completely fee-free (enhances $LAZY token utility)
+- **Mixed Pricing**: Individual pricing per NFT - HBAR portions incur fees, $LAZY portions remain free
 
 # v0.2 Batch Operations
 
@@ -74,6 +102,12 @@ Use the free read-only calls via Mirror Nodes
 - `getTokens(uint256 offset, uint256 batch)` (use `getTotalTokens()` to get full size)
 - `isTokenAssociated(address _token)` -> bool [**CRITICAL for gas planning**]
 
+## Platform Fee Query Methods (v0.2)
+- `getPlatformFeeInfo()` -> Returns all fee rates, discounts, collected fees, and lifetime volumes
+- `getLSHTokenTier(address _user)` -> Returns LSH tier: 0=none, 1=Gen2, 2=Mutant, 3=Gen1
+- `calculateSellerFeeRate(address _seller)` -> Returns effective fee rate in basis points for seller
+- `areAdvancedTradesFree(address _user)` -> Returns if user gets free $LAZY trade creation
+
 # Cancel Trade
 - cancelTrade(bytes32 _tradeId) only possible when user is noted as seller on the trade
 ( cancelling the allowance or moving the NFT will implicitly cancel the trade but it could be come live again if
@@ -86,9 +120,11 @@ Buyer must have a 1 tinybar allowance to LST contract to facilitate the transfer
 	- Checks trade is valid for msg.sender
 	- Ensures msg.sender is not seller per the Trade object
 	- Checks value is sufficient, refunds the difference
-	- If a $LAZY payment element [buyer must have sufficient $LAZY allowance to LGS] take $LAZY and pay to seller
+	- **Platform Fee Deduction (v0.2)**: For HBAR trades, platform fees are automatically deducted based on seller's LSH tier
+	- If a $LAZY payment element [buyer must have sufficient $LAZY allowance to LGS] take $LAZY and pay to seller (**NO FEES on $LAZY trades**)
 	- Transfer NFT from seller to Smart Contract for hbar value [defaults to 1 tinybar if none set] -- contract pays
 	- Transfer NFT from Smart Contract to Buyer for 1 tinybar
+	- **Lifetime Volume Tracking**: Contract tracks total HBAR and LAZY volumes for analytics
 
 # Scripts
 Plenty of scripts to allow easy usage from the command line. Highlights below.
@@ -242,10 +278,12 @@ showGasEstimate(gasEstimate, newAssociations);
 ## Contract Deployment Notes
 
 ### Size Considerations
-- **Current Size**: ~26.3 KiB (over 24.576 KiB EVM limit but under optimization)  
+- **Current Size**: ~27.6 KiB (includes full platform fee system and batch operations)
+- **Previous Size**: 29.14 KiB (before optimizations) → **1.54 KiB saved** through code optimizations
+- **EVM Spurious Dragon Limit**: Exceeds 24.576 KiB limit but under continuous optimization
 - **Hedera Compatible**: Deploys successfully on Hedera despite size
-- **EVM Mainnet**: May not deploy on strict EVM mainnets
-- **Optimization Strategy**: Ongoing size reduction efforts with efficient execution patterns
+- **EVM Mainnet**: May not deploy on strict EVM mainnets without further optimization
+- **Recent Optimizations**: Removed contract sunset mechanism, consolidated LSH checking logic, removed redundant `transferHbar()` method
 
 ### Network Compatibility
 - ✅ **Hedera Mainnet/Testnet**: Full compatibility

@@ -105,6 +105,23 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     // Token Association Events
     event TokenAssociated(address indexed token, address indexed account);
 
+    // Platform Fee Events
+    event PlatformFeeCollected(
+        address indexed seller,
+        address indexed buyer,
+        uint256 hbarFee,
+        uint256 effectiveFeeRate
+    );
+
+    event FeeRatesUpdated(
+        uint256 baseFeeRate,
+        uint256 lshGen2Discount,
+        uint256 lshMutantDiscount,
+        uint256 lshGen1Discount
+    );
+
+    event FeesWithdrawn(address indexed recipient, uint256 hbarAmount);
+
     event SecureTradeStatus(string message, address sender, uint256 value);
 
     error TradeNotFoundOrInvalid();
@@ -119,8 +136,11 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     error UserNotBuyer();
     error UserMustApproveNFTFirst();
     error SellerCannotBeBuyer();
-    error ContractSunset();
     error ExpiryTimeInPast();
+
+    // Platform Fee Errors
+    error InvalidFeeRate(uint256 rate);
+    error InsufficientFeesToWithdraw();
 
     // v0.2 Batch Trade Errors
     error BatchTradeNotFound(bytes32 batchId);
@@ -157,7 +177,20 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     uint256 public tradeNonce;
     uint256 public lazyCostForTrade;
     uint256 public lazyBurnPercentage;
-    uint256 public contractSunset;
+
+    // Platform fee system (in basis points: 100bp = 1%)
+    // Base rate + discount system for efficiency
+    uint256 public baseFeeRate = 100; // 1% base rate for non-LSH holders
+    uint256 public lshGen2Discount = 50; // 50% discount for LSH Gen2 holders (0.5% effective)
+    uint256 public lshMutantDiscount = 75; // 75% discount for LSH Mutant holders (0.25% effective)
+    uint256 public lshGen1Discount = 100; // 100% discount for LSH Gen1 holders (0% effective - FREE!)
+
+    // Fee collection tracking (HBAR only - LAZY trades excluded)
+    uint256 public totalHbarFeesCollected;
+
+    // Lifetime volume tracking for analytics
+    uint256 public lifetimeHbarVolume; // Total HBAR volume processed
+    uint256 public lifetimeLazyVolume; // Total LAZY volume processed
 
     constructor(
         address _lazyToken,
@@ -178,9 +211,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
         lazyCostForTrade = _lazyCostForTrade;
         lazyBurnPercentage = _lazyBurnPercentage;
-
-        // initial sunset at +90 days
-        contractSunset = block.timestamp + 90 days;
     }
 
     /***
@@ -201,10 +231,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 _lazyPrice,
         uint256 _expiryTime
     ) external nonReentrant returns (bytes32 tradeId) {
-        if (block.timestamp > contractSunset) {
-            revert ContractSunset();
-        }
-
         // Handle $LAZY charging for open market trades before creation
         if (_buyer == address(0)) {
             // check if the user does not own an LSH Gen 1 or Gen 2
@@ -468,10 +494,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256[][] memory _lazyPricesPerToken,
         uint256 _expiryTime
     ) external nonReentrant returns (bytes32[] memory tradeIds) {
-        if (block.timestamp > contractSunset) {
-            revert ContractSunset();
-        }
-
         if (_expiryTime != 0 && _expiryTime < block.timestamp) {
             revert ExpiryTimeInPast();
         }
@@ -685,10 +707,51 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             1
         );
 
-        // Handle HBAR payment - send full amount to seller
+        // Handle HBAR payment with platform fee deduction (fees only apply to HBAR)
         hbarUsed = trade.tinybarPrice;
+        uint256 hbarFee = 0;
+
         if (trade.tinybarPrice > 0) {
-            Address.sendValue(payable(trade.seller), trade.tinybarPrice);
+            // Track lifetime HBAR volume
+            lifetimeHbarVolume += trade.tinybarPrice;
+
+            // Calculate platform fee for HBAR trades only
+            uint256 sellerFeeRate = calculateSellerFeeRate(trade.seller);
+            if (sellerFeeRate > 0) {
+                hbarFee = (trade.tinybarPrice * sellerFeeRate) / 10000;
+                uint256 sellerAmount = trade.tinybarPrice - hbarFee;
+
+                // Send net amount to seller
+                Address.sendValue(payable(trade.seller), sellerAmount);
+
+                // Track collected fees (fees stay in contract)
+                totalHbarFeesCollected += hbarFee;
+
+                // Emit platform fee collection event
+                emit PlatformFeeCollected(
+                    trade.seller,
+                    msg.sender,
+                    hbarFee,
+                    sellerFeeRate
+                );
+            } else {
+                // No fees - send full amount to seller
+                Address.sendValue(payable(trade.seller), trade.tinybarPrice);
+            }
+        }
+
+        // Handle LAZY payment (NO FEES - this gives LAZY additional utility)
+        if (trade.lazyPrice > 0) {
+            // Track lifetime LAZY volume
+            lifetimeLazyVolume += trade.lazyPrice;
+
+            // Standard LAZY payment - full amount to seller (no platform fees)
+            lazyGasStation.drawLazyFromPayTo(
+                msg.sender,
+                trade.lazyPrice,
+                0,
+                trade.seller
+            );
         }
 
         // Clean up storage using existing helper method
@@ -826,33 +889,126 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
+     * @notice Get current platform fee information
+     * @return baseFee Base fee rate in basis points
+     * @return gen2Discount LSH Gen2 holder discount percentage
+     * @return mutantDiscount LSH Mutant holder discount percentage
+     * @return gen1Discount LSH Gen1 holder discount percentage
+     * @return hbarCollected Total HBAR fees collected
+     * @return hbarVolume Lifetime HBAR volume processed
+     * @return lazyVolume Lifetime LAZY volume processed
+     */
+    function getPlatformFeeInfo()
+        external
+        view
+        returns (
+            uint256 baseFee,
+            uint256 gen2Discount,
+            uint256 mutantDiscount,
+            uint256 gen1Discount,
+            uint256 hbarCollected,
+            uint256 hbarVolume,
+            uint256 lazyVolume
+        )
+    {
+        return (
+            baseFeeRate,
+            lshGen2Discount,
+            lshMutantDiscount,
+            lshGen1Discount,
+            totalHbarFeesCollected,
+            lifetimeHbarVolume,
+            lifetimeLazyVolume
+        );
+    }
+
+    /***
+     * @notice Get LSH token tier for a user (consolidated logic)
+     * @param _user The address to check
+     * @return tier 0=none, 1=Gen2, 2=Mutant, 3=Gen1 (highest)
+     */
+    function getLSHTokenTier(address _user) public view returns (uint256 tier) {
+        // Check Gen1 first (highest tier) - includes delegated tokens
+        if (
+            IERC721(LSH_GEN1).balanceOf(_user) > 0 ||
+            lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN1).length >
+            0
+        ) {
+            return 3; // Gen1 tier
+        }
+
+        // Check Mutant (second tier) - includes delegated tokens
+        if (
+            IERC721(LSH_GEN1_MUTANT).balanceOf(_user) > 0 ||
+            lazyDelegateRegistry
+                .getSerialsDelegatedTo(_user, LSH_GEN1_MUTANT)
+                .length >
+            0
+        ) {
+            return 2; // Mutant tier
+        }
+
+        // Check Gen2 (third tier) - includes delegated tokens
+        if (
+            IERC721(LSH_GEN2).balanceOf(_user) > 0 ||
+            lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN2).length >
+            0
+        ) {
+            return 1; // Gen2 tier
+        }
+
+        return 0; // No LSH tokens
+    }
+
+    /***
+     * @notice Calculate the platform fee rate for a seller based on their LSH token ownership
+     * @param _seller The address of the seller to check
+     * @return feeRate The effective fee rate in basis points (100bp = 1%)
+     */
+    function calculateSellerFeeRate(
+        address _seller
+    ) public view returns (uint256 feeRate) {
+        // Early exit if base rate is 0 - no fees apply
+        if (baseFeeRate == 0) {
+            return 0;
+        }
+
+        uint256 tier = getLSHTokenTier(_seller);
+
+        if (tier == 3) {
+            // Gen1 - 100% discount = FREE trades (0% fee)
+            // Handle 100% discount case explicitly to avoid any potential edge cases
+            if (lshGen1Discount >= 100) {
+                return 0;
+            }
+            return baseFeeRate - (baseFeeRate * lshGen1Discount) / 100;
+        } else if (tier == 2) {
+            // Mutant - apply Mutant discount (75% = 0.25% effective fee)
+            if (lshMutantDiscount >= 100) {
+                return 0;
+            }
+            return baseFeeRate - (baseFeeRate * lshMutantDiscount) / 100;
+        } else if (tier == 1) {
+            // Gen2 - apply Gen2 discount (50% = 0.5% effective fee)
+            if (lshGen2Discount >= 100) {
+                return 0;
+            }
+            return baseFeeRate - (baseFeeRate * lshGen2Discount) / 100;
+        }
+
+        // No LSH tokens - full base rate (1%)
+        return baseFeeRate;
+    }
+
+    /***
      * @notice Check if a user has advanced trades free
      * Owning an LSH Gen 1 / Gen 2 token (or having someone delegate to you) will allow you to create
      * advanced (open to anyone) trades for free else you pay $LAZY per create
      * @param _user the address of the user
      */
     function areAdvancedTradesFree(address _user) public view returns (bool) {
-        if (
-            IERC721(LSH_GEN1).balanceOf(_user) == 0 &&
-            IERC721(LSH_GEN2).balanceOf(_user) == 0 &&
-            IERC721(LSH_GEN1_MUTANT).balanceOf(_user) == 0 &&
-            lazyDelegateRegistry
-                .getSerialsDelegatedTo(_user, LSH_GEN1)
-                .length ==
-            0 &&
-            lazyDelegateRegistry
-                .getSerialsDelegatedTo(_user, LSH_GEN2)
-                .length ==
-            0 &&
-            lazyDelegateRegistry
-                .getSerialsDelegatedTo(_user, LSH_GEN1_MUTANT)
-                .length ==
-            0
-        ) {
-            return false;
-        }
-
-        return true;
+        // Use consolidated LSH tier checking - any tier above 0 gets free trades
+        return getLSHTokenTier(_user) > 0;
     }
 
     /***
@@ -902,10 +1058,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         address _buyer,
         uint256 _expiryTime
     ) external nonReentrant returns (bytes32 batchId) {
-        if (block.timestamp > contractSunset) {
-            revert ContractSunset();
-        }
-
         if (_expiryTime != 0 && _expiryTime < block.timestamp) {
             revert ExpiryTimeInPast();
         }
@@ -1229,17 +1381,50 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             }
         }
 
-        // Handle payments - direct payment to seller (no arbitrage logic)
+        // Handle HBAR payment with platform fee deduction (fees only apply to HBAR)
+        uint256 totalHbarFee = 0;
+
         if (batchTrade.totalTinybarPrice > 0) {
-            // Send full payment to seller
-            Address.sendValue(
-                payable(batchTrade.seller),
-                batchTrade.totalTinybarPrice
-            );
+            // Track lifetime HBAR volume
+            lifetimeHbarVolume += batchTrade.totalTinybarPrice;
+
+            // Calculate platform fee for HBAR trades only
+            uint256 sellerFeeRate = calculateSellerFeeRate(batchTrade.seller);
+            if (sellerFeeRate > 0) {
+                totalHbarFee =
+                    (batchTrade.totalTinybarPrice * sellerFeeRate) /
+                    10000;
+                uint256 sellerHbarAmount = batchTrade.totalTinybarPrice -
+                    totalHbarFee;
+
+                // Send net amount to seller
+                Address.sendValue(payable(batchTrade.seller), sellerHbarAmount);
+
+                // Track collected fees (fees stay in contract)
+                totalHbarFeesCollected += totalHbarFee;
+
+                // Emit platform fee collection event
+                emit PlatformFeeCollected(
+                    batchTrade.seller,
+                    msg.sender,
+                    totalHbarFee,
+                    sellerFeeRate
+                );
+            } else {
+                // No fees - send full amount to seller
+                Address.sendValue(
+                    payable(batchTrade.seller),
+                    batchTrade.totalTinybarPrice
+                );
+            }
         }
 
+        // Handle LAZY payment (NO FEES - this gives LAZY additional utility)
         if (batchTrade.totalLazyPrice > 0) {
-            // Transfer full payment to seller
+            // Track lifetime LAZY volume
+            lifetimeLazyVolume += batchTrade.totalLazyPrice;
+
+            // Standard LAZY payment - full amount to seller (no platform fees)
             IERC20(lazyToken).transferFrom(
                 msg.sender,
                 batchTrade.seller,
@@ -1371,16 +1556,73 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Set the contract sunset
-     * The contract sunset is the time at which the contract will no longer accept new trades
-     * Intent is this is a v0.1 contract with more features to come.
-     * Having a decentralized (only extendable to give confidence) sunset allows for a new contract to
-     * be deployed and the trades to be migrated to the new contract naturally
+     * @notice Update platform fee rates and discounts
      * **ONLY OWNER**
-     * @param _days the number of days to extend the sunset by
+     * @param _baseFeeRate Base fee rate in basis points (100bp = 1%) - applies to HBAR trades only
+     * @param _lshGen2Discount LSH Gen2 holder discount percentage (0-100)
+     * @param _lshMutantDiscount LSH Mutant holder discount percentage (0-100)
+     * @param _lshGen1Discount LSH Gen1 holder discount percentage (0-100, should be highest)
      */
-    function extendSunset(uint256 _days) external onlyOwner {
-        contractSunset += _days * 1 days;
+    function updateFeeRates(
+        uint256 _baseFeeRate,
+        uint256 _lshGen2Discount,
+        uint256 _lshMutantDiscount,
+        uint256 _lshGen1Discount
+    ) external onlyOwner {
+        // Validate base fee rate (max 10% = 1000bp)
+        if (_baseFeeRate > 1000) {
+            revert InvalidFeeRate(_baseFeeRate);
+        }
+
+        // Validate discount percentages (0-100%)
+        if (
+            _lshGen2Discount > 100 ||
+            _lshMutantDiscount > 100 ||
+            _lshGen1Discount > 100
+        ) {
+            revert InvalidFeeRate(_lshGen1Discount);
+        }
+
+        // Ensure hierarchical discount structure (Gen1 should have highest discount)
+        if (
+            _lshGen1Discount < _lshMutantDiscount ||
+            _lshMutantDiscount < _lshGen2Discount
+        ) {
+            revert InvalidFeeRate(_lshGen1Discount);
+        }
+
+        baseFeeRate = _baseFeeRate;
+        lshGen2Discount = _lshGen2Discount;
+        lshMutantDiscount = _lshMutantDiscount;
+        lshGen1Discount = _lshGen1Discount;
+
+        emit FeeRatesUpdated(
+            _baseFeeRate,
+            _lshGen2Discount,
+            _lshMutantDiscount,
+            _lshGen1Discount
+        );
+    }
+
+    /***
+     * @notice Withdraw collected platform fees (HBAR only - LAZY trades are fee-free)
+     * **ONLY OWNER**
+     * @param _recipient Address to receive the fees
+     */
+    function withdrawPlatformFees(address _recipient) external onlyOwner {
+        if (_recipient == address(0)) {
+            revert BadArguments();
+        }
+
+        uint256 hbarAmount = totalHbarFeesCollected;
+        if (hbarAmount == 0) {
+            revert InsufficientFeesToWithdraw();
+        }
+
+        totalHbarFeesCollected = 0;
+        Address.sendValue(payable(_recipient), hbarAmount);
+
+        emit FeesWithdrawn(_recipient, hbarAmount);
     }
 
     /***
@@ -1404,23 +1646,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         } else {
             tokenTradesMap[_token].remove(_tradeId);
         }
-    }
-
-    /***
-     * @notice Remove Hbar from the contract
-     * Used on sunset to avoid trapped collateral
-     * **ONLY OWNER**
-     * @param receiverAddress the address to send the Hbar to
-     * @param amount the amount of Hbar to send
-     */
-    function transferHbar(
-        address payable receiverAddress,
-        uint256 amount
-    ) external onlyOwner {
-        if (receiverAddress == address(0) || amount == 0) {
-            revert BadArguments();
-        }
-        Address.sendValue(receiverAddress, amount);
     }
 
     /***
