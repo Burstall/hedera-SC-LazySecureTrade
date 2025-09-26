@@ -810,7 +810,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             return false;
         }
 
-        if (trade.expiryTime != 0 && trade.expiryTime < block.timestamp) {
+        if (trade.expiryTime != 0 && block.timestamp > trade.expiryTime) {
             return false;
         }
 
