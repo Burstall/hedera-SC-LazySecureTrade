@@ -141,7 +141,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     // General Batch Errors
     error InvalidBatchParameters(); // Consolidated: ArrayLengthMismatch, EmptyBatchNotAllowed
-    error InvalidPricing(); // Both tinybar and lazy prices provided for same item
 
     mapping(address => EnumerableSet.Bytes32Set) private userTradesMap;
     mapping(address => EnumerableSet.Bytes32Set) private tokenTradesMap;
@@ -230,8 +229,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         // Use common validation and creation logic
-        bool success;
-        (tradeId, success) = _validateAndCreateTrade(
+        tradeId = _validateAndCreateTrade(
             _token,
             _serial,
             _buyer,
@@ -239,21 +237,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             _lazyPrice,
             _expiryTime
         );
-
-        if (!success) {
-            // Determine the specific error to revert with
-            if (_expiryTime != 0 && _expiryTime < block.timestamp) {
-                revert ExpiryTimeInPast();
-            }
-            if (_buyer == address(0) && _tinybarPrice == 0 && _lazyPrice == 0) {
-                revert BadArguments();
-            }
-            if (IERC721(_token).ownerOf(_serial) != msg.sender) {
-                revert UserDoesNotOwnNFT();
-            }
-            // This should never happen now that we removed the existence check
-            revert BadArguments();
-        }
 
         emit TradeCreated(
             msg.sender,
@@ -311,9 +294,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 hbarUsed = _executeTrade(_tradeId, true);
 
         // Refund any excess HBAR
-        if (msg.value > hbarUsed) {
-            Address.sendValue(payable(msg.sender), msg.value - hbarUsed);
-        }
+        _refundExcessHbar(hbarUsed);
     }
 
     /***
@@ -479,9 +460,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256[][] memory _lazyPricesPerToken,
         uint256 _expiryTime
     ) external nonReentrant returns (bytes32[] memory tradeIds) {
-        if (_expiryTime != 0 && _expiryTime < block.timestamp) {
-            revert ExpiryTimeInPast();
-        }
+        // expiry checked on trade creation below
 
         uint256 tokenCount = _uniqueTokens.length;
         if (tokenCount == 0) {
@@ -519,8 +498,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         tradeIds = new bytes32[](totalTrades);
-        uint256 totalLazyCost = 0;
-        uint256 successfulTrades = 0;
+        uint256 totalOpenMarketTrades = 0;
         uint256 tradeIndex = 0;
 
         // Create individual trades per token
@@ -536,7 +514,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 uint256 lazyPrice = lazyPrices[serialIdx];
 
                 // Use common validation and creation logic
-                (bytes32 tradeId, bool success) = _validateAndCreateTrade(
+                tradeIds[tradeIndex] = _validateAndCreateTrade(
                     token,
                     serial,
                     _buyer,
@@ -545,15 +523,11 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                     _expiryTime
                 );
 
-                if (success) {
-                    tradeIds[tradeIndex] = tradeId;
-                    successfulTrades++;
-                    tradeIndex++;
+                tradeIndex++;
 
-                    // Count cost for open market trades
-                    if (_buyer == address(0)) {
-                        totalLazyCost += lazyCostForTrade;
-                    }
+                // Count cost for open market trades
+                if (_buyer == address(0)) {
+                    ++totalOpenMarketTrades;
                 }
 
                 unchecked {
@@ -570,10 +544,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         associateTokensIfNeeded(_uniqueTokens);
 
         // Charge total $LAZY cost for open market trades
-        if (totalLazyCost > 0 && !areAdvancedTradesFree(msg.sender)) {
+        if (totalOpenMarketTrades > 0 && !areAdvancedTradesFree(msg.sender)) {
             lazyGasStation.drawLazyFrom(
                 msg.sender,
-                totalLazyCost,
+                _calculateBatchTradeCost(totalOpenMarketTrades),
                 lazyBurnPercentage
             );
         }
@@ -610,184 +584,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         // Refund excess HBAR based on actual usage
-        if (msg.value > totalHbarUsed) {
-            Address.sendValue(payable(msg.sender), msg.value - totalHbarUsed);
-        }
-    }
-
-    /***
-     * @notice Process HBAR payment with platform fees
-     * @param seller The seller address
-     * @param buyer The buyer address
-     * @param tinybarPrice The price in tinybars
-     * @return hbarFee The fee collected
-     */
-    function _processHbarPayment(
-        address seller,
-        address buyer,
-        uint256 tinybarPrice
-    ) internal returns (uint256 hbarFee) {
-        if (tinybarPrice > 0) {
-            // Track lifetime HBAR volume
-            lifetimeHbarVolume += tinybarPrice;
-
-            // Calculate platform fee for HBAR trades only
-            uint256 sellerFeeRate = calculateSellerFeeRate(seller);
-            if (sellerFeeRate > 0) {
-                hbarFee = (tinybarPrice * sellerFeeRate) / 10000;
-                uint256 sellerAmount = tinybarPrice - hbarFee;
-
-                // Send net amount to seller
-                Address.sendValue(payable(seller), sellerAmount);
-
-                // Track collected fees (fees stay in contract)
-                totalHbarFeesCollected += hbarFee;
-
-                // Emit platform fee collection event
-                emit PlatformFeeCollected(
-                    seller,
-                    buyer,
-                    hbarFee,
-                    sellerFeeRate
-                );
-            } else {
-                // No fees - send full amount to seller
-                Address.sendValue(payable(seller), tinybarPrice);
-            }
-        }
-    }
-
-    /***
-     * @notice Process LAZY payment via gas station (no fees)
-     * @param seller The seller address
-     * @param buyer The buyer address
-     * @param lazyPrice The price in LAZY tokens
-     */
-    function _processLazyPayment(
-        address seller,
-        address buyer,
-        uint256 lazyPrice
-    ) internal {
-        if (lazyPrice > 0) {
-            // Track lifetime LAZY volume
-            lifetimeLazyVolume += lazyPrice;
-
-            // Use LazyGasStation for LAZY payment - full amount to seller (no platform fees)
-            lazyGasStation.drawLazyFromPayTo(buyer, lazyPrice, 0, seller);
-        }
-    }
-
-    /***
-     * @notice Execute 2-step NFT transfer for Hedera royalty compliance
-     * @param token The token address
-     * @param serial The NFT serial number
-     * @param seller The seller address
-     * @param buyer The buyer address
-     * @param salePrice The sale price for royalty calculations
-     */
-    function _execute2StepNFTTransfer(
-        address token,
-        uint256 serial,
-        address seller,
-        address buyer,
-        uint256 salePrice
-    ) internal {
-        uint256[] memory serialArray = new uint256[](1);
-        serialArray[0] = serial;
-
-        // Step 1: Seller → Smart Contract (triggers royalty calculations)
-        batchMoveNFTs(
-            TransferDirection.STAKING,
-            token,
-            serialArray,
-            seller,
-            false,
-            int64(Math.max(salePrice, 1).toUint64())
-        );
-
-        // Step 2: Smart Contract → Buyer (completes the trade)
-        batchMoveNFTs(
-            TransferDirection.WITHDRAWAL,
-            token,
-            serialArray,
-            buyer,
-            false,
-            1
-        );
-    }
-    /***
-     * @notice Internal function to execute a single trade
-     * @param _tradeId The trade ID to execute
-     * @param _checkFunds Whether to check insufficient funds (false for batch execution)
-     * @return hbarUsed The amount of HBAR used for this trade
-     */
-    function _executeTrade(
-        bytes32 _tradeId,
-        bool _checkFunds
-    ) internal returns (uint256 hbarUsed) {
-        Trade storage trade = allTradesMap[_tradeId];
-
-        // Validate trade exists and is valid for msg.sender
-        if (!isTradeValid(_tradeId, msg.sender)) {
-            revert TradeNotFoundOrInvalid();
-        }
-
-        // Ensure msg.sender is not the seller
-        if (msg.sender == trade.seller) {
-            revert SellerCannotBeBuyer();
-        }
-
-        // Check sufficient HBAR sent for this trade (only if requested)
-        if (
-            _checkFunds &&
-            trade.tinybarPrice > 0 &&
-            msg.value < trade.tinybarPrice
-        ) {
-            revert InsufficientPayment();
-        }
-
-        // Handle $LAZY payment first (if needed)
-        // if there is a price in $LAZY, then draw the funds from the buyer
-        // and send them to the seller. N.B. the LazyGasStation will handle the movement
-        // of the funds. This will not obey royalties yet.
-        // to handle royalties we would need to ensure royalty collectors have $LAZY associated
-        // or use try/catch to handle the failure of the transfer and revert to this work around
-        if (trade.lazyPrice > 0) {
-            lazyGasStation.drawLazyFromPayTo(
-                msg.sender,
-                trade.lazyPrice,
-                0,
-                trade.seller
-            );
-        }
-
-        // Execute 2-step NFT transfer for Hedera royalty compliance
-        _execute2StepNFTTransfer(
-            trade.token,
-            trade.serial,
-            trade.seller,
-            msg.sender,
-            trade.tinybarPrice
-        );
-
-        // Handle payments using shared helper functions
-        hbarUsed = trade.tinybarPrice;
-        _processHbarPayment(trade.seller, msg.sender, trade.tinybarPrice);
-        _processLazyPayment(trade.seller, msg.sender, trade.lazyPrice);
-
-        // Clean up storage using existing helper method
-        removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
-
-        // Emit individual trade executed event
-        emit TradeCompleted(
-            trade.seller,
-            msg.sender,
-            trade.token,
-            trade.serial,
-            trade.nonce
-        );
-
-        return hbarUsed;
+        _refundExcessHbar(totalHbarUsed);
     }
 
     /***
@@ -971,26 +768,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Associate tokens that need association and track them
-     * @param _tokens array of token addresses to associate if needed
-     */
-    function associateTokensIfNeeded(address[] memory _tokens) internal {
-        for (uint256 i = 0; i < _tokens.length; ) {
-            if (!tokens.contains(_tokens[i])) {
-                tokenAssociate(_tokens[i]);
-                tokens.add(_tokens[i]);
-
-                // Emit individual association event - track who paid for the association
-                emit TokenAssociated(_tokens[i], msg.sender);
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /***
      * @notice Create an atomic batch trade (1-32 NFTs) with per-serial pricing
      * @param _tokens Array of unique token addresses (no duplicates)
      * @param _serials Array of serial arrays - each index corresponds to token at same index
@@ -1068,13 +845,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 uint256 tinybarPrice = _tinybarPrices[tokenIdx][serialIdx];
                 uint256 lazyPrice = _lazyPrices[tokenIdx][serialIdx];
 
-                // Enforce XOR pricing (not both)
-                if (tinybarPrice > 0 && lazyPrice > 0) {
-                    revert InvalidPricing();
-                }
-
                 // Auto-correct free items to 1 tinybar minimum (anti-royalty-bypass)
-                if (tinybarPrice == 0 && lazyPrice == 0) {
+                // this ensure the batch has some nominal value
+                if (tinybarPrice == 0) {
                     tinybarPrice = 1;
                 }
 
@@ -1174,30 +947,11 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Calculate the cost in $LAZY for creating a batch trade based on item count
-     * @param _itemCount Number of items in the batch
-     * @return batchCost The cost in $LAZY tokens
-     */
-    function _calculateBatchTradeCost(
-        uint256 _itemCount
-    ) internal view returns (uint256 batchCost) {
-        if (_itemCount <= 5) {
-            return lazyCostForTrade * 2; // 2x base cost
-        } else if (_itemCount <= 12) {
-            return lazyCostForTrade * 3; // 3x base cost
-        } else {
-            return lazyCostForTrade * 5; // 5x base cost (13-32 items)
-        }
-    }
-
-    /***
      * @notice Execute a batch trade atomically
      * @param _batchId The batch trade ID to execute
      * @return success Whether the batch execution was successful
      */
-    function executeBatchTrade(
-        bytes32 _batchId
-    ) external nonReentrant returns (bool success) {
+    function executeBatchTrade(bytes32 _batchId) external payable nonReentrant {
         BatchTrade storage batchTrade = batchTradesMap[_batchId];
 
         if (batchTrade.seller == address(0)) {
@@ -1218,11 +972,50 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // Ensure atomic execution by checking all prerequisites first
         _validateBatchTradeExecution(batchTrade);
 
-        // Execute all transfers atomically
-        _executeBatchTransfers(_batchId);
+        // Calculate seller fee rate once for batch efficiency
+        uint256 sellerFeeRate;
+        if (batchTrade.buyer == address(0)) {
+            // Open market trade - calculate fee rate based on seller's LSH ownership
+            sellerFeeRate = calculateSellerFeeRate(batchTrade.seller);
+        } else {
+            // Private trade - no fees apply
+            sellerFeeRate = 0;
+        }
 
-        // Clean up storage
-        _cleanupBatchTrade(_batchId, batchTrade);
+        // Execute 2-step NFT transfers for each item, calculating net amount per item
+        for (uint256 i = 0; i < batchTrade.items.length; ) {
+            TokenSerialPrice memory item = batchTrade.items[i];
+
+            // Calculate net amount using pre-calculated fee rate for efficiency
+            uint256 itemNetAmount = _processHbarPayment(
+                batchTrade.seller,
+                msg.sender,
+                item.tinybarPrice,
+                sellerFeeRate
+            );
+
+            _execute2StepNFTTransfer(
+                item.token,
+                item.serial,
+                batchTrade.seller,
+                batchTrade.buyer,
+                itemNetAmount
+            );
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Handle LAZY payment
+        _processLazyPayment(
+            batchTrade.seller,
+            msg.sender,
+            batchTrade.totalLazyPrice
+        );
+
+        // Refund any excess HBAR
+        _refundExcessHbar(batchTrade.totalTinybarPrice);
 
         emit BatchTradeExecuted(
             _batchId,
@@ -1232,156 +1025,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             batchTrade.totalLazyPrice
         );
 
-        return true;
-    }
-
-    /***
-     * @notice Internal function to validate NFT ownership and approval for a single item
-     * @param token The NFT token address
-     * @param serial The NFT serial number
-     * @param owner Expected owner address
-     * @return valid True if NFT is owned by owner and approved for this contract
-     */
-    function _validateNFTOwnershipAndApproval(
-        address token,
-        uint256 serial,
-        address owner
-    ) internal view returns (bool valid) {
-        // Check NFT ownership
-        if (IERC721(token).ownerOf(serial) != owner) {
-            return false;
-        }
-
-        // Check approvals - either approved for all or specific serial approval
-        return
-            IERC721(token).isApprovedForAll(owner, address(this)) ||
-            IERC721(token).getApproved(serial) == address(this);
-    }
-
-    /***
-     * @notice Internal function to validate batch trade execution prerequisites
-     * @param batchTrade The batch trade to validate
-     */
-    function _validateBatchTradeExecution(
-        BatchTrade storage batchTrade
-    ) internal view {
-        // Validate all NFTs using consolidated validation
-        for (uint256 i = 0; i < batchTrade.items.length; ) {
-            TokenSerialPrice memory item = batchTrade.items[i];
-
-            if (
-                !_validateNFTOwnershipAndApproval(
-                    item.token,
-                    item.serial,
-                    batchTrade.seller
-                )
-            ) {
-                // Check specific failure reason for better error messages
-                if (
-                    IERC721(item.token).ownerOf(item.serial) !=
-                    batchTrade.seller
-                ) {
-                    revert UserDoesNotOwnNFT();
-                } else {
-                    revert UserMustApproveNFTFirst();
-                }
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        // Validate buyer's payment capacity
-        if (
-            batchTrade.totalTinybarPrice > 0 &&
-            msg.sender.balance < batchTrade.totalTinybarPrice
-        ) {
-            revert InsufficientPayment();
-        }
-
-        if (batchTrade.totalLazyPrice > 0) {
-            if (
-                IERC20(lazyToken).balanceOf(msg.sender) <
-                batchTrade.totalLazyPrice
-            ) {
-                revert InsufficientPayment();
-            }
-            if (
-                IERC20(lazyToken).allowance(msg.sender, address(this)) <
-                batchTrade.totalLazyPrice
-            ) {
-                revert InsufficientPayment();
-            }
-        }
-    }
-
-    /***
-     * @notice Internal function to execute all batch transfers
-     * @param _batchId The batch trade ID
-     */
-    function _executeBatchTransfers(bytes32 _batchId) internal {
-        BatchTrade storage batchTrade = batchTradesMap[_batchId];
-
-        // Execute 2-step NFT transfers for each item using shared helper
-        for (uint256 i = 0; i < batchTrade.items.length; ) {
-            TokenSerialPrice memory item = batchTrade.items[i];
-
-            _execute2StepNFTTransfer(
-                item.token,
-                item.serial,
-                batchTrade.seller,
-                batchTrade.buyer,
-                item.tinybarPrice
-            );
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        // Handle payments using shared helper functions
-        _processHbarPayment(
-            batchTrade.seller,
-            msg.sender,
-            batchTrade.totalTinybarPrice
-        );
-        _processLazyPayment(
-            batchTrade.seller,
-            msg.sender,
-            batchTrade.totalLazyPrice
-        );
-    }
-
-    /***
-     * @notice Clean up batch trade storage after execution
-     * @param _batchId The batch trade ID
-     * @param batchTrade The batch trade struct
-     */
-    function _cleanupBatchTrade(
-        bytes32 _batchId,
-        BatchTrade storage batchTrade
-    ) internal {
-        // Remove from user mappings
-        userBatchTradesMap[batchTrade.seller].remove(_batchId);
-        userBatchTradesMap[batchTrade.buyer].remove(_batchId);
-
-        // Clean up item to batch mappings
-        for (uint256 i = 0; i < batchTrade.items.length; ) {
-            bytes32 itemId = keccak256(
-                abi.encodePacked(
-                    batchTrade.items[i].token,
-                    batchTrade.items[i].serial
-                )
-            );
-            delete itemToBatch[itemId];
-            unchecked {
-                ++i;
-            }
-        }
-
-        // Delete the batch trade
-        delete batchTradesMap[_batchId];
+        // Last step else storage variables get cleaned up
+        // Clean up storage
+        _cleanupBatchTrade(_batchId, batchTrade);
     }
 
     /***
@@ -1504,8 +1150,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 _lshMutantDiscount,
         uint256 _lshGen1Discount
     ) external onlyOwner {
-        // Validate base fee rate (max 10% = 1000bp)
-        if (_baseFeeRate > 1000) {
+        // Validate base fee rate (max 5% = 500bp)
+        if (_baseFeeRate > 500) {
             revert InvalidFeeRate(_baseFeeRate);
         }
 
@@ -1561,6 +1207,305 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
+     * @notice Calculate the cost in $LAZY for creating a batch trade based on item count
+     * @param _itemCount Number of items in the batch
+     * @return batchCost The cost in $LAZY tokens
+     */
+    function _calculateBatchTradeCost(
+        uint256 _itemCount
+    ) internal view returns (uint256 batchCost) {
+        if (_itemCount <= 5) {
+            return lazyCostForTrade * 2; // 2x base cost
+        } else if (_itemCount <= 12) {
+            return lazyCostForTrade * 3; // 3x base cost
+        } else {
+            return lazyCostForTrade * 5; // 5x base cost (13-32 items)
+        }
+    }
+
+    /***
+     * @notice Internal function to validate NFT ownership and approval for a single item
+     * @param token The NFT token address
+     * @param serial The NFT serial number
+     * @param owner Expected owner address
+     * @return valid True if NFT is owned by owner and approved for this contract
+     */
+    function _validateNFTOwnershipAndApproval(
+        address token,
+        uint256 serial,
+        address owner
+    ) internal view returns (bool valid) {
+        // Check NFT ownership
+        if (IERC721(token).ownerOf(serial) != owner) {
+            return false;
+        }
+
+        // Check approvals - either approved for all or specific serial approval
+        return
+            IERC721(token).isApprovedForAll(owner, address(this)) ||
+            IERC721(token).getApproved(serial) == address(this);
+    }
+
+    /***
+     * @notice Internal function to validate batch trade execution prerequisites
+     * @param batchTrade The batch trade to validate
+     */
+    function _validateBatchTradeExecution(
+        BatchTrade storage batchTrade
+    ) internal view {
+        // Validate all NFTs using consolidated validation
+        for (uint256 i = 0; i < batchTrade.items.length; ) {
+            TokenSerialPrice memory item = batchTrade.items[i];
+
+            if (
+                !_validateNFTOwnershipAndApproval(
+                    item.token,
+                    item.serial,
+                    batchTrade.seller
+                )
+            ) {
+                // Check specific failure reason for better error messages
+                if (
+                    IERC721(item.token).ownerOf(item.serial) !=
+                    batchTrade.seller
+                ) {
+                    revert UserDoesNotOwnNFT();
+                } else {
+                    revert UserMustApproveNFTFirst();
+                }
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Validate buyer's payment capacity
+        if (
+            batchTrade.totalTinybarPrice > 0 &&
+            msg.sender.balance < batchTrade.totalTinybarPrice
+        ) {
+            revert InsufficientPayment();
+        }
+
+        if (batchTrade.totalLazyPrice > 0) {
+            if (
+                IERC20(lazyToken).balanceOf(msg.sender) <
+                batchTrade.totalLazyPrice
+            ) {
+                revert InsufficientPayment();
+            }
+            if (
+                IERC20(lazyToken).allowance(msg.sender, address(this)) <
+                batchTrade.totalLazyPrice
+            ) {
+                revert InsufficientPayment();
+            }
+        }
+    }
+
+    /***
+     * @notice Process HBAR payment with platform fees
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param tinybarPrice The price in tinybars
+     * @param preCalculatedFeeRate The pre-calculated fee rate in basis points
+     * @return netAmountToSeller The net amount to send to seller via staking mechanism
+     */
+    function _processHbarPayment(
+        address seller,
+        address buyer,
+        uint256 tinybarPrice,
+        uint256 sellerFeeRate
+    ) internal returns (uint256 netAmountToSeller) {
+        if (tinybarPrice > 0) {
+            // Track lifetime HBAR volume
+            lifetimeHbarVolume += tinybarPrice;
+
+            if (sellerFeeRate > 0) {
+                uint256 hbarFee = (tinybarPrice * sellerFeeRate) / 10000;
+                netAmountToSeller = tinybarPrice - hbarFee;
+
+                // Track collected fees (fees stay in contract)
+                totalHbarFeesCollected += hbarFee;
+
+                // Emit platform fee collection event
+                emit PlatformFeeCollected(
+                    seller,
+                    buyer,
+                    hbarFee,
+                    sellerFeeRate
+                );
+            } else {
+                // No fees - full amount goes to seller
+                netAmountToSeller = tinybarPrice;
+            }
+        }
+    }
+
+    /***
+     * @notice Process LAZY payment via gas station (no fees)
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param lazyPrice The price in LAZY tokens
+     */
+    function _processLazyPayment(
+        address seller,
+        address buyer,
+        uint256 lazyPrice
+    ) internal {
+        if (lazyPrice > 0) {
+            // Track lifetime LAZY volume
+            lifetimeLazyVolume += lazyPrice;
+
+            // Use LazyGasStation for LAZY payment - full amount to seller (no platform fees)
+            lazyGasStation.drawLazyFromPayTo(buyer, lazyPrice, 0, seller);
+        }
+    }
+
+    /***
+     * @notice Execute 2-step NFT transfer for Hedera royalty compliance
+     * @param token The token address
+     * @param serial The NFT serial number
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param salePrice The sale price for royalty calculations
+     */
+    function _execute2StepNFTTransfer(
+        address token,
+        uint256 serial,
+        address seller,
+        address buyer,
+        uint256 salePrice
+    ) internal {
+        uint256[] memory serialArray = new uint256[](1);
+        serialArray[0] = serial;
+
+        // Step 1: Seller → Smart Contract (triggers royalty calculations)
+        batchMoveNFTs(
+            TransferDirection.STAKING,
+            token,
+            serialArray,
+            seller,
+            false,
+            int64(Math.max(salePrice, 1).toUint64())
+        );
+
+        // Step 2: Smart Contract → Buyer (completes the trade)
+        batchMoveNFTs(
+            TransferDirection.WITHDRAWAL,
+            token,
+            serialArray,
+            buyer,
+            false,
+            1
+        );
+    }
+
+    /***
+     * @notice Internal function to execute a single trade
+     * @param _tradeId The trade ID to execute
+     * @param _checkFunds Whether to check insufficient funds (false for batch execution)
+     * @return hbarUsed The amount of HBAR used for this trade
+     */
+    function _executeTrade(
+        bytes32 _tradeId,
+        bool _checkFunds
+    ) internal returns (uint256 hbarUsed) {
+        Trade storage trade = allTradesMap[_tradeId];
+
+        // Validate trade exists and is valid for msg.sender
+        if (!isTradeValid(_tradeId, msg.sender)) {
+            revert TradeNotFoundOrInvalid();
+        }
+
+        // Ensure msg.sender is not the seller
+        if (msg.sender == trade.seller) {
+            revert SellerCannotBeBuyer();
+        }
+
+        // Check sufficient HBAR sent for this trade (only if requested)
+        if (
+            _checkFunds &&
+            trade.tinybarPrice > 0 &&
+            msg.value < trade.tinybarPrice
+        ) {
+            revert InsufficientPayment();
+        }
+
+        // Calculate platform fee rate for seller
+        uint256 sellerFeeRate;
+        if (trade.buyer != address(0)) {
+            // Private trade - no fees apply
+            sellerFeeRate = 0;
+        } else {
+            sellerFeeRate = calculateSellerFeeRate(trade.seller);
+        }
+
+        // Setup return value as original price as HBAR used for refund calculation
+        // MUST OCCUR BEFORE THE CLEANUP!
+        hbarUsed = trade.tinybarPrice;
+
+        // Calculate the HBAR payment processing (calculates fees, returns net amount for seller)
+        uint256 netAmountToSeller = _processHbarPayment(
+            trade.seller,
+            msg.sender,
+            trade.tinybarPrice,
+            sellerFeeRate
+        );
+
+        // Execute 2-step NFT transfer for Hedera royalty compliance using net amount
+        // pays the seller the net amount after fees
+        _execute2StepNFTTransfer(
+            trade.token,
+            trade.serial,
+            trade.seller,
+            msg.sender,
+            netAmountToSeller
+        );
+
+        // Handle $LAZY payment first (if needed)
+        // if there is a price in $LAZY, then draw the funds from the buyer
+        // and send them to the seller. N.B. the LazyGasStation will handle the movement
+        // of the funds. This will not obey royalties yet.
+        // to handle royalties we would need to ensure royalty collectors have $LAZY associated
+        // or use try/catch to handle the failure of the transfer and revert to this work around
+        _processLazyPayment(trade.seller, msg.sender, trade.lazyPrice);
+
+        // Clean up storage using existing helper method
+        removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
+
+        // Emit individual trade executed event
+        emit TradeCompleted(
+            trade.seller,
+            msg.sender,
+            trade.token,
+            trade.serial,
+            trade.nonce
+        );
+    }
+
+    /***
+     * @notice Associate tokens that need association and track them
+     * @param _tokens array of token addresses to associate if needed
+     */
+    function associateTokensIfNeeded(address[] memory _tokens) internal {
+        for (uint256 i = 0; i < _tokens.length; ) {
+            if (!tokens.contains(_tokens[i])) {
+                tokenAssociate(_tokens[i]);
+                tokens.add(_tokens[i]);
+
+                // Emit individual association event - track who paid for the association
+                emit TokenAssociated(_tokens[i], msg.sender);
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /***
      * @notice Remove a trade from the state
      * * Internal function * to aid code reuse
      * @param _tradeId the hash of the token and serial
@@ -1584,21 +1529,44 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Remove Lazy from the contract
-     * Used on sunset to avoid trapped collateral
-     * **ONLY OWNER**
-     * @param _receiver the address to send the $LAZY to
-     * @param _amount the amount of $LAZY to send
+     * @notice Clean up batch trade storage after execution
+     * @param _batchId The batch trade ID
+     * @param batchTrade The batch trade struct
      */
-    function retrieveLazy(
-        address _receiver,
-        uint256 _amount
-    ) external onlyOwner {
-        if (_receiver == address(0) || _amount == 0) {
-            revert BadArguments();
+    function _cleanupBatchTrade(
+        bytes32 _batchId,
+        BatchTrade storage batchTrade
+    ) internal {
+        // Remove from user mappings
+        userBatchTradesMap[batchTrade.seller].remove(_batchId);
+        userBatchTradesMap[batchTrade.buyer].remove(_batchId);
+
+        // Clean up item to batch mappings
+        for (uint256 i = 0; i < batchTrade.items.length; ) {
+            bytes32 itemId = keccak256(
+                abi.encodePacked(
+                    batchTrade.items[i].token,
+                    batchTrade.items[i].serial
+                )
+            );
+            delete itemToBatch[itemId];
+            unchecked {
+                ++i;
+            }
         }
 
-        IERC20(lazyToken).transfer(_receiver, _amount);
+        // Delete the batch trade
+        delete batchTradesMap[_batchId];
+    }
+
+    /***
+     * @notice Internal helper to refund excess HBAR to msg.sender
+     * @param hbarUsed The amount of HBAR that was actually used
+     */
+    function _refundExcessHbar(uint256 hbarUsed) internal {
+        if (msg.value > hbarUsed) {
+            Address.sendValue(payable(msg.sender), msg.value - hbarUsed);
+        }
     }
 
     /***
@@ -1620,26 +1588,26 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 _tinybarPrice,
         uint256 _lazyPrice,
         uint256 _expiryTime
-    ) internal returns (bytes32 tradeId, bool success) {
+    ) internal returns (bytes32 tradeId) {
         // Validate expiry time (contract sunset checked by caller)
         if (_expiryTime != 0 && _expiryTime < block.timestamp) {
-            return (bytes32(0), false);
+            revert ExpiryTimeInPast();
         }
 
         // Validate pricing for open trades
         if (_buyer == address(0) && _tinybarPrice == 0 && _lazyPrice == 0) {
-            return (bytes32(0), false);
+            revert BadArguments();
+        }
+
+        // Validate ownership
+        if (IERC721(_token).ownerOf(_serial) != msg.sender) {
+            revert UserDoesNotOwnNFT();
         }
 
         // Ensure token association
         if (!tokens.contains(_token)) {
             tokenAssociate(_token);
             tokens.add(_token);
-        }
-
-        // Validate ownership
-        if (IERC721(_token).ownerOf(_serial) != msg.sender) {
-            return (bytes32(0), false);
         }
 
         // Create trade ID
@@ -1686,16 +1654,32 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             // Open trade - add to token mapping for discovery
             tokenTradesMap[_token].add(tradeId);
         }
+    }
 
-        return (tradeId, true);
+    /***
+     * @notice Remove Lazy from the contract
+     * Used on sunset to avoid trapped collateral
+     * **ONLY OWNER**
+     * @param _receiver the address to send the $LAZY to
+     * @param _amount the amount of $LAZY to send
+     */
+    function retrieveLazy(
+        address _receiver,
+        uint256 _amount
+    ) external onlyOwner {
+        if (_receiver == address(0) || _amount == 0) {
+            revert BadArguments();
+        }
+
+        IERC20(lazyToken).transfer(_receiver, _amount);
     }
 
     // Default methods to allow HBAR to be received in EVM
     receive() external payable {
-        emit SecureTradeStatus("Receive", msg.sender, msg.value);
+        emit SecureTradeStatus("R", msg.sender, msg.value);
     }
 
     fallback() external payable {
-        emit SecureTradeStatus("Fallback", msg.sender, msg.value);
+        emit SecureTradeStatus("F", msg.sender, msg.value);
     }
 }

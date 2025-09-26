@@ -159,7 +159,7 @@ describe('Deployment', () => {
 		}
 		expect(bobId.toString().match(addressRegex).length == 2).to.be.true;
 
-		const gasLimit = 500_000;
+		const gasLimit = 5_500_000;
 
 		// now deploy main contract
 		const lazyDelegateRegistryJson = JSON.parse(

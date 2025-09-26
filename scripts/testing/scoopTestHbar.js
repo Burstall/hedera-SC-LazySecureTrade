@@ -15,11 +15,34 @@ let operatorId;
 let operatorKey;
 
 try {
-	operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
 	operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
+
+	// Try to parse the operator key with gentle error handling
+	const operatorKeyString = process.env.PRIVATE_KEY;
+	if (!operatorKeyString) {
+		throw new Error('PRIVATE_KEY not found in environment');
+	}
+
+	// Try Ed25519 first, then ECDSA as fallback
+	try {
+		operatorKey = PrivateKey.fromStringED25519(operatorKeyString);
+		console.log('Successfully parsed operator key as Ed25519');
+	}
+	catch (err) {
+		console.log('Failed to parse operator key as Ed25519, trying ECDSA...');
+		try {
+			operatorKey = PrivateKey.fromStringECDSA(operatorKeyString);
+			console.log('Successfully parsed operator key as ECDSA');
+		}
+		catch (err2) {
+			throw new Error(`Failed to parse operator key as both Ed25519 and ECDSA: ${err2.message}`);
+		}
+	}
 }
 catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
+	console.log('Details:', err.message);
+	process.exit(1);
 }
 
 async function scoopTestHbar() {
@@ -47,21 +70,84 @@ async function scoopTestHbar() {
 	}
 
 	// pull the SCOOP_ACCOUNTS from the .env file
+	if (!process.env.SCOOP_ACCOUNTS) {
+		console.log('ERROR: Must specify SCOOP_ACCOUNTS in the .env file');
+		console.log('Please uncomment and set SCOOP_ACCOUNTS=0.0.1234,0.0.5678 in your .env file');
+		process.exit(1);
+	}
+
 	const scoopAccounts = process.env.SCOOP_ACCOUNTS.split(',').map((account) => {
-		return AccountId.fromString(account);
+		return AccountId.fromString(account.trim());
 	});
 
-	// get the keys from the .env file, if begins with 0x then assume ECDSA key, else assume Ed25519 key
+	// get the keys from the .env file with gentle error handling - try both key types
+	if (!process.env.SCOOP_KEYS) {
+		console.log('ERROR: Must specify SCOOP_KEYS in the .env file');
+		console.log('Please uncomment and set SCOOP_KEYS with corresponding private keys in your .env file');
+		process.exit(1);
+	}
+
 	const keys = [];
 	const keyStrings = process.env.SCOOP_KEYS.split(',');
-	keyStrings.forEach((key) => {
-		if (key.startsWith('e')) {
-			keys.push(PrivateKey.fromStringECDSA(key.split(':')[1]));
+	keyStrings.forEach((keyString, index) => {
+		let key = null;
+		let keyValue = keyString;
+
+		// If the key has a prefix like 'e:', extract the actual key value
+		if (keyString.includes(':')) {
+			keyValue = keyString.split(':')[1];
+		}
+
+		// Try ECDSA first if it starts with 'e' or looks like an ECDSA key
+		if (keyString.startsWith('e') || keyString.startsWith('0x')) {
+			try {
+				key = PrivateKey.fromStringECDSA(keyValue);
+				console.log(`Successfully parsed key ${index + 1} as ECDSA`);
+			}
+			catch (err) {
+				console.log(`Failed to parse key ${index + 1} as ECDSA, trying Ed25519...`);
+				try {
+					key = PrivateKey.fromStringED25519(keyValue);
+					console.log(`Successfully parsed key ${index + 1} as Ed25519`);
+				}
+				catch (err2) {
+					console.error(`ERROR: Failed to parse key ${index + 1} as both ECDSA and Ed25519:`, err2.message);
+					process.exit(1);
+				}
+			}
 		}
 		else {
-			keys.push(PrivateKey.fromStringED25519(key));
+			// Try Ed25519 first, then ECDSA as fallback
+			try {
+				key = PrivateKey.fromStringED25519(keyValue);
+				console.log(`Successfully parsed key ${index + 1} as Ed25519`);
+			}
+			catch (err) {
+				console.log(`Failed to parse key ${index + 1} as Ed25519, trying ECDSA...`);
+				try {
+					key = PrivateKey.fromStringECDSA(keyValue);
+					console.log(`Successfully parsed key ${index + 1} as ECDSA`);
+				}
+				catch (err2) {
+					console.error(`ERROR: Failed to parse key ${index + 1} as both Ed25519 and ECDSA:`, err2.message);
+					process.exit(1);
+				}
+			}
+		}
+
+		if (key) {
+			keys.push(key);
 		}
 	});
+
+	// Validate that we have matching accounts and keys
+	if (scoopAccounts.length !== keys.length) {
+		console.error(`ERROR: Mismatch between SCOOP_ACCOUNTS (${scoopAccounts.length}) and SCOOP_KEYS (${keys.length})`);
+		console.error('Each account must have a corresponding private key');
+		process.exit(1);
+	}
+
+	console.log(`Successfully loaded ${scoopAccounts.length} accounts with matching private keys`);
 
 	const balances = [];
 	const sendAmounts = [];

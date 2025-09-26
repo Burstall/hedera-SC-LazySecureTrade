@@ -214,7 +214,7 @@ describe('Deployment', () => {
 			console.log('\n-Using existing LAZY Token ID:', lazyTokenId.toString());
 		}
 		else {
-			const gasLimit = 800_000;
+			const gasLimit = 5_800_000;
 
 			console.log(
 				'\n- Deploying contract...',
@@ -223,7 +223,7 @@ describe('Deployment', () => {
 				gasLimit,
 			);
 
-			[lazySCT] = await contractDeployFunction(client, lazyContractBytecode);
+			[lazySCT] = await contractDeployFunction(client, lazyContractBytecode, gasLimit);
 
 			console.log(
 				`Lazy Token Creator contract created with ID: ${lazySCT} / ${lazySCT.toSolidityAddress()}`,
@@ -264,7 +264,7 @@ describe('Deployment', () => {
 			);
 		}
 		else {
-			const gasLimit = 1_500_000;
+			const gasLimit = 6_800_000;
 			console.log(
 				'\n- Deploying contract...',
 				lazyGasStationName,
@@ -313,7 +313,7 @@ describe('Deployment', () => {
 			);
 		}
 		else {
-			const gasLimit = 500_000;
+			const gasLimit = 6_800_000;
 
 			console.log('\n- Deploying contract...', lazyDelegateRegistryName, '\n\tgas@', gasLimit);
 
@@ -369,7 +369,7 @@ describe('Deployment', () => {
 		client.setOperator(operatorId, operatorKey);
 
 
-		const gasLimit = 2_500_000;
+		const gasLimit = 7_800_000;
 
 		// now deploy main contract
 		const lazySecureTradeJson = JSON.parse(
@@ -595,19 +595,6 @@ describe('Check Contract Deployment', () => {
 			Number(LAZY_COST_FOR_TRADE),
 		);
 
-		// get contractSunset
-		const contractSunsetResult = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'contractSunset',
-		);
-		// expect the reult to be > 88 days from now
-		expect(Number(contractSunsetResult[0])).to.be.greaterThan(
-			Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 88,
-		);
-
 		// get LSH_GEN1
 		const lshGen1Result = await contractExecuteQuery(
 			lstContractId,
@@ -703,15 +690,15 @@ describe('Check Contract Deployment', () => {
 			unexpectedErrors++;
 		}
 
-		// extendSunset
+		// withdrawPlatformFees
 		try {
 			const result = await contractExecuteFunction(
 				lstContractId,
 				lazySecureTradeIface,
 				client,
 				null,
-				'extendSunset',
-				[1],
+				'withdrawPlatformFees',
+				[aliceId.toSolidityAddress()],
 			);
 			if (
 				result[0].status.toString() ==
@@ -720,33 +707,7 @@ describe('Check Contract Deployment', () => {
 				expectedErrors++;
 			}
 			else {
-				console.log('Unexpected Result (extendSunset):', result);
-				unexpectedErrors++;
-			}
-		}
-		catch (err) {
-			console.log(err);
-			unexpectedErrors++;
-		}
-
-		// transferHbar
-		try {
-			const result = await contractExecuteFunction(
-				lstContractId,
-				lazySecureTradeIface,
-				client,
-				null,
-				'transferHbar',
-				[aliceId.toSolidityAddress(), 1],
-			);
-			if (
-				result[0].status.toString() ==
-				'REVERT: Ownable: caller is not the owner'
-			) {
-				expectedErrors++;
-			}
-			else {
-				console.log('Unexpected Result (transferHbar):', result);
+				console.log('Unexpected Result (withdrawPlatformFees):', result);
 				unexpectedErrors++;
 			}
 		}
@@ -781,7 +742,7 @@ describe('Check Contract Deployment', () => {
 		console.log('Expected errors:', expectedErrors);
 		console.log('Unexpected errors:', unexpectedErrors);
 
-		expect(expectedErrors).to.be.equal(5);
+		expect(expectedErrors).to.be.equal(4);
 		expect(unexpectedErrors).to.be.equal(0);
 	});
 });
@@ -1049,7 +1010,10 @@ describe('Secure Trades are go...', () => {
 
 		console.log('Bob trade valid:', tradeValidResult);
 
-		expect(tradeValidResult[0]).to.be.true;
+		if (!tradeValidResult[0]) {
+			console.log('Bob trade is not valid:', bobTrade);
+			fail();
+		}
 
 		// set a 1 tinybar allowance to LST
 		const allowanceResult = await setHbarAllowance(
@@ -1061,6 +1025,11 @@ describe('Secure Trades are go...', () => {
 		);
 
 		expect(allowanceResult).to.be.equal('SUCCESS');
+
+		if (allowanceResult != 'SUCCESS') {
+			console.log('Bob Hbar allowance failed:', allowanceResult);
+			fail();
+		}
 
 		// executeTrade
 		// sending > 1 hbar to check the additional value is returned
@@ -1074,7 +1043,7 @@ describe('Secure Trades are go...', () => {
 			new Hbar(2, HbarUnit.Hbar),
 		);
 
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
+		if (tradeExecutionResult[0]?.status?.toString() != 'SUCCESS') {
 			console.log('Trade Execution Error:', tradeExecutionResult);
 			fail();
 		}
@@ -1118,7 +1087,10 @@ describe('Secure Trades are go...', () => {
 			],
 		);
 
-		expect(tradeResult[0].status.toString()).to.be.equal('SUCCESS');
+		if (tradeResult[0]?.status?.toString() != 'SUCCESS') {
+			console.log('Trade Creation Error (buyer = Alice):', tradeResult);
+			fail();
+		}
 
 		// let mirror node catch up
 		await sleep(5000);
@@ -1234,7 +1206,7 @@ describe('Secure Trades are go...', () => {
 			0,
 		);
 
-		if (tradeExecutionResult[0].status.toString() != 'SUCCESS') {
+		if (tradeExecutionResult[0]?.status?.toString() != 'SUCCESS') {
 			console.log('Trade Execution Error (Operator creates a listing for Alice for $LAZY):', tradeExecutionResult);
 			fail();
 		}
@@ -2039,7 +2011,7 @@ describe('Clean-up', () => {
 				[lgsContractUsers[0][i]],
 			);
 
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS contract user:', result);}
+			if (result[0]?.status.toString() !== 'SUCCESS') { console.log('Failed to remove LGS contract user:', result); }
 			expect(result[0].status.toString()).to.be.equal('SUCCESS');
 		}
 
@@ -2062,7 +2034,7 @@ describe('Clean-up', () => {
 				[lgsAuthorizers[0][i]],
 			);
 
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS authorizer:', result);}
+			if (result[0]?.status.toString() !== 'SUCCESS') { console.log('Failed to remove LGS authorizer:', result); }
 			expect(result[0].status.toString()).to.be.equal('SUCCESS');
 		}
 
@@ -2092,7 +2064,7 @@ describe('Clean-up', () => {
 				[lgsAdmins[0][i]],
 			);
 
-			if (result[0]?.status.toString() !== 'SUCCESS') {console.log('Failed to remove LGS admin:', result);}
+			if (result[0]?.status.toString() !== 'SUCCESS') { console.log('Failed to remove LGS admin:', result); }
 			expect(result[0].status.toString()).to.be.equal('SUCCESS');
 		}
 
@@ -2105,7 +2077,7 @@ describe('Clean-up', () => {
 		for (let a = 0; a < mirrorFTAllowances.length; a++) {
 			const allowance = mirrorFTAllowances[a];
 			// console.log('FT Allowance found:', allowance.token_id, allowance.owner, allowance.spender);
-			if (allowance.token_id == lazyTokenId.toString() && allowance.amount > 0) {outstandingAllowances.push(allowance.spender);}
+			if (allowance.token_id == lazyTokenId.toString() && allowance.amount > 0) { outstandingAllowances.push(allowance.spender); }
 		}
 
 		// if the contract was created reset any $LAZY allowance for the operator
