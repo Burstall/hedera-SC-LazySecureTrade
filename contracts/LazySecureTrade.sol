@@ -7,7 +7,6 @@ pragma solidity >=0.8.12 <0.9.0;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import {EnumerableMap} from "@openzeppelin/contracts/utils/structs/EnumerableMap.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
@@ -20,7 +19,6 @@ import {TokenStaker} from "./TokenStaker.sol";
 contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
-    using EnumerableMap for EnumerableMap.Bytes32ToBytes32Map;
     using SafeCast for uint256;
     using Address for address;
 
@@ -126,14 +124,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     error TradeNotFoundOrInvalid();
     error TradeExpired();
-    error TradeAssocationMissing();
     error UserDoesNotOwnNFT();
-    error InsufficientFunds();
-    error InsufficientHBAR();
-    error InsufficientLAZY();
-    error InsufficientAllowanceLAZY();
-    error UserNotSeller();
-    error UserNotBuyer();
+    error InsufficientPayment(); // Consolidated: InsufficientFunds, InsufficientHBAR, InsufficientLAZY, InsufficientAllowanceLAZY
+    error UserNotAuthorized(); // Consolidated: UserNotSeller, UserNotBuyer
     error UserMustApproveNFTFirst();
     error SellerCannotBeBuyer();
     error ExpiryTimeInPast();
@@ -144,18 +137,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     // v0.2 Batch Trade Errors
     error BatchTradeNotFound(bytes32 batchId);
-    error BatchTradeMismatch();
-    error AtomicBatchExecutionFailed(bytes32 batchId, uint256 failedAtIndex);
     error BatchSizeExceedsLimit(uint256 provided, uint256 maximum);
-    error InsufficientFundsForBatch(uint256 required, uint256 provided);
 
     // General Batch Errors
-    error ArrayLengthMismatch();
-    error EmptyBatchNotAllowed();
-    error NonAtomicBatchNotSupported(); // Use createMultipleTrades instead
-
-    // Payment and Transfer Errors
-    error OnlySelfCallAllowed();
+    error InvalidBatchParameters(); // Consolidated: ArrayLengthMismatch, EmptyBatchNotAllowed
     error InvalidPricing(); // Both tinybar and lazy prices provided for same item
 
     mapping(address => EnumerableSet.Bytes32Set) private userTradesMap;
@@ -466,7 +451,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         if (batchTrade.seller != msg.sender) {
-            revert UserNotSeller();
+            revert UserNotAuthorized();
         }
 
         // Clean up storage
@@ -500,7 +485,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
         uint256 tokenCount = _uniqueTokens.length;
         if (tokenCount == 0) {
-            revert EmptyBatchNotAllowed();
+            revert InvalidBatchParameters();
         }
 
         // Validate array lengths match
@@ -509,7 +494,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             tokenCount != _tinybarPricesPerToken.length ||
             tokenCount != _lazyPricesPerToken.length
         ) {
-            revert ArrayLengthMismatch();
+            revert InvalidBatchParameters();
         }
 
         // Calculate total trades and validate limits
@@ -520,7 +505,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 serialsCount != _tinybarPricesPerToken[i].length ||
                 serialsCount != _lazyPricesPerToken[i].length
             ) {
-                revert ArrayLengthMismatch();
+                revert InvalidBatchParameters();
             }
             totalTrades += serialsCount;
             unchecked {
@@ -606,7 +591,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     ) external payable nonReentrant {
         uint256 length = _tradeIds.length;
         if (length == 0) {
-            revert EmptyBatchNotAllowed();
+            revert InvalidBatchParameters();
         }
 
         // Conservative limit for Hedera subcall management (2 NFT moves per trade + LAZY payments)
@@ -758,7 +743,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             trade.tinybarPrice > 0 &&
             msg.value < trade.tinybarPrice
         ) {
-            revert InsufficientFunds();
+            revert InsufficientPayment();
         }
 
         // Handle $LAZY payment first (if needed)
@@ -803,43 +788,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         );
 
         return hbarUsed;
-    }
-
-    /***
-     * @notice Get tokens associated with the contract - better to poll tokesn associated to the contract
-     * via the mirror nodes
-     * @param _offset the offset to start from
-     * @param _batch the number of tokens to return
-     */
-    function getTokens(
-        uint256 offset,
-        uint256 batch
-    ) external view returns (address[] memory) {
-        uint256 length = tokens.length();
-        if (offset + batch > length) {
-            revert BadArguments();
-        }
-
-        uint256 end = offset + batch > length ? length : offset + batch;
-        address[] memory tokenList = new address[](end - offset);
-
-        for (uint256 i = offset; i < end; ) {
-            tokenList[i - offset] = tokens.at(i);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return tokenList;
-    }
-
-    /***
-     * @notice Get the total number of tokens associated with the contract - better to poll tokesn associated to the contract
-     * via the mirror nodes
-     */
-    function getTotalTokens() external view returns (uint256) {
-        return tokens.length();
     }
 
     /***
@@ -898,30 +846,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
         // if we get here, then the trade is invalid
         return false;
-    }
-
-    /***
-     * @notice Check if multiple trades are valid for a user
-     * @param _tradeIdList the list of trade IDs to check
-     * @param _user the address of the user
-     * @return validTrades the list of valid trades a bool array per ID supplied
-     */
-    function areTradesValid(
-        bytes32[] memory _tradeIdList,
-        address _user
-    ) external view returns (bool[] memory) {
-        uint256 length = _tradeIdList.length;
-        bool[] memory validTrades = new bool[](length);
-
-        for (uint256 i = 0; i < length; ) {
-            validTrades[i] = isTradeValid(_tradeIdList[i], _user);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return validTrades;
     }
 
     /***
@@ -1100,7 +1024,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
         uint256 tokenCount = _tokens.length;
         if (tokenCount == 0) {
-            revert EmptyBatchNotAllowed();
+            revert InvalidBatchParameters();
         }
 
         // Validate outer array lengths match
@@ -1109,7 +1033,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             tokenCount != _tinybarPrices.length ||
             tokenCount != _lazyPrices.length
         ) {
-            revert ArrayLengthMismatch();
+            revert InvalidBatchParameters();
         }
 
         // Calculate total items and validate inner array lengths
@@ -1120,7 +1044,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 serialsCount != _tinybarPrices[i].length ||
                 serialsCount != _lazyPrices[i].length
             ) {
-                revert ArrayLengthMismatch();
+                revert InvalidBatchParameters();
             }
             totalItems += serialsCount;
             unchecked {
@@ -1129,7 +1053,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         if (totalItems == 0) {
-            revert EmptyBatchNotAllowed();
+            revert InvalidBatchParameters();
         }
 
         if (totalItems > 32) {
@@ -1298,7 +1222,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         if (batchTrade.buyer != address(0) && batchTrade.buyer != msg.sender) {
-            revert UserNotBuyer();
+            revert UserNotAuthorized();
         }
 
         // Ensure atomic execution by checking all prerequisites first
@@ -1323,6 +1247,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     /***
      * @notice Internal function to validate batch trade execution prerequisites
+     * @dev OPTIMIZATION CANDIDATE: This function could be removed to save ~1KiB if space is critical.
+     *      The validations would still occur during execution, but with less specific error messages.
      * @param batchTrade The batch trade to validate
      */
     function _validateBatchTradeExecution(
@@ -1361,7 +1287,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             batchTrade.totalTinybarPrice > 0 &&
             msg.sender.balance < batchTrade.totalTinybarPrice
         ) {
-            revert InsufficientHBAR();
+            revert InsufficientPayment();
         }
 
         if (batchTrade.totalLazyPrice > 0) {
@@ -1369,13 +1295,13 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 IERC20(lazyToken).balanceOf(msg.sender) <
                 batchTrade.totalLazyPrice
             ) {
-                revert InsufficientLAZY();
+                revert InsufficientPayment();
             }
             if (
                 IERC20(lazyToken).allowance(msg.sender, address(this)) <
                 batchTrade.totalLazyPrice
             ) {
-                revert InsufficientAllowanceLAZY();
+                revert InsufficientPayment();
             }
         }
     }
@@ -1449,18 +1375,33 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Get all trades for a specific token
+     * @notice Get trades for a specific token with pagination
      * @param _token The token address
+     * @param _offset The starting index (0-based)
+     * @param _size The maximum number of trades to return
      * @return tradeIds Array of trade IDs for the token
      */
     function getTradesForToken(
-        address _token
+        address _token,
+        uint256 _offset,
+        uint256 _size
     ) external view returns (bytes32[] memory tradeIds) {
-        uint256 length = tokenTradesMap[_token].length();
-        tradeIds = new bytes32[](length);
+        uint256 totalLength = tokenTradesMap[_token].length();
 
-        for (uint256 i = 0; i < length; ) {
-            tradeIds[i] = tokenTradesMap[_token].at(i);
+        if (_offset >= totalLength) {
+            return new bytes32[](0);
+        }
+
+        uint256 end = _offset + _size;
+        if (end > totalLength) {
+            end = totalLength;
+        }
+
+        uint256 resultLength = end - _offset;
+        tradeIds = new bytes32[](resultLength);
+
+        for (uint256 i = 0; i < resultLength; ) {
+            tradeIds[i] = tokenTradesMap[_token].at(_offset + i);
             unchecked {
                 ++i;
             }
@@ -1477,7 +1418,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     ) external nonReentrant returns (uint256 cancelledCount) {
         uint256 length = _tradeIds.length;
         if (length == 0) {
-            revert EmptyBatchNotAllowed();
+            revert InvalidBatchParameters();
         }
 
         // Reasonable limit for gas management (reduced for Hedera subcall limits)
