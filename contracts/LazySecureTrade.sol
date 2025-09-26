@@ -631,6 +631,106 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
+     * @notice Process HBAR payment with platform fees
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param tinybarPrice The price in tinybars
+     * @return hbarFee The fee collected
+     */
+    function _processHbarPayment(
+        address seller,
+        address buyer,
+        uint256 tinybarPrice
+    ) internal returns (uint256 hbarFee) {
+        if (tinybarPrice > 0) {
+            // Track lifetime HBAR volume
+            lifetimeHbarVolume += tinybarPrice;
+
+            // Calculate platform fee for HBAR trades only
+            uint256 sellerFeeRate = calculateSellerFeeRate(seller);
+            if (sellerFeeRate > 0) {
+                hbarFee = (tinybarPrice * sellerFeeRate) / 10000;
+                uint256 sellerAmount = tinybarPrice - hbarFee;
+
+                // Send net amount to seller
+                Address.sendValue(payable(seller), sellerAmount);
+
+                // Track collected fees (fees stay in contract)
+                totalHbarFeesCollected += hbarFee;
+
+                // Emit platform fee collection event
+                emit PlatformFeeCollected(
+                    seller,
+                    buyer,
+                    hbarFee,
+                    sellerFeeRate
+                );
+            } else {
+                // No fees - send full amount to seller
+                Address.sendValue(payable(seller), tinybarPrice);
+            }
+        }
+    }
+
+    /***
+     * @notice Process LAZY payment via gas station (no fees)
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param lazyPrice The price in LAZY tokens
+     */
+    function _processLazyPayment(
+        address seller,
+        address buyer,
+        uint256 lazyPrice
+    ) internal {
+        if (lazyPrice > 0) {
+            // Track lifetime LAZY volume
+            lifetimeLazyVolume += lazyPrice;
+
+            // Use LazyGasStation for LAZY payment - full amount to seller (no platform fees)
+            lazyGasStation.drawLazyFromPayTo(buyer, lazyPrice, 0, seller);
+        }
+    }
+
+    /***
+     * @notice Execute 2-step NFT transfer for Hedera royalty compliance
+     * @param token The token address
+     * @param serial The NFT serial number
+     * @param seller The seller address
+     * @param buyer The buyer address
+     * @param salePrice The sale price for royalty calculations
+     */
+    function _execute2StepNFTTransfer(
+        address token,
+        uint256 serial,
+        address seller,
+        address buyer,
+        uint256 salePrice
+    ) internal {
+        uint256[] memory serialArray = new uint256[](1);
+        serialArray[0] = serial;
+
+        // Step 1: Seller → Smart Contract (triggers royalty calculations)
+        batchMoveNFTs(
+            TransferDirection.STAKING,
+            token,
+            serialArray,
+            seller,
+            false,
+            int64(Math.max(salePrice, 1).toUint64())
+        );
+
+        // Step 2: Smart Contract → Buyer (completes the trade)
+        batchMoveNFTs(
+            TransferDirection.WITHDRAWAL,
+            token,
+            serialArray,
+            buyer,
+            false,
+            1
+        );
+    }
+    /***
      * @notice Internal function to execute a single trade
      * @param _tradeId The trade ID to execute
      * @param _checkFunds Whether to check insufficient funds (false for batch execution)
@@ -676,83 +776,19 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             );
         }
 
-        // use TokenStaker batchMoveNFTs to move the NFT from seller to the Smart Contract
-        // then use batchMoveNFTs to move the NFT from the Smart Contract to the buyer
-        // USING BATCHMOVE FOR A SINGLE NFT IS OVERKILL - but it is a good pattern to follow
-        // as it hooks into the refill() modifier to ensure the contract has sufficient HBAR
-
-        // single serial for now -> reduces on-chain gas activity
-        uint256[] memory serials = new uint256[](1);
-        serials[0] = trade.serial;
-
-        // Step 1: Seller → Smart Contract (triggers royalty calculations)
-        // This move includes the sale price to ensure proper royalty calculations
-        batchMoveNFTs(
-            TransferDirection.STAKING,
+        // Execute 2-step NFT transfer for Hedera royalty compliance
+        _execute2StepNFTTransfer(
             trade.token,
-            serials,
+            trade.serial,
             trade.seller,
-            false,
-            int64(Math.max(trade.tinybarPrice, 1).toUint64())
-        );
-
-        // Step 2: Smart Contract → Buyer (completes the trade)
-        // Final transfer with minimal price as royalties already paid
-        batchMoveNFTs(
-            TransferDirection.WITHDRAWAL,
-            trade.token,
-            serials,
             msg.sender,
-            false,
-            1
+            trade.tinybarPrice
         );
 
-        // Handle HBAR payment with platform fee deduction (fees only apply to HBAR)
+        // Handle payments using shared helper functions
         hbarUsed = trade.tinybarPrice;
-        uint256 hbarFee = 0;
-
-        if (trade.tinybarPrice > 0) {
-            // Track lifetime HBAR volume
-            lifetimeHbarVolume += trade.tinybarPrice;
-
-            // Calculate platform fee for HBAR trades only
-            uint256 sellerFeeRate = calculateSellerFeeRate(trade.seller);
-            if (sellerFeeRate > 0) {
-                hbarFee = (trade.tinybarPrice * sellerFeeRate) / 10000;
-                uint256 sellerAmount = trade.tinybarPrice - hbarFee;
-
-                // Send net amount to seller
-                Address.sendValue(payable(trade.seller), sellerAmount);
-
-                // Track collected fees (fees stay in contract)
-                totalHbarFeesCollected += hbarFee;
-
-                // Emit platform fee collection event
-                emit PlatformFeeCollected(
-                    trade.seller,
-                    msg.sender,
-                    hbarFee,
-                    sellerFeeRate
-                );
-            } else {
-                // No fees - send full amount to seller
-                Address.sendValue(payable(trade.seller), trade.tinybarPrice);
-            }
-        }
-
-        // Handle LAZY payment (NO FEES - this gives LAZY additional utility)
-        if (trade.lazyPrice > 0) {
-            // Track lifetime LAZY volume
-            lifetimeLazyVolume += trade.lazyPrice;
-
-            // Standard LAZY payment - full amount to seller (no platform fees)
-            lazyGasStation.drawLazyFromPayTo(
-                msg.sender,
-                trade.lazyPrice,
-                0,
-                trade.seller
-            );
-        }
+        _processHbarPayment(trade.seller, msg.sender, trade.tinybarPrice);
+        _processLazyPayment(trade.seller, msg.sender, trade.lazyPrice);
 
         // Clean up storage using existing helper method
         removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
@@ -1269,22 +1305,20 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         _validateBatchTradeExecution(batchTrade);
 
         // Execute all transfers atomically
-        try this._executeBatchTransfers(_batchId) {
-            // Clean up storage
-            _cleanupBatchTrade(_batchId, batchTrade);
+        _executeBatchTransfers(_batchId);
 
-            emit BatchTradeExecuted(
-                _batchId,
-                msg.sender,
-                batchTrade.items.length,
-                batchTrade.totalTinybarPrice,
-                batchTrade.totalLazyPrice
-            );
+        // Clean up storage
+        _cleanupBatchTrade(_batchId, batchTrade);
 
-            return true;
-        } catch {
-            revert AtomicBatchExecutionFailed(_batchId, 0);
-        }
+        emit BatchTradeExecuted(
+            _batchId,
+            msg.sender,
+            batchTrade.items.length,
+            batchTrade.totalTinybarPrice,
+            batchTrade.totalLazyPrice
+        );
+
+        return true;
     }
 
     /***
@@ -1350,30 +1384,19 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
      * @notice Internal function to execute all batch transfers
      * @param _batchId The batch trade ID
      */
-    function _executeBatchTransfers(bytes32 _batchId) external {
-        if (msg.sender != address(this)) revert OnlySelfCallAllowed();
-
+    function _executeBatchTransfers(bytes32 _batchId) internal {
         BatchTrade storage batchTrade = batchTradesMap[_batchId];
 
-        // For batch efficiency, group NFTs by collection and use moveNFTs for each group
-        // This approach leverages the existing TokenStaker infrastructure
-
-        // Since we validated ownership and approvals earlier, we can proceed with transfers
+        // Execute 2-step NFT transfers for each item using shared helper
         for (uint256 i = 0; i < batchTrade.items.length; ) {
             TokenSerialPrice memory item = batchTrade.items[i];
 
-            // Transfer individual NFT using existing single NFT transfer logic
-            uint256[] memory serialArray = new uint256[](1);
-            serialArray[0] = item.serial;
-
-            // Use the existing TokenStaker moveNFTs function
-            moveNFTs(
-                TransferDirection.WITHDRAWAL, // From seller to buyer
+            _execute2StepNFTTransfer(
                 item.token,
-                serialArray,
+                item.serial,
                 batchTrade.seller,
-                false, // No delegation changes needed
-                1 // 1 tinybar minimum for transfer
+                batchTrade.buyer,
+                item.tinybarPrice
             );
 
             unchecked {
@@ -1381,56 +1404,17 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             }
         }
 
-        // Handle HBAR payment with platform fee deduction (fees only apply to HBAR)
-        uint256 totalHbarFee = 0;
-
-        if (batchTrade.totalTinybarPrice > 0) {
-            // Track lifetime HBAR volume
-            lifetimeHbarVolume += batchTrade.totalTinybarPrice;
-
-            // Calculate platform fee for HBAR trades only
-            uint256 sellerFeeRate = calculateSellerFeeRate(batchTrade.seller);
-            if (sellerFeeRate > 0) {
-                totalHbarFee =
-                    (batchTrade.totalTinybarPrice * sellerFeeRate) /
-                    10000;
-                uint256 sellerHbarAmount = batchTrade.totalTinybarPrice -
-                    totalHbarFee;
-
-                // Send net amount to seller
-                Address.sendValue(payable(batchTrade.seller), sellerHbarAmount);
-
-                // Track collected fees (fees stay in contract)
-                totalHbarFeesCollected += totalHbarFee;
-
-                // Emit platform fee collection event
-                emit PlatformFeeCollected(
-                    batchTrade.seller,
-                    msg.sender,
-                    totalHbarFee,
-                    sellerFeeRate
-                );
-            } else {
-                // No fees - send full amount to seller
-                Address.sendValue(
-                    payable(batchTrade.seller),
-                    batchTrade.totalTinybarPrice
-                );
-            }
-        }
-
-        // Handle LAZY payment (NO FEES - this gives LAZY additional utility)
-        if (batchTrade.totalLazyPrice > 0) {
-            // Track lifetime LAZY volume
-            lifetimeLazyVolume += batchTrade.totalLazyPrice;
-
-            // Standard LAZY payment - full amount to seller (no platform fees)
-            IERC20(lazyToken).transferFrom(
-                msg.sender,
-                batchTrade.seller,
-                batchTrade.totalLazyPrice
-            );
-        }
+        // Handle payments using shared helper functions
+        _processHbarPayment(
+            batchTrade.seller,
+            msg.sender,
+            batchTrade.totalTinybarPrice
+        );
+        _processLazyPayment(
+            batchTrade.seller,
+            msg.sender,
+            batchTrade.totalLazyPrice
+        );
     }
 
     /***
