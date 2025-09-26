@@ -829,23 +829,13 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // now on to paid methods (will 'cost' 3 sub transactions, remember the limit is 50 total)
         // so we can only accept 16 validations per call
 
-        // check the seller has the NFT
-        if (IERC721(trade.token).ownerOf(trade.serial) != trade.seller) {
-            return false;
-        }
-
-        // check the allowance of the NFT then return true
-        if (
-            IERC721(trade.token).isApprovedForAll(
-                trade.seller,
-                address(this)
-            ) || IERC721(trade.token).getApproved(trade.serial) == address(this)
-        ) {
-            return true;
-        }
-
-        // if we get here, then the trade is invalid
-        return false;
+        // Use consolidated NFT validation
+        return
+            _validateNFTOwnershipAndApproval(
+                trade.token,
+                trade.serial,
+                trade.seller
+            );
     }
 
     /***
@@ -1246,33 +1236,53 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
+     * @notice Internal function to validate NFT ownership and approval for a single item
+     * @param token The NFT token address
+     * @param serial The NFT serial number
+     * @param owner Expected owner address
+     * @return valid True if NFT is owned by owner and approved for this contract
+     */
+    function _validateNFTOwnershipAndApproval(
+        address token,
+        uint256 serial,
+        address owner
+    ) internal view returns (bool valid) {
+        // Check NFT ownership
+        if (IERC721(token).ownerOf(serial) != owner) {
+            return false;
+        }
+
+        // Check approvals - either approved for all or specific serial approval
+        return
+            IERC721(token).isApprovedForAll(owner, address(this)) ||
+            IERC721(token).getApproved(serial) == address(this);
+    }
+
+    /***
      * @notice Internal function to validate batch trade execution prerequisites
-     * @dev OPTIMIZATION CANDIDATE: This function could be removed to save ~1KiB if space is critical.
-     *      The validations would still occur during execution, but with less specific error messages.
      * @param batchTrade The batch trade to validate
      */
     function _validateBatchTradeExecution(
         BatchTrade storage batchTrade
     ) internal view {
+        // Validate all NFTs using consolidated validation
         for (uint256 i = 0; i < batchTrade.items.length; ) {
             TokenSerialPrice memory item = batchTrade.items[i];
 
-            // Check NFT ownership hasn't changed
-            if (IERC721(item.token).ownerOf(item.serial) != batchTrade.seller) {
-                revert UserDoesNotOwnNFT();
-            }
-
-            // Check approvals
             if (
-                !IERC721(item.token).isApprovedForAll(
-                    batchTrade.seller,
-                    address(this)
+                !_validateNFTOwnershipAndApproval(
+                    item.token,
+                    item.serial,
+                    batchTrade.seller
                 )
             ) {
+                // Check specific failure reason for better error messages
                 if (
-                    IERC721(item.token).getApproved(item.serial) !=
-                    address(this)
+                    IERC721(item.token).ownerOf(item.serial) !=
+                    batchTrade.seller
                 ) {
+                    revert UserDoesNotOwnNFT();
+                } else {
                     revert UserMustApproveNFTFirst();
                 }
             }
