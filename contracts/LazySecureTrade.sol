@@ -3,7 +3,10 @@ pragma solidity >=0.8.12 <0.9.0;
 
 /// @title LazySecureTrade
 /// @author stowerling.eth / stowerling.hbar
-/// @notice This contract is a decentralized secure trade contract for HTS NFTs without time limits
+/// @notice A decentralized secure trade contract for Hedera Token Service (HTS) NFTs with advanced features
+/// @dev Supports single trades, batch trades, platform fees with LSH token discounts, and 2-step NFT transfers for royalty compliance
+/// @custom:version 0.2
+/// @custom:security-contact security@lazysecuretrade.com
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
@@ -22,6 +25,15 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     using SafeCast for uint256;
     using Address for address;
 
+    /// @notice Individual trade structure for single NFT trades
+    /// @param seller Address of the NFT seller
+    /// @param buyer Address of the buyer (address(0) for open market trades)
+    /// @param token Address of the NFT token contract
+    /// @param serial Serial number of the NFT
+    /// @param tinybarPrice Price in tinybars (HBAR)
+    /// @param lazyPrice Price in LAZY tokens
+    /// @param expiryTime Unix timestamp when trade expires (0 for no expiry)
+    /// @param nonce Unique identifier for the trade
     struct Trade {
         address seller;
         address buyer;
@@ -33,6 +45,14 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 nonce;
     }
 
+    /// @notice Batch trade structure for multiple NFT atomic trades
+    /// @param seller Address of the NFT seller
+    /// @param buyer Address of the buyer (address(0) for open market trades)
+    /// @param items Array of individual NFT items with their prices
+    /// @param totalTinybarPrice Combined tinybar price for all items
+    /// @param totalLazyPrice Combined LAZY token price for all items
+    /// @param expiryTime Unix timestamp when batch trade expires (0 for no expiry)
+    /// @param nonce Unique identifier for the batch trade
     struct BatchTrade {
         address seller;
         address buyer; // address(0) = open market, specific address = closed trade
@@ -43,6 +63,11 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         uint256 nonce; // Uses existing tradeNonce counter
     }
 
+    /// @notice Individual item within a batch trade
+    /// @param token Address of the NFT token contract
+    /// @param serial Serial number of the NFT
+    /// @param tinybarPrice Price in tinybars (HBAR) for this specific NFT
+    /// @param lazyPrice Price in LAZY tokens for this specific NFT
     struct TokenSerialPrice {
         address token;
         uint256 serial;
@@ -153,29 +178,49 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     EnumerableSet.AddressSet private tokens;
 
+    /// @notice Address of LSH Generation 1 NFT contract (highest tier - free trades)
     address public immutable LSH_GEN1;
+    /// @notice Address of LSH Generation 2 NFT contract (medium tier - 50% discount)
     address public immutable LSH_GEN2;
+    /// @notice Address of LSH Generation 1 Mutant NFT contract (high tier - 75% discount)
     address public immutable LSH_GEN1_MUTANT;
 
-    // each trade has a unique nonce
+    /// @notice Global counter ensuring each trade has a unique nonce
     uint256 public tradeNonce;
+    /// @notice Cost in LAZY tokens for creating open market trades (non-LSH holders)
     uint256 public lazyCostForTrade;
+    /// @notice Percentage of LAZY tokens to burn when creating trades (in basis points)
     uint256 public lazyBurnPercentage;
 
     // Platform fee system (in basis points: 100bp = 1%)
     // Base rate + discount system for efficiency
+    /// @notice Base platform fee rate for HBAR trades (1% for non-LSH holders)
     uint256 public baseFeeRate = 100; // 1% base rate for non-LSH holders
+    /// @notice Discount percentage for LSH Gen2 holders (50% = 0.5% effective fee)
     uint256 public lshGen2Discount = 50; // 50% discount for LSH Gen2 holders (0.5% effective)
+    /// @notice Discount percentage for LSH Mutant holders (75% = 0.25% effective fee)
     uint256 public lshMutantDiscount = 75; // 75% discount for LSH Mutant holders (0.25% effective)
+    /// @notice Discount percentage for LSH Gen1 holders (100% = FREE trades)
     uint256 public lshGen1Discount = 100; // 100% discount for LSH Gen1 holders (0% effective - FREE!)
 
-    // Fee collection tracking (HBAR only - LAZY trades excluded)
+    /// @notice Total HBAR fees collected by the platform (LAZY trades are fee-free)
     uint256 public totalHbarFeesCollected;
 
     // Lifetime volume tracking for analytics
+    /// @notice Total HBAR volume processed through all trades
     uint256 public lifetimeHbarVolume; // Total HBAR volume processed
+    /// @notice Total LAZY token volume processed through all trades
     uint256 public lifetimeLazyVolume; // Total LAZY volume processed
 
+    /// @notice Initialize the LazySecureTrade contract with required dependencies
+    /// @param _lazyToken Address of the LAZY token contract
+    /// @param _lazyGasStation Address of the LazyGasStation contract for token operations
+    /// @param _lazyDelegateRegistry Address of the delegate registry for LSH token delegation
+    /// @param _lshGen1 Address of the LSH Generation 1 NFT contract (highest tier benefits)
+    /// @param _lshGen2 Address of the LSH Generation 2 NFT contract (medium tier benefits)
+    /// @param _lshGen1Mutant Address of the LSH Generation 1 Mutant NFT contract (high tier benefits)
+    /// @param _lazyCostForTrade Cost in LAZY tokens for creating open market trades
+    /// @param _lazyBurnPercentage Percentage of LAZY tokens to burn when creating trades (basis points)
     constructor(
         address _lazyToken,
         address _lazyGasStation,
@@ -588,13 +633,12 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Check is a trade is valid for a user
-     * If the user is 0x0, then only expiry, ownership and allowance are checked
-     * If the user is not 0x0, then the user must be the seller or buyer (unless the trade is open as
-     * in the case of a buyer being 0x0)
-     * @param _tradeId the hash of the token and serial
-     * @param _user the address of the user
-     * @return valid true if the trade is valid, false otherwise
+     * @notice Check if a trade is valid for a user
+     * @dev If the user is address(0), only expiry, ownership and allowance are checked.
+     * If the user is not address(0), the user must be the seller or buyer (unless it's an open trade).
+     * @param _tradeId The hash of the token and serial
+     * @param _user The address of the user to validate for
+     * @return valid True if the trade is valid, false otherwise
      */
     function isTradeValid(
         bytes32 _tradeId,
@@ -1309,7 +1353,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
      * @param seller The seller address
      * @param buyer The buyer address
      * @param tinybarPrice The price in tinybars
-     * @param preCalculatedFeeRate The pre-calculated fee rate in basis points
+     * @param sellerFeeRate The pre-calculated fee rate in basis points (100bp = 1%)
      * @return netAmountToSeller The net amount to send to seller via staking mechanism
      */
     function _processHbarPayment(
