@@ -158,7 +158,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     // Platform Fee Errors
     error InvalidFeeRate(uint256 rate);
-    error InsufficientFeesToWithdraw();
 
     // v0.2 Batch Trade Errors
     error BatchTradeNotFound(bytes32 batchId);
@@ -1035,7 +1034,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 batchTrade.seller,
                 msg.sender,
                 item.tinybarPrice,
-                sellerFeeRate
+                sellerFeeRate,
+                item.token
             );
 
             _execute2StepNFTTransfer(
@@ -1230,7 +1230,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Withdraw collected platform fees (HBAR only - LAZY trades are fee-free)
+     * @notice Withdraw collected platform fees (HBAR only)
      * **ONLY OWNER**
      * @param _recipient Address to receive the fees
      */
@@ -1239,15 +1239,12 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             revert BadArguments();
         }
 
-        uint256 hbarAmount = totalHbarFeesCollected;
-        if (hbarAmount == 0) {
-            revert InsufficientFeesToWithdraw();
+        // leave behind 100 tinybar buffer
+        if (address(this).balance > 100) {
+            uint256 hbarAmount = address(this).balance - 100;
+            Address.sendValue(payable(_recipient), hbarAmount);
+            emit FeesWithdrawn(_recipient, hbarAmount);
         }
-
-        totalHbarFeesCollected = 0;
-        Address.sendValue(payable(_recipient), hbarAmount);
-
-        emit FeesWithdrawn(_recipient, hbarAmount);
     }
 
     /***
@@ -1354,19 +1351,28 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
      * @param buyer The buyer address
      * @param tinybarPrice The price in tinybars
      * @param sellerFeeRate The pre-calculated fee rate in basis points (100bp = 1%)
+     * @param itemAddress The address of the item being sold (for fee exemptions)
      * @return netAmountToSeller The net amount to send to seller via staking mechanism
      */
     function _processHbarPayment(
         address seller,
         address buyer,
         uint256 tinybarPrice,
-        uint256 sellerFeeRate
+        uint256 sellerFeeRate,
+        address itemAddress
     ) internal returns (uint256 netAmountToSeller) {
         if (tinybarPrice > 0) {
             // Track lifetime HBAR volume
             lifetimeHbarVolume += tinybarPrice;
 
-            if (sellerFeeRate > 0) {
+            if (
+                itemAddress == LSH_GEN1 ||
+                itemAddress == LSH_GEN2 ||
+                itemAddress == LSH_GEN1_MUTANT
+            ) {
+                // No fees for LSH Gen1/Gen2/Mutant trades - full amount goes to seller
+                netAmountToSeller = tinybarPrice;
+            } else if (sellerFeeRate > 0) {
                 uint256 hbarFee = (tinybarPrice * sellerFeeRate) / 10000;
                 netAmountToSeller = tinybarPrice - hbarFee;
 
@@ -1495,7 +1501,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             trade.seller,
             msg.sender,
             trade.tinybarPrice,
-            sellerFeeRate
+            sellerFeeRate,
+            trade.token
         );
 
         // Execute 2-step NFT transfer for Hedera royalty compliance using net amount
@@ -1516,10 +1523,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // or use try/catch to handle the failure of the transfer and revert to this work around
         _processLazyPayment(trade.seller, msg.sender, trade.lazyPrice);
 
-        // Clean up storage using existing helper method
-        removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
-
         // Emit individual trade executed event
+        // N.B. do this before cleaning up storage to retain info
         emit TradeCompleted(
             trade.seller,
             msg.sender,
@@ -1527,6 +1532,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             trade.serial,
             trade.nonce
         );
+
+        // Clean up storage using existing helper method
+        removeTradeFromState(_tradeId, trade.buyer, trade.seller, trade.token);
     }
 
     /***

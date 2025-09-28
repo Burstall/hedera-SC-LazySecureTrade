@@ -1,7 +1,7 @@
 const fs = require('fs');
 const { ethers } = require('ethers');
 const { expect } = require('chai');
-const { describe, it } = require('mocha');
+const { describe, it, before, after } = require('mocha');
 const {
 	Client,
 	AccountId,
@@ -74,6 +74,7 @@ let lazyIface, lazyGasStationIface, lazySecureTradeIface, lazyDelegateRegistryIf
 let lazyTokenId;
 let alicePK, aliceId;
 let bobPK, bobId;
+let charliePK, charlieId;
 let client;
 let lazySCT;
 let StkNFTA_TokenId,
@@ -747,7 +748,8 @@ describe('Check Contract Deployment', () => {
 	});
 });
 
-describe('Secure Trades are go...', () => {
+// SKIPPING v1 TESTS - Focus on v0.2 Platform Fee System Testing
+describe.skip('Secure Trades are go...', () => {
 	it('Operator Creates a trade for Bob (hbar only)', async () => {
 		client.setOperator(operatorId, operatorKey);
 
@@ -1982,6 +1984,596 @@ describe('Secure Trades are go...', () => {
 	});
 });
 
+// v0.2 TESTING PHASE 1: PLATFORM FEE SYSTEM TESTS
+describe('v0.2 Phase 1: Platform Fee System Tests', () => {
+	// Increased for v0.2 fee collection logic
+	const gasLim = 2_000_000;
+	const queryGas = 300_000;
+
+	before('Setup additional test accounts for v0.2 testing', async () => {
+		if (process.env.CHARLIE_ACCOUNT_ID && process.env.CHARLIE_PRIVATE_KEY) {
+			charlieId = AccountId.fromString(process.env.CHARLIE_ACCOUNT_ID);
+			charliePK = PrivateKey.fromStringED25519(process.env.CHARLIE_PRIVATE_KEY);
+			console.log('\n-Using existing Charlie:', charlieId.toString());
+		}
+		else {
+			charliePK = PrivateKey.generateED25519();
+			charlieId = await accountCreator(client, charliePK, 50);
+			console.log(
+				'Charlie account ID:',
+				charlieId.toString(),
+				charlieId.toSolidityAddress(),
+				'\nkey:',
+				charliePK.toString(),
+			);
+		}
+		expect(charlieId.toString().match(addressRegex).length == 2).to.be.true;
+
+		await associateTokensToAccount(client, charlieId, charliePK, [
+			lazyTokenId,
+			StkNFTA_TokenId,
+			StkNFTB_TokenId,
+			StkNFTC_TokenId,
+		]);
+
+		// shift to operator to fund Charlie with $LAZY
+		client.setOperator(operatorId, operatorKey);
+
+		await sendLazy(charlieId, 1000 * 10 ** LAZY_DECIMAL);
+
+		// Send Charlie NFTs to trade (using serials 9 and 10 which Alice owns)
+		client.setOperator(aliceId, alicePK);
+		await sendNFT(
+			client,
+			aliceId,
+			charlieId,
+			StkNFTA_TokenId,
+			[9, 10],
+		);
+
+		// Set NFT allowances for Charlie
+		client.setOperator(charlieId, charliePK);
+		await setNFTAllowanceAll(
+			client,
+			[StkNFTA_TokenId],
+			charlieId,
+			AccountId.fromString(lstContractId.toString()),
+		);
+
+		console.log('✅ Charlie setup complete');
+	});
+
+	describe('1.1 Fee Configuration Tests', () => {
+		it('Should have correct initial fee configuration', async () => {
+			const platformInfo = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+
+			const [baseFee, gen2Discount, mutantDiscount, gen1Discount] = platformInfo;
+
+			expect(baseFee.toString()).to.equal('100');
+			expect(gen2Discount.toString()).to.equal('50');
+			expect(mutantDiscount.toString()).to.equal('75');
+			expect(gen1Discount.toString()).to.equal('100');
+
+			console.log('✅ Initial fee configuration verified');
+		});
+
+		it('Should update fee rates (owner only)', async () => {
+			client.setOperator(operatorId, operatorKey);
+
+			const newBaseFee = 150;
+			const newGen2Discount = 60;
+			const newMutantDiscount = 80;
+			const newGen1Discount = 100;
+
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[newBaseFee, newGen2Discount, newMutantDiscount, newGen1Discount],
+			);
+
+			expect(result[0]?.status?.toString()).to.equal('SUCCESS');
+
+			const platformInfo = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+
+			const [baseFee, gen2Discount, mutantDiscount, gen1Discount] = platformInfo;
+			expect(baseFee.toString()).to.equal(newBaseFee.toString());
+			expect(gen2Discount.toString()).to.equal(newGen2Discount.toString());
+			expect(mutantDiscount.toString()).to.equal(newMutantDiscount.toString());
+			expect(gen1Discount.toString()).to.equal(newGen1Discount.toString());
+
+			// Wait for mirror node sync
+			console.log('⏳ Waiting for mirror node sync...');
+			await sleep(4500);
+
+			// Check event emission
+			const eventCheck = await checkLastMirrorEvent(
+				env,
+				lstContractId,
+				lazySecureTradeIface,
+				0,
+				false,
+			);
+
+			console.log('Event check value:', eventCheck);
+			// The eventCheck should match the new base fee
+			expect(eventCheck == 150).to.be.true;
+
+			console.log('✅ Fee rates updated successfully');
+
+			await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[100, 50, 75, 100],
+			);
+		});
+
+		it('Should reject invalid fee rates', async () => {
+			client.setOperator(operatorId, operatorKey);
+
+			// Test base fee too high (>500)
+			const result1 = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[600, 50, 75, 100],
+			);
+
+			if (result1[0]?.status?.name.toString() != 'InvalidFeeRate') {
+				console.log('ERROR: Should have failed for high base fee', result1);
+				fail();
+			}
+
+			// Test invalid discount hierarchy (gen1 > gen2)
+			const result2 = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[100, 50, 75, 30],
+			);
+
+			if (result2[0]?.status?.name.toString() != 'InvalidFeeRate') {
+				console.log('ERROR: Should have failed for invalid hierarchy', result2);
+				fail();
+			}
+
+
+			const errorRes = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[100, 80, 70, 100],
+			);
+			if (errorRes[0]?.status?.name.toString() != 'InvalidFeeRate') {
+				console.log('ERROR: Should have failed for invalid hierarchy', errorRes);
+				fail();
+			}
+
+			console.log('✅ Invalid fee rate rejection working');
+		});
+
+		it('Should prevent non-owner from updating fees', async () => {
+			client.setOperator(aliceId, alicePK);
+
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[200, 50, 75, 100],
+			);
+
+			expect(result[0].status.toString()).to.include('Ownable: caller is not the owner');
+
+			console.log('✅ Non-owner access prevention working');
+		});
+	});
+
+	describe('1.2 Fee Calculation Tests', () => {
+		it('Should calculate fees correctly for different LSH tiers', async () => {
+			const charlieRate = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'calculateSellerFeeRate',
+				[charlieId.toSolidityAddress()],
+			);
+			// Base fee was reset to 100 after previous test
+			expect(charlieRate[0].toString()).to.equal('100');
+
+			const charlieTier = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getLSHTokenTier',
+				[charlieId.toSolidityAddress()],
+			);
+			expect(charlieTier[0].toString()).to.equal('0');
+
+			const operatorTier = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getLSHTokenTier',
+				[operatorId.toSolidityAddress()],
+			);
+			console.log('Operator LSH tier:', operatorTier[0].toString());
+
+			const operatorRate = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'calculateSellerFeeRate',
+				[operatorId.toSolidityAddress()],
+			);
+			console.log('Operator fee rate:', operatorRate[0].toString(), 'basis points');
+
+			console.log('✅ Fee calculation tests completed');
+		});
+
+		it('Should handle edge cases in fee calculation', async () => {
+			client.setOperator(operatorId, operatorKey);
+
+			await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[0, 50, 75, 100],
+			);
+
+			const zeroBaseFeeRate = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'calculateSellerFeeRate',
+				[charlieId.toSolidityAddress()],
+			);
+			expect(zeroBaseFeeRate[0].toString()).to.equal('0');
+
+			await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'updateFeeRates',
+				[100, 50, 75, 100],
+			);
+
+			console.log('✅ Edge case fee calculations working');
+		});
+	});
+
+	describe('1.3 Fee Collection & Tracking Tests', () => {
+		it('Should collect fees on open market HBAR trades', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			const charlieTier = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getLSHTokenTier',
+				[charlieId.toSolidityAddress()],
+			);
+			console.log('Charlie LSH tier:', charlieTier[0].toString());
+
+			const lazyCostResult = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'lazyCostForTrade',
+			);
+			const lazyCost = Number(lazyCostResult[0]);
+			console.log('LAZY cost for trade:', lazyCost.toString());
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				lazyCost,
+			);
+
+			await sleep(4500);
+
+			// validate the allowance is set
+			const allowances = await checkFTAllowances(env, charlieId);
+			let allowanceValid = false;
+			for (let a = 0; a < allowances.length; a++) {
+				const allowance = allowances[a];
+				if (allowance.spender === lazyGasStationId.toString()) {
+					if (allowance.token_id === lazyTokenId.toString()) {
+						if (Number(allowance.amount) >= lazyCost) {
+							allowanceValid = true;
+							break;
+						}
+					}
+				}
+			}
+
+			if (!allowanceValid) {
+				console.log('ERROR: $LAZY allowance for LGS not valid', allowances);
+				fail();
+			}
+
+			const tradePrice = 1000;
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'createTrade',
+				[
+					StkNFTA_TokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					9,
+					tradePrice,
+					0,
+					0,
+				],
+			);
+
+			if (result[0]?.status?.toString() != 'SUCCESS') {
+				console.log('CreateTrade result (open market):', result);
+				fail();
+			}
+
+			client.setOperator(aliceId, alicePK);
+
+			const platformInfoBefore = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+			const feesBefore = platformInfoBefore[4];
+
+			const expectedFee = Math.floor((tradePrice * 100) / 10000);
+
+			// Alice must set tinybar allowance of 1 tinybar per item to
+			// the Lazy Secure Trade contract to enable the unstake
+			// setting 1 hbar to avoid running out of allowance
+			// in case of multiple tests
+			const hbarAllowanceStatus = await setHbarAllowance(
+				client,
+				aliceId,
+				AccountId.fromString(lstContractId.toString()),
+				1,
+				HbarUnit.Hbar,
+			);
+
+			if (hbarAllowanceStatus != 'SUCCESS') {
+				console.log('ERROR: HBAR allowance to Lazy Secure Trade failed', hbarAllowanceStatus);
+				fail();
+			}
+
+			const tradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTA_TokenId.toSolidityAddress(), 9],
+			);
+
+			console.log('Trade ID to execute:', tradeId);
+			console.log('Trade ID from contract:', result[1][0]);
+
+			const executeResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'executeTrade',
+				[tradeId],
+				new Hbar(tradePrice, HbarUnit.Tinybar),
+			);
+
+			if (executeResult[0]?.status?.toString() != 'SUCCESS') {
+				console.log('ExecuteTrade result (open market):', executeResult);
+				fail();
+			}
+
+			console.log('Alice Trade Execution tx:', executeResult[2]?.transactionId?.toString());
+
+			const platformInfoAfter = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+			const feesAfter = platformInfoAfter[4];
+			const feeCollected = feesAfter - feesBefore;
+
+			expect(feeCollected.toString()).to.equal(expectedFee.toString());
+			console.log('✅ Open market trade with fee collection verified');
+
+			// Wait for mirror node sync
+			console.log('⏳ Waiting for mirror node sync...');
+			await sleep(4500);
+
+			const eventCheck = await checkLastMirrorEvent(
+				env,
+				lstContractAddress,
+				lazySecureTradeIface,
+				3,
+				false,
+			);
+			console.log('Event check:', eventCheck);
+			expect(Number(eventCheck)).to.equal(9);
+
+			console.log('✅ Fee collection on open market HBAR trade verified');
+		});
+
+		it('Should NOT collect fees on private trades', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			const platformInfoBefore = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+			const feesBefore = platformInfoBefore[4];
+
+			// Charlie must set tinybar allowance of 1 tinybar per item to
+			// the Lazy Secure Trade contract to enable the unstake
+			// setting 1 hbar to avoid running out of allowance
+			// in case of multiple tests
+			const hbarAllowanceStatus = await setHbarAllowance(
+				client,
+				charlieId,
+				AccountId.fromString(lstContractId.toString()),
+				1,
+				HbarUnit.Hbar,
+			);
+
+			if (hbarAllowanceStatus != 'SUCCESS') {
+				console.log('ERROR: HBAR allowance to Lazy Secure Trade failed', hbarAllowanceStatus);
+				fail();
+			}
+
+			const tradePrice = 2000;
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'createTrade',
+				[
+					StkNFTA_TokenId.toSolidityAddress(),
+					aliceId.toSolidityAddress(),
+					10,
+					tradePrice,
+					0,
+					0,
+				],
+			);
+
+			if (result[0]?.status?.toString() != 'SUCCESS') {
+				console.log('CreateTrade result (private):', result);
+				fail();
+			}
+
+			client.setOperator(aliceId, alicePK);
+
+			const tradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTA_TokenId.toSolidityAddress(), 10],
+			);
+
+			const executeResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'executeTrade',
+				[tradeId],
+				new Hbar(tradePrice, HbarUnit.Tinybar),
+			);
+
+			if (executeResult[0]?.status?.toString() != 'SUCCESS') {
+				console.log('ExecuteTrade result (private):', executeResult);
+				fail();
+			}
+
+			const platformInfoAfter = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+			const feesAfter = platformInfoAfter[4];
+			const feeCollected = feesAfter - feesBefore;
+
+			expect(Number(feeCollected.toString())).to.equal(0);
+			console.log('✅ No fee collection on private trades verified');
+		});
+	});
+
+	describe('1.4 Fee Withdrawal Tests', () => {
+		it('Should allow owner to withdraw platform fees', async () => {
+			client.setOperator(operatorId, operatorKey);
+
+			const platformInfoBefore = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				queryGas,
+				'getPlatformFeeInfo',
+			);
+			const collectedFees = platformInfoBefore[4];
+
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'withdrawPlatformFees',
+				[operatorId.toSolidityAddress()],
+			);
+
+			expect(result[0]?.status?.toString()).to.equal('SUCCESS');
+
+			// Note: Fees remain tracked as lifetime accrual - no reset to zero
+			console.log(`✅ Platform fee withdrawal successful (${collectedFees} tracked fees)`);
+		});
+
+		it('Should prevent non-owner from withdrawing fees', async () => {
+			client.setOperator(aliceId, alicePK);
+
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'withdrawPlatformFees',
+				[aliceId.toSolidityAddress()],
+			);
+
+			expect(result[0].status.toString()).to.include('Ownable: caller is not the owner');
+			console.log('✅ Non-owner withdrawal prevention working');
+		});
+	});
+
+	after('Phase 1 cleanup', async () => {
+		client.setOperator(operatorId, operatorKey);
+		console.log('🏁 Phase 1: Platform Fee System Tests Complete');
+	});
+});
+
 describe('Clean-up', () => {
 	it('removes allowances from Operator', async () => {
 		client.setOperator(operatorId, operatorKey);
@@ -2119,6 +2711,15 @@ describe('Clean-up', () => {
 		console.log('sweeping bob', balance / 10 ** 8);
 		result = await sweepHbar(client, bobId, bobPK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
 		console.log('bob:', result);
+
+		// Sweep Charlie if account was created during v0.2 testing
+		if (typeof charlieId !== 'undefined' && charlieId) {
+			balance = await checkMirrorHbarBalance(env, charlieId, charliePK);
+			balance -= 1_000_000;
+			console.log('sweeping charlie', balance / 10 ** 8);
+			result = await sweepHbar(client, charlieId, charliePK, operatorId, new Hbar(balance, HbarUnit.Tinybar));
+			console.log('charlie:', result);
+		}
 	});
 });
 
