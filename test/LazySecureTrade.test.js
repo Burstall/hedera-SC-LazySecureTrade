@@ -41,6 +41,7 @@ const {
 	checkFTAllowances,
 	checkMirrorBalance,
 	checkMirrorHbarBalance,
+	getSerialsOwned,
 } = require('../utils/hederaMirrorHelpers');
 const { sleep } = require('../utils/nodeHelpers');
 require('dotenv').config();
@@ -330,10 +331,10 @@ describe('Deployment', () => {
 		// mint NFTs from the 3rd party Alice Account
 		// ensure royalties in place
 		/*
-			3 x Different NFTs of size 10 each
+			3 x Different NFTs of size 15 each
 		*/
 
-		const nftSize = 10;
+		const nftSize = 15;
 
 		client.setOperator(aliceId, alicePK);
 		let [result, tokenId] = await mintNFT(
@@ -2028,7 +2029,7 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 			aliceId,
 			charlieId,
 			StkNFTA_TokenId,
-			[9, 10],
+			[9, 10, 11, 12, 13],
 		);
 
 		// Set NFT allowances for Charlie
@@ -2611,7 +2612,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			aliceId,
 			charlieId,
 			StkNFTB_TokenId,
-			[6, 7, 8, 9],
+			[6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
 		);
 		expect(sendNFTB_Result).to.be.equal('SUCCESS');
 
@@ -2622,7 +2623,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			aliceId,
 			charlieId,
 			StkNFTC_TokenId,
-			[6, 7, 8],
+			[6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
 		);
 		expect(sendNFTC_Result).to.be.equal('SUCCESS');
 
@@ -2699,6 +2700,8 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				console.log('createBatchTrade failed:', batchResult);
 				fail();
 			}
+
+			console.log('Batch trade created, tx:', batchResult[2]?.transactionId?.toString());
 
 			// Extract batch ID from result
 			const batchId = batchResult[1][0];
@@ -2798,6 +2801,8 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				fail();
 			}
 
+			console.log('Alice executed batch trade with tx:', executeResult[2]?.transactionId?.toString());
+
 			// Wait for mirror node sync
 			await sleep(4500);
 
@@ -2876,6 +2881,8 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				console.log('createMultipleTrades failed:', result);
 				fail();
 			}
+
+			console.log('Created multiple individual trades with tx:', result[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
 			await sleep(4500);
@@ -2957,6 +2964,8 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				console.log('Individual trade execution failed:', executeResult);
 				fail();
 			}
+
+			console.log('Alice executed individual trade with tx:', executeResult[2]?.transactionId?.toString());
 
 			await sleep(4500);
 			console.log('✅ Individual trade with LAZY payment executed successfully');
@@ -3053,6 +3062,8 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				fail();
 			}
 
+			console.log('Alice executed multiple individual trades with tx:', result[2]?.transactionId?.toString());
+
 			// Wait for mirror node sync
 			await sleep(4500);
 
@@ -3112,7 +3123,569 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 	});
 });
 
-describe('Clean-up', () => {
+describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
+	const gasLim = 2_000_000;
+	let charlieNFTB = [];
+	let charlieNFTC = [];
+
+	before('Phase 3 setup', async () => {
+		client.setOperator(operatorId, operatorKey);
+		console.log('🚀 Phase 3: Trade Management & Query Operations');
+
+		// Ensure Charlie has NFTs for cancellation tests (should already have from Phase 2)
+		client.setOperator(charlieId, charliePK);
+
+		// Verify Charlie's remaining NFT ownership and store for dynamic use
+		charlieNFTB = await getSerialsOwned(env, charlieId, StkNFTB_TokenId);
+		charlieNFTC = await getSerialsOwned(env, charlieId, StkNFTC_TokenId);
+
+		console.log('Charlie\'s available NFTs for Phase 3:');
+		console.log('- StkNFTB serials:', charlieNFTB);
+		console.log('- StkNFTC serials:', charlieNFTC);
+
+		// Ensure we have enough NFTs for testing
+		if (charlieNFTB.length < 5) {
+			throw new Error(`Charlie needs at least 5 StkNFTB serials for Phase 3 tests. Found: ${charlieNFTB.length}`);
+		}
+		if (charlieNFTC.length < 3) {
+			throw new Error(`Charlie needs at least 3 StkNFTC serials for Phase 3 tests. Found: ${charlieNFTC.length}`);
+		}
+
+		// Ensure Charlie has proper allowances for creating trades to cancel
+		await setNFTAllowanceAll(
+			client,
+			[StkNFTB_TokenId, StkNFTC_TokenId],
+			charlieId,
+			AccountId.fromString(lstContractId.toString()),
+		);
+
+		console.log('✅ Phase 3 setup complete - Ready for trade management tests');
+	});
+
+	describe('3.1 Trade Cancellation Tests', () => {
+		it('Should cancel individual trade', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			// Use first available StkNFTB serial dynamically
+			const testSerial = charlieNFTB[0];
+			console.log(`Creating trade with StkNFTB serial ${testSerial}`);
+
+			// Set up LAZY allowance for trade creation
+			const lazyCost = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300_000,
+				'lazyCostForTrade',
+			);
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				Number(lazyCost[0]) * 2,
+			);
+
+			await sleep(4500);
+
+			// Create a single trade to cancel using Charlie's actual NFT
+			const createResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'createTrade',
+				[
+					StkNFTB_TokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					testSerial,
+					15 * 10 ** 8,
+					0,
+					0,
+				],
+			);
+
+			if (createResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('createTrade failed:', createResult);
+				fail();
+			}
+
+			console.log('✅ Trade created successfully. Transaction ID:', createResult[2]?.transactionId?.toString());
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Generate trade ID for cancellation using the actual serial
+			const tradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTB_TokenId.toSolidityAddress(), testSerial],
+			);
+
+			// Cancel the trade
+			const cancelResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'cancelTrade',
+				[tradeId],
+			);
+
+			if (cancelResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('cancelTrade failed:', cancelResult);
+				fail();
+			}
+
+			console.log('✅ Trade cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify trade is cancelled via mirror node query
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getTrade',
+				[tradeId],
+			);
+
+			const tradeData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const tradeDataResult = lazySecureTradeIface.decodeFunctionResult(
+				'getTrade',
+				tradeData,
+			);
+
+			console.log('Trade status after cancellation:', tradeDataResult);
+			// Trade should not exist or be marked as cancelled
+			expect(tradeDataResult[0][0]).to.be.equal(ethers.ZeroAddress);
+
+			console.log('✅ Individual trade cancellation verified');
+		});
+
+		it('Should create 4 trades and cancel 2 with cancelTrades', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			// Use available NFT serials dynamically
+			const testSerialsB = [charlieNFTB[1], charlieNFTB[2]];
+			const testSerialsC = [charlieNFTC[0], charlieNFTC[1]];
+
+			console.log(`Creating 4 trades with StkNFTB serials [${testSerialsB}] and StkNFTC serials [${testSerialsC}]`);
+
+			// Set up LAZY allowance for multiple trade creation
+			const lazyCost = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300_000,
+				'lazyCostForTrade',
+			);
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				Number(lazyCost[0]) * 5,
+			);
+
+			await sleep(4500);
+
+			// Create 4 individual trades using createMultipleTrades for efficiency
+			const uniqueTokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
+			const serialsPerToken = [
+				testSerialsB,
+				testSerialsC,
+			];
+			const tinybarPricesPerToken = [
+				[16 * 10 ** 8, 17 * 10 ** 8],
+				[18 * 10 ** 8, 19 * 10 ** 8],
+			];
+			const lazyPricesPerToken = [
+				[0, 0],
+				[0, 0],
+			];
+
+			// Create multiple trades
+			const createResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				5_000_000,
+				'createMultipleTrades',
+				[
+					uniqueTokens,
+					serialsPerToken,
+					ethers.ZeroAddress,
+					tinybarPricesPerToken,
+					lazyPricesPerToken,
+					0,
+				],
+			);
+
+			if (createResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('createMultipleTrades failed:', createResult);
+				fail();
+			}
+
+			console.log('✅ 4 trades created successfully. Transaction ID:', createResult[2]?.transactionId?.toString());
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Generate trade IDs for the trades we want to cancel (first StkNFTB and first StkNFTC)
+			const tradesToCancel = [
+				ethers.solidityPackedKeccak256(
+					['address', 'uint256'],
+					[StkNFTB_TokenId.toSolidityAddress(), testSerialsB[0]],
+				),
+				ethers.solidityPackedKeccak256(
+					['address', 'uint256'],
+					[StkNFTC_TokenId.toSolidityAddress(), testSerialsC[0]],
+				),
+			];
+
+			console.log(`Cancelling trades for StkNFTB serial ${testSerialsB[0]} and StkNFTC serial ${testSerialsC[0]}`);
+
+			// Cancel 2 out of 4 trades using cancelTrades
+			const cancelResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'cancelTrades',
+				[tradesToCancel],
+			);
+
+			if (cancelResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('cancelTrades failed:', cancelResult);
+				fail();
+			}
+
+			console.log('✅ 2 trades cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify cancelled trades via mirror node
+			for (const tradeId of tradesToCancel) {
+				const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+					'getTrade',
+					[tradeId],
+				);
+
+				const tradeData = await readOnlyEVMFromMirrorNode(
+					env,
+					lstContractId,
+					encodedCommand,
+					operatorId,
+					false,
+				);
+
+				const tradeDataResult = lazySecureTradeIface.decodeFunctionResult(
+					'getTrade',
+					tradeData,
+				);
+
+				console.log('Cancelled trade status:', tradeDataResult);
+				expect(tradeDataResult[0][0]).to.be.equal(ethers.ZeroAddress);
+			}
+
+			// Verify remaining trades are still active (second StkNFTB and second StkNFTC)
+			const remainingTrades = [
+				ethers.solidityPackedKeccak256(
+					['address', 'uint256'],
+					[StkNFTB_TokenId.toSolidityAddress(), testSerialsB[1]],
+				),
+				ethers.solidityPackedKeccak256(
+					['address', 'uint256'],
+					[StkNFTC_TokenId.toSolidityAddress(), testSerialsC[1]],
+				),
+			];
+
+			console.log(`Verifying remaining active trades for StkNFTB serial ${testSerialsB[1]} and StkNFTC serial ${testSerialsC[1]}`);
+
+			for (const tradeId of remainingTrades) {
+				const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+					'getTrade',
+					[tradeId],
+				);
+
+				const tradeData = await readOnlyEVMFromMirrorNode(
+					env,
+					lstContractId,
+					encodedCommand,
+					operatorId,
+					false,
+				);
+
+				const tradeDataResult = lazySecureTradeIface.decodeFunctionResult(
+					'getTrade',
+					tradeData,
+				);
+
+				console.log('Remaining active trade:', tradeDataResult);
+				expect(tradeDataResult[0][0].slice(2).toLowerCase()).to.be.equal(charlieId.toSolidityAddress());
+			}
+
+			console.log('✅ Selective trade cancellation verified - 2 cancelled, 2 remaining active');
+		});
+
+		it('Should cancel atomic batch trade', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			// Use available NFT serials dynamically for batch trade
+			const batchSerialB = charlieNFTB[3];
+			const batchSerialC = charlieNFTC[2];
+
+			console.log(`Creating batch trade with StkNFTB serial ${batchSerialB} and StkNFTC serial ${batchSerialC}`);
+
+			// Set up LAZY allowance for batch trade creation
+			const lazyCost = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300_000,
+				'lazyCostForTrade',
+			);
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				Number(lazyCost[0]) * 3,
+			);
+
+			await sleep(4500);
+
+			// Create atomic batch trade for cancellation testing
+			const tokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
+			const serials = [
+				[batchSerialB],
+				[batchSerialC],
+			];
+			const tinybarPrices = [
+				[20 * 10 ** 8],
+				[21 * 10 ** 8],
+			];
+			const lazyPrices = [
+				[0],
+				[0],
+			];
+
+			const batchResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				5_000_000,
+				'createBatchTrade',
+				[
+					tokens,
+					serials,
+					tinybarPrices,
+					lazyPrices,
+					ethers.ZeroAddress,
+					0,
+				],
+			);
+
+			if (batchResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('createBatchTrade failed:', batchResult);
+				fail();
+			}
+
+			const batchId = batchResult[1][0];
+			console.log('✅ Batch trade created successfully. Transaction ID:', batchResult[2]?.transactionId?.toString());
+			console.log('Batch ID:', batchId);
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Cancel the batch trade
+			const cancelResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'cancelBatchTrade',
+				[batchId],
+			);
+
+			if (cancelResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('cancelBatchTrade failed:', cancelResult);
+				fail();
+			}
+
+			console.log('✅ Batch trade cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify batch is cancelled via mirror node
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getBatchTrade',
+				[batchId],
+			);
+
+			const batchData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const batchDataResult = lazySecureTradeIface.decodeFunctionResult(
+				'getBatchTrade',
+				batchData,
+			);
+
+			console.log('Batch status after cancellation:', batchDataResult);
+			// Batch should not exist or be marked as cancelled
+			expect(batchDataResult[0][0]).to.be.equal(ethers.ZeroAddress);
+
+			console.log('✅ Atomic batch trade cancellation verified');
+		});
+	});
+
+	describe('3.2 Trade Query & Discovery Tests', () => {
+		it('Should query user trades and validate active trades', async () => {
+			// Use mirror node to get Charlie's active trades
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getUserTrades',
+				[charlieId.toSolidityAddress()],
+			);
+
+			const userTradesData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const userTradesResult = lazySecureTradeIface.decodeFunctionResult(
+				'getUserTrades',
+				userTradesData,
+			);
+
+			console.log('Charlie\'s active trades:', userTradesResult[0]);
+			console.log('Number of active trades:', userTradesResult[0].length);
+
+			// Should have remaining active trades from previous test (2 remaining from the 4 created)
+			expect(userTradesResult[0].length).to.be.greaterThan(0);
+
+			console.log('✅ User trade query validated');
+		});
+
+		it('Should query token-specific trades', async () => {
+			// Query trades for StkNFTB token
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getTokenTrades',
+				[StkNFTB_TokenId.toSolidityAddress()],
+			);
+
+			const tokenTradesData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
+				'getTokenTrades',
+				tokenTradesData,
+			);
+
+			console.log('StkNFTB token trades:', tokenTradesResult[0]);
+			console.log('Number of StkNFTB trades:', tokenTradesResult[0].length);
+
+			// Should have some trades for this token
+			expect(tokenTradesResult[0].length).to.be.greaterThan(0);
+
+			console.log('✅ Token-specific trade query validated');
+		});
+
+		it('Should validate trade state with isTradeValid', async () => {
+			// Get one of Charlie's remaining active trades - use the second StkNFTB trade that should still be active
+			// This was testSerialsB[1] in the cancellation test
+			const activeSerial = charlieNFTB[2];
+			const remainingTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTB_TokenId.toSolidityAddress(), activeSerial],
+			);
+
+			console.log(`Checking validity of active trade for StkNFTB serial ${activeSerial}`);
+
+			// Check if the trade is valid using mirror node
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'isTradeValid',
+				[remainingTradeId, ethers.ZeroAddress],
+			);
+
+			const isValidData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const isValidResult = lazySecureTradeIface.decodeFunctionResult(
+				'isTradeValid',
+				isValidData,
+			);
+
+			console.log('Trade validity check:', isValidResult[0]);
+			expect(isValidResult[0]).to.be.true;
+
+			// Check a cancelled trade should be invalid - use the first StkNFTB trade that was cancelled
+			// This was testSerialsB[0] in the cancellation test
+			const cancelledSerial = charlieNFTB[1];
+			const cancelledTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTB_TokenId.toSolidityAddress(), cancelledSerial],
+			);
+
+			console.log(`Checking validity of cancelled trade for StkNFTB serial ${cancelledSerial}`);
+
+			const encodedCommandCancelled = lazySecureTradeIface.encodeFunctionData(
+				'isTradeValid',
+				[cancelledTradeId, ethers.ZeroAddress],
+			);
+
+			const isValidCancelledData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommandCancelled,
+				operatorId,
+				false,
+			);
+
+			const isValidCancelledResult = lazySecureTradeIface.decodeFunctionResult(
+				'isTradeValid',
+				isValidCancelledData,
+			);
+
+			console.log('Cancelled trade validity check:', isValidCancelledResult[0]);
+			expect(isValidCancelledResult[0]).to.be.false;
+
+			console.log('✅ Trade validation checks completed');
+		});
+	});
+
+	after('Phase 3 cleanup', async () => {
+		client.setOperator(operatorId, operatorKey);
+		console.log('🏁 Phase 3: Trade Management & Query Operations Complete');
+	});
+}); describe('Clean-up', () => {
 	it('removes allowances from Operator', async () => {
 		client.setOperator(operatorId, operatorKey);
 		let result;
