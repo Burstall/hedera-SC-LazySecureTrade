@@ -480,18 +480,18 @@ describe('Deployment', () => {
 
 		// send $LAZY to all accounts
 		client.setOperator(operatorId, operatorKey);
-		result = await sendLazy(operatorId, 600);
+		result = await sendLazy(operatorId, 2000 * 10 ** LAZY_DECIMAL);
 		expect(result).to.be.equal('SUCCESS');
-		result = await sendLazy(aliceId, 900);
+		result = await sendLazy(aliceId, 2000 * 10 ** LAZY_DECIMAL);
 		expect(result).to.be.equal('SUCCESS');
-		result = await sendLazy(bobId, 900);
+		result = await sendLazy(bobId, 2000 * 10 ** LAZY_DECIMAL);
 		expect(result).to.be.equal('SUCCESS');
 		result = await sendHbar(client, operatorId, AccountId.fromString(lazyGasStationId.toString()), 1, HbarUnit.Hbar);
 		expect(result).to.be.equal('SUCCESS');
 
 		// send $LAZY to the Lazy Gas Station
 		// gas station will fuel payouts so ensure it has enough
-		result = await sendLazy(lazyGasStationId, 100_000);
+		result = await sendLazy(lazyGasStationId, 10000 * 10 ** LAZY_DECIMAL);
 		expect(result).to.be.equal('SUCCESS');
 
 		// add the LST to the lazy gas station as a contract user
@@ -2019,7 +2019,7 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 		// shift to operator to fund Charlie with $LAZY
 		client.setOperator(operatorId, operatorKey);
 
-		await sendLazy(charlieId, 1000 * 10 ** LAZY_DECIMAL);
+		await sendLazy(charlieId, 2000 * 10 ** LAZY_DECIMAL);
 
 		// Send Charlie NFTs to trade (using serials 9 and 10 which Alice owns)
 		client.setOperator(aliceId, alicePK);
@@ -2547,8 +2547,8 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 
 			expect(result[0]?.status?.toString()).to.equal('SUCCESS');
 
-			// Note: Fees remain tracked as lifetime accrual - no reset to zero
-			console.log(`✅ Platform fee withdrawal successful (${collectedFees} tracked fees)`);
+			// Note: Fees remain tracked as lifetime accrual - not reset to zero
+			console.log(`✅ Platform fee withdrawal successful (${collectedFees} tinybar tracked fees)`);
 		});
 
 		it('Should prevent non-owner from withdrawing fees', async () => {
@@ -2571,6 +2571,544 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 	after('Phase 1 cleanup', async () => {
 		client.setOperator(operatorId, operatorKey);
 		console.log('🏁 Phase 1: Platform Fee System Tests Complete');
+	});
+});
+
+describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
+	const gasLim = 2_000_000;
+
+	before('Phase 2 setup', async () => {
+		client.setOperator(operatorId, operatorKey);
+		console.log('🚀 Starting Phase 2: Batch Operations & Multi-Token Tests');
+
+		// check if token associations are in place for Charlie
+		// Ensure Charlie is associated with LAZY token
+		if ((await checkMirrorBalance(env, charlieId, StkNFTB_TokenId)) == null) {
+			const associateResultA = await associateTokensToAccount(
+				client,
+				charlieId,
+				charliePK,
+				[StkNFTA_TokenId],
+			);
+			expect(associateResultA).to.equal('SUCCESS');
+		}
+
+		if ((await checkMirrorBalance(env, charlieId, StkNFTB_TokenId)) == null) {
+			const associateResultB = await associateTokensToAccount(
+				client,
+				charlieId,
+				charliePK,
+				[StkNFTB_TokenId],
+			);
+			expect(associateResultB).to.equal('SUCCESS');
+		}
+
+		// Transfer some StakeTokenB NFTs from Alice to Charlie for testing
+		// Using serials 6, 7, 8 which Alice retains (safe from earlier test usage)
+		client.setOperator(aliceId, alicePK);
+		const sendNFTB_Result = await sendNFT(
+			client,
+			aliceId,
+			charlieId,
+			StkNFTB_TokenId,
+			[6, 7, 8, 9],
+		);
+		expect(sendNFTB_Result).to.be.equal('SUCCESS');
+
+		// Transfer some StakeTokenC NFTs from Alice to Charlie for testing
+		// Using serials 6, 7, 8 which Alice retains (safe from earlier test usage)
+		const sendNFTC_Result = await sendNFT(
+			client,
+			aliceId,
+			charlieId,
+			StkNFTC_TokenId,
+			[6, 7, 8],
+		);
+		expect(sendNFTC_Result).to.be.equal('SUCCESS');
+
+		console.log('✅ Phase 2 setup complete - Charlie has StakeTokenB and StakeTokenC NFTs (serials 6-8)');
+	});
+
+	describe('2.1 Batch Trade Creation Tests', () => {
+		it('Should create and execute atomic batch trades', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			// Set up LAZY allowance for batch trade creation
+			const lazyCost = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300_000,
+				'lazyCostForTrade',
+			);
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				Number(lazyCost[0]) * 3,
+			);
+
+			// need to setup NFT allowances for batch trade tokens
+			await setNFTAllowanceAll(
+				client,
+				[StkNFTB_TokenId, StkNFTC_TokenId],
+				charlieId,
+				AccountId.fromString(lstContractId.toString()),
+			);
+
+			await sleep(4500);
+
+			// Create atomic batch trade using createBatchTrade with mixed payment types
+			// This creates a single batch that must be executed all-or-none
+			const tokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
+			// StkNFTB serials, StkNFTC serials
+			const serials = [
+				[6, 7],
+				[6],
+			];
+			// Mixed pricing: Serial 6 HBAR only, Serial 7 LAZY only, StkNFTC HBAR + LAZY
+			const tinybarPrices = [
+				[5 * 10 ** 8, 0],
+				[7.5 * 10 ** 8],
+			];
+			// Mixed LAZY pricing to test different payment combinations
+			const lazyPrices = [
+				[0, 1000],
+				[500],
+			];
+
+			const batchResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				5_000_000,
+				'createBatchTrade',
+				[
+					tokens,
+					serials,
+					tinybarPrices,
+					lazyPrices,
+					ethers.ZeroAddress,
+					0,
+				],
+			);
+
+			if (batchResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('createBatchTrade failed:', batchResult);
+				fail();
+			}
+
+			// Extract batch ID from result
+			const batchId = batchResult[1][0];
+			console.log('Created atomic batch trade with ID:', batchId);
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// pull the user's batch trade data via mirror node to verify
+			// DEV NOTE: call this for the ZeroAddress to get open batches for any user
+			const userBatches = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				lazySecureTradeIface.encodeFunctionData('getUserBatchTrades', [charlieId.toSolidityAddress()]),
+				operatorId,
+				false,
+			);
+
+			const userBatchesResult = lazySecureTradeIface.decodeFunctionResult(
+				'getUserBatchTrades',
+				userBatches,
+			);
+
+			console.log('User batch trades:', userBatchesResult[0]);
+			expect(userBatchesResult[0].toString()).to.be.equal(batchId);
+
+			// Verify batch contents via getBatchTrade()
+			// use the mirror node to query getBatchTrade() and verify contents
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getBatchTrade',
+				[batchId],
+			);
+
+			const batchData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const batchDataResult = lazySecureTradeIface.decodeFunctionResult(
+				'getBatchTrade',
+				batchData,
+			);
+
+			console.log('Batch trade data:', batchDataResult);
+
+			const batchCostInTinybars = Number(batchDataResult[0][3]);
+			const batchCostInLazy = Number(batchDataResult[0][4]);
+
+			console.log('Items in batch:', batchDataResult[0][2]);
+			console.log('Total HBAR price (tinybars):', new Hbar(batchCostInTinybars, HbarUnit.Tinybar).toString());
+			console.log('Total LAZY price:', batchCostInLazy / 10 ** LAZY_DECIMAL, '$LAZY');
+
+			// expect 3 TokenSerialPrice structs in the batch
+			// check the totalTinybarPrice and totalLazyPrice
+			expect(batchDataResult[0][2].length).to.be.equal(3);
+			expect(batchCostInTinybars).to.be.equal(1250000001);
+			expect(batchCostInLazy).to.be.equal(1500);
+
+			// Now Alice executes the atomic batch trade
+			client.setOperator(aliceId, alicePK);
+
+			// Alice needs LAZY allowance to LazyGasStation for purchase costs
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				aliceId,
+				lazyGasStationId,
+				batchCostInLazy,
+			);
+
+			// Alice needs HBAR allowances for buying the batch (royalty payments)
+			const hbarAllowanceStatus = await setHbarAllowance(
+				client,
+				aliceId,
+				AccountId.fromString(lstContractId.toString()),
+				1,
+				HbarUnit.Hbar,
+			);
+			expect(hbarAllowanceStatus).to.equal('SUCCESS');
+
+			// Execute the atomic batch trade
+			const executeResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'executeBatchTrade',
+				[batchId],
+				new Hbar(batchCostInTinybars, HbarUnit.Tinybar),
+			);
+
+			if (executeResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('executeBatchTrade failed:', executeResult);
+				fail();
+			}
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify batch execution event
+			const eventCheck = await checkLastMirrorEvent(
+				env,
+				lstContractAddress,
+				lazySecureTradeIface,
+				1,
+				true,
+			);
+
+			// eventCheck should be Alice's account ID
+			expect(eventCheck.toString()).to.be.equal(aliceId.toString());
+			console.log('✅ Atomic batch trade created and executed successfully');
+		});
+
+		it('Should create multiple individual trades simultaneously', async () => {
+			client.setOperator(charlieId, charliePK);
+
+			// Set up LAZY allowance for multiple individual trades
+			const lazyCost = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300_000,
+				'lazyCostForTrade',
+			);
+
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				charlieId,
+				lazyGasStationId,
+				Number(lazyCost[0]) * 3,
+			);
+
+			await sleep(4500);
+
+			// Organize trades by unique tokens for multiple individual trade creation
+			const uniqueTokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
+			// Different serials from batch trade, with mixed payment types
+			const serialsPerToken = [
+				[8, 9],
+				[7],
+			];
+			// Mixed pricing: some HBAR, some HBAR+LAZY
+			const tinybarPricesPerToken = [
+				[8 * 10 ** 8, 0],
+				[11 * 10 ** 8],
+			];
+			// Mixed LAZY pricing for individual trades
+			const lazyPricesPerToken = [
+				[0, 800],
+				[400],
+			];
+
+			// Create multiple individual trades using createMultipleTrades
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				5_000_000,
+				'createMultipleTrades',
+				[
+					uniqueTokens,
+					serialsPerToken,
+					ethers.ZeroAddress,
+					tinybarPricesPerToken,
+					lazyPricesPerToken,
+					0,
+				],
+			);
+
+			if (result[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('createMultipleTrades failed:', result);
+				fail();
+			}
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify trades were created with fee collection
+			const eventCheck = await checkLastMirrorEvent(
+				env,
+				lstContractAddress,
+				lazySecureTradeIface,
+				3,
+				false,
+			);
+
+			console.log('Event check result:', eventCheck);
+			console.log('✅ Individual trades created successfully with createMultipleTrades method');
+
+			// Now test executing one of the individual trades with LAZY payment
+			client.setOperator(aliceId, alicePK);
+
+			// Alice needs HBAR allowances for buying NFTs (royalty payments)
+			const hbarAllowanceStatus = await setHbarAllowance(
+				client,
+				aliceId,
+				AccountId.fromString(lstContractId.toString()),
+				1,
+				HbarUnit.Hbar,
+			);
+			expect(hbarAllowanceStatus).to.equal('SUCCESS');
+
+			// Generate trade ID for StkNFTB serial 8 (LAZY only trade)
+			const tradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[StkNFTB_TokenId.toSolidityAddress(), 9],
+			);
+
+			// get the trade details & price from the contract for verification via mirror node
+			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+				'getTrade',
+				[tradeId],
+			);
+
+			const tradeData = await readOnlyEVMFromMirrorNode(
+				env,
+				lstContractId,
+				encodedCommand,
+				operatorId,
+				false,
+			);
+
+			const tradeDataResult = lazySecureTradeIface.decodeFunctionResult(
+				'getTrade',
+				tradeData,
+			);
+			console.log('Trade data for individual trade execution:', tradeDataResult);
+			const tradeCostInTinybars = Number(tradeDataResult[0][4]);
+			const tradeCostInLazy = Number(tradeDataResult[0][5]);
+
+			// Alice needs LAZY allowance for purchasing individual trade with LAZY cost
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				aliceId,
+				lazyGasStationId,
+				tradeCostInLazy,
+			);
+
+			// Execute the individual trade with LAZY payment
+			const executeResult = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'executeTrade',
+				[tradeId],
+				new Hbar(tradeCostInTinybars, HbarUnit.Tinybar),
+			);
+
+			if (executeResult[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('Individual trade execution failed:', executeResult);
+				fail();
+			}
+
+			await sleep(4500);
+			console.log('✅ Individual trade with LAZY payment executed successfully');
+		});
+
+		it('Should execute multiple individual trades with executeTrades batch method', async () => {
+			client.setOperator(aliceId, alicePK);
+
+			// Alice needs LAZY allowance for purchasing trades with mixed LAZY costs
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				aliceId,
+				lazyGasStationId,
+				1000,
+			);
+
+			// Alice needs HBAR allowances for buying multiple NFTs (royalty payments)
+			const hbarAllowanceStatus = await setHbarAllowance(
+				client,
+				aliceId,
+				AccountId.fromString(lstContractId.toString()),
+				3,
+				HbarUnit.Hbar,
+			);
+			expect(hbarAllowanceStatus).to.equal('SUCCESS');
+
+			// Execute multiple individual trades using executeTrades (not from atomic batch)
+			const tokenTypes = [
+				{ tokenId: StkNFTB_TokenId, serial: 8 },
+				{ tokenId: StkNFTC_TokenId, serial: 7 },
+			];
+
+			// Generate trade IDs for individual trades execution
+			const tradeIds = tokenTypes.map(tokenType =>
+				ethers.solidityPackedKeccak256(
+					['address', 'uint256'],
+					[tokenType.tokenId.toSolidityAddress(), tokenType.serial],
+				),
+			);
+
+			await sleep(4500);
+
+			let tradesCostInTinybars = 0;
+			let tradesCostInLazy = 0;
+			// get the trade details & prices from the contract for verification via mirror node
+			for (let i = 0; i < tradeIds.length; i++) {
+				const encodedCommand = lazySecureTradeIface.encodeFunctionData(
+					'getTrade',
+					[tradeIds[i]],
+				);
+
+				const tradeData = await readOnlyEVMFromMirrorNode(
+					env,
+					lstContractId,
+					encodedCommand,
+					operatorId,
+					false,
+				);
+				const tradeDataResult = lazySecureTradeIface.decodeFunctionResult(
+					'getTrade',
+					tradeData,
+				);
+				console.log(`Trade data for ID ${tradeIds[i]}:`, tradeDataResult);
+				tradesCostInTinybars += Number(tradeDataResult[0][4]);
+				tradesCostInLazy += Number(tradeDataResult[0][5]);
+			}
+
+			console.log('Total cost for multiple trades - HBAR: ', new Hbar(tradesCostInTinybars, HbarUnit.Tinybar).toString());
+			console.log('Total cost for multiple trades - LAZY:', tradesCostInLazy / 10 ** LAZY_DECIMAL);
+
+			// Alice needs LAZY allowance for purchasing individual trade with LAZY cost
+			await setFTAllowance(
+				client,
+				lazyTokenId,
+				aliceId,
+				lazyGasStationId,
+				tradesCostInLazy,
+			);
+
+			// Execute multiple individual trades using executeTrades batch method
+			const result = await contractExecuteFunction(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				gasLim,
+				'executeTrades',
+				[tradeIds],
+				new Hbar(tradesCostInTinybars, HbarUnit.Tinybar),
+			);
+
+			if (result[0]?.status?.toString() !== 'SUCCESS') {
+				console.log('executeTrades failed for multiple individual trades:', result);
+				fail();
+			}
+
+			// Wait for mirror node sync
+			await sleep(4500);
+
+			// Verify multi-token fee collection
+			const eventCheck = await checkLastMirrorEvent(
+				env,
+				lstContractAddress,
+				lazySecureTradeIface,
+				2,
+				false,
+			);
+
+			console.log('Multiple individual trades event check:', eventCheck);
+			console.log('✅ Multiple individual trades executed successfully using executeTrades batch method');
+		});
+	});
+
+	describe('2.2 Platform Volume stats', () => {
+		it('Should provide accurate platform fee summary', async () => {
+			const platformInfo = await contractExecuteQuery(
+				lstContractId,
+				lazySecureTradeIface,
+				client,
+				300000,
+				'getPlatformFeeInfo',
+			);
+
+			const [
+				hbarFeeRate,
+				gen2Discount,
+				mutantDiscount,
+				gen1Discount,
+				totalFeesCollected,
+				lifetimeHbarVolume,
+				lifetimeLazyVolume,
+			] = platformInfo;
+
+			console.log('Final platform fee summary:');
+			console.log(`- HBAR fee rate: ${hbarFeeRate} basis points`);
+			console.log(`- LSH Gen2 discount: ${gen2Discount}%`);
+			console.log(`- LSH Mutant discount: ${mutantDiscount}%`);
+			console.log(`- LSH Gen1 discount: ${gen1Discount}%`);
+			console.log(`- Total HBAR fees collected: ${totalFeesCollected} tinybars`);
+			console.log(`- Lifetime HBAR volume: ${lifetimeHbarVolume} tinybars`);
+			console.log(`- Lifetime LAZY volume: ${lifetimeLazyVolume} tokens`);
+
+			// Verify the system has processed trades
+			expect(Number(lifetimeHbarVolume.toString())).to.be.greaterThan(0);
+
+			console.log('✅ Platform fee system validation completed');
+		});
+	});
+
+	after('Phase 2 cleanup', async () => {
+		client.setOperator(operatorId, operatorKey);
+		console.log('🏁 Phase 2: Batch Operations & Multi-Token Tests Complete');
 	});
 });
 

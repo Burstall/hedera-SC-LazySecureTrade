@@ -149,7 +149,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
 
     error TradeNotFoundOrInvalid();
     error TradeExpired();
-    error UserDoesNotOwnNFT();
+    error UserDoesNotOwnOrHasNotApprovedNFT(address token, uint256 serial);
     error InsufficientPayment(); // Consolidated: InsufficientFunds, InsufficientHBAR, InsufficientLAZY, InsufficientAllowanceLAZY
     error UserNotAuthorized(); // Consolidated: UserNotSeller, UserNotBuyer
     error UserMustApproveNFTFirst();
@@ -895,8 +895,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 }
 
                 // Validate ownership
-                if (IERC721(token).ownerOf(serial) != msg.sender) {
-                    revert UserDoesNotOwnNFT();
+                if (
+                    !_validateNFTOwnershipAndApproval(token, serial, msg.sender)
+                ) {
+                    revert UserDoesNotOwnOrHasNotApprovedNFT(token, serial);
                 }
 
                 // Create TokenSerialPrice struct with validated pricing
@@ -1042,7 +1044,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 item.token,
                 item.serial,
                 batchTrade.seller,
-                batchTrade.buyer,
+                msg.sender,
                 itemNetAmount
             );
 
@@ -1239,9 +1241,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             revert BadArguments();
         }
 
-        // leave behind 100 tinybar buffer
-        if (address(this).balance > 100) {
-            uint256 hbarAmount = address(this).balance - 100;
+        // leave behind 50 tinybar buffer
+        if (address(this).balance > 50) {
+            uint256 hbarAmount = address(this).balance - 50;
             Address.sendValue(payable(_recipient), hbarAmount);
             emit FeesWithdrawn(_recipient, hbarAmount);
         }
@@ -1305,15 +1307,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                     batchTrade.seller
                 )
             ) {
-                // Check specific failure reason for better error messages
-                if (
-                    IERC721(item.token).ownerOf(item.serial) !=
-                    batchTrade.seller
-                ) {
-                    revert UserDoesNotOwnNFT();
-                } else {
-                    revert UserMustApproveNFTFirst();
-                }
+                revert UserDoesNotOwnOrHasNotApprovedNFT(
+                    item.token,
+                    item.serial
+                );
             }
 
             unchecked {
@@ -1324,7 +1321,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         // Validate buyer's payment capacity
         if (
             batchTrade.totalTinybarPrice > 0 &&
-            msg.sender.balance < batchTrade.totalTinybarPrice
+            msg.value < batchTrade.totalTinybarPrice
         ) {
             revert InsufficientPayment();
         }
@@ -1337,8 +1334,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
                 revert InsufficientPayment();
             }
             if (
-                IERC20(lazyToken).allowance(msg.sender, address(this)) <
-                batchTrade.totalLazyPrice
+                IERC20(lazyToken).allowance(
+                    msg.sender,
+                    address(lazyGasStation)
+                ) < batchTrade.totalLazyPrice
             ) {
                 revert InsufficientPayment();
             }
@@ -1652,10 +1651,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         // Validate ownership
-        if (IERC721(_token).ownerOf(_serial) != msg.sender) {
-            revert UserDoesNotOwnNFT();
+        if (!_validateNFTOwnershipAndApproval(_token, _serial, msg.sender)) {
+            revert UserDoesNotOwnOrHasNotApprovedNFT(_token, _serial);
         }
-
         // Ensure token association
         if (!tokens.contains(_token)) {
             tokenAssociate(_token);
