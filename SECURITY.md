@@ -116,8 +116,8 @@ function updateFeeRates(...) external onlyOwner {
 
 #### Batch Size Limits
 - **Individual Trades**: 32 trade limit for gas management
-- **Batch Trades**: 32 item limit for atomic operations
-- **Execution Batches**: 20 trade limit considering subcall complexity
+- **Batch Trades**: 22 item limit for atomic operations
+- **Execution Batches**: 5 trade limit considering subcall complexity
 
 ### 6. Economic Attack Vectors
 
@@ -167,7 +167,7 @@ function removeTradeFromState(bytes32 _tradeId, address _buyer, address _seller,
 
 ### 1. Gas Limit Considerations
 **Risk**: Hedera has subcall limits that could cause batch operations to fail
-**Mitigation**: Conservative batch size limits (20-32 items) based on operation complexity
+**Mitigation**: Conservative batch size limits (5-22 items) based on operation complexity
 
 ### 2. Token Association Costs
 **Risk**: Automatic token association may consume user's HBAR unexpectedly

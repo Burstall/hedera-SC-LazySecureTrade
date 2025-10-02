@@ -10,8 +10,8 @@ This is the building block to a full decentralized marketplace #HelloFuture
 | Trade Type | Method | Max Items | Execution | Gas Risk | Use Case |
 |------------|--------|-----------|-----------|----------|----------|
 | **Individual** | `createTrade()` | 1 NFT | Single | 🟢 Low | Simple trades |
-| **Batch (Atomic)** | `createBatchTrade()` | 32 NFTs | All-or-nothing | 🔴 High | Bundle sales |
-| **Multiple Execution** | `executeTrades()` | 20 trades | All-or-nothing | 🟡 Medium | Bulk buying |
+| **Batch (Atomic)** | `createBatchTrade()` | 22 NFTs | All-or-nothing | 🔴 High | Bundle sales |
+| **Multiple Execution** | `executeTrades()` | 5 trades | All-or-nothing | 🟡 Medium | Bulk buying |
 
 Key: 🔴 High gas risk requires careful planning • 🟡 Medium risk manageable • 🟢 Low risk straightforward
 
@@ -72,7 +72,7 @@ Create atomic batch trades where all NFTs transfer together or the entire transa
 - `createBatchTrade()`: Create atomic batch with per-serial pricing
 - `executeBatchTrade()`: Execute entire batch atomically
 - `cancelBatchTrade()`: Cancel entire batch
-- **Max Items**: 32 NFTs per batch (contract enforced)
+- **Max Items**: 22 NFTs per batch (contract enforced)
 - **Pricing**: XOR pricing (either HBAR or $LAZY per item, not both)
 - **Association Planning**: Check `isTokenAssociated()` for each unique token first
 
@@ -176,7 +176,7 @@ To prevent gas exhaustion and subcall limit breaches:
 
 **Recommended Limits:**
 - **New Token Associations**: 5-8 tokens maximum per transaction
-- **Batch Trades**: 32 items maximum (contract enforced)
+- **Batch Trades**: 22 items maximum (contract enforced)
 - **Multiple Trade Creation**: 32 trades maximum (contract enforced)
 - **Multiple Trade Execution**: 20 trades maximum (contract enforced for subcall management)
 

@@ -17,9 +17,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
-import {TokenStaker} from "./TokenStaker.sol";
+import {TokenStakerV2} from "./TokenStakerV2.sol";
 
-contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
+contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
     using SafeCast for uint256;
@@ -537,8 +537,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         // Reasonable limit to prevent gas issues (reduced for Hedera subcall limits)
-        if (totalTrades > 32) {
-            revert BatchSizeExceedsLimit(totalTrades, 32);
+        if (totalTrades > 22) {
+            revert BatchSizeExceedsLimit(totalTrades, 22);
         }
 
         tradeIds = new bytes32[](totalTrades);
@@ -600,7 +600,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
     }
 
     /***
-     * @notice Execute multiple individual trades atomically
+     * @notice Execute multiple individual trades atomically - max 8 per shot
      * @dev All trades execute or entire transaction reverts - no partial execution
      * @param _tradeIds Array of trade IDs to execute
      */
@@ -612,9 +612,10 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             revert InvalidBatchParameters();
         }
 
-        // Conservative limit for Hedera subcall management (2 NFT moves per trade + LAZY payments)
-        if (length > 20) {
-            revert BatchSizeExceedsLimit(length, 20);
+        // Conservative limit for Hedera subcall management (2 NFT moves per trade + LAZY payments + seller ownership checks (max 6))
+        // plus approval/ownership check and payment legs. Max 5 trades per call.
+        if (length > 5) {
+            revert BatchSizeExceedsLimit(length, 5);
         }
 
         // Execute all trades and accumulate actual HBAR usage - any failure reverts entire transaction
@@ -866,8 +867,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             revert InvalidBatchParameters();
         }
 
-        if (totalItems > 32) {
-            revert BatchSizeExceedsLimit(totalItems, 32);
+        if (totalItems > 22) {
+            revert BatchSizeExceedsLimit(totalItems, 22);
         }
 
         // Build TokenSerialPrice array and validate pricing/ownership
@@ -1014,8 +1015,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
             revert UserNotAuthorized();
         }
 
-        // Ensure atomic execution by checking all prerequisites first
-        _validateBatchTradeExecution(batchTrade);
+        // not batch validation due to sub call constraints
+        // leave the network to revert if something is wrong
 
         // Calculate seller fee rate once for batch efficiency
         uint256 sellerFeeRate;
@@ -1124,8 +1125,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         }
 
         // Reasonable limit for gas management (reduced for Hedera subcall limits)
-        if (length > 32) {
-            revert BatchSizeExceedsLimit(length, 32);
+        if (length > 22) {
+            revert BatchSizeExceedsLimit(length, 22);
         }
 
         for (uint256 i = 0; i < length; ) {
@@ -1287,61 +1288,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStaker {
         return
             IERC721(token).isApprovedForAll(owner, address(this)) ||
             IERC721(token).getApproved(serial) == address(this);
-    }
-
-    /***
-     * @notice Internal function to validate batch trade execution prerequisites
-     * @param batchTrade The batch trade to validate
-     */
-    function _validateBatchTradeExecution(
-        BatchTrade storage batchTrade
-    ) internal view {
-        // Validate all NFTs using consolidated validation
-        for (uint256 i = 0; i < batchTrade.items.length; ) {
-            TokenSerialPrice memory item = batchTrade.items[i];
-
-            if (
-                !_validateNFTOwnershipAndApproval(
-                    item.token,
-                    item.serial,
-                    batchTrade.seller
-                )
-            ) {
-                revert UserDoesNotOwnOrHasNotApprovedNFT(
-                    item.token,
-                    item.serial
-                );
-            }
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        // Validate buyer's payment capacity
-        if (
-            batchTrade.totalTinybarPrice > 0 &&
-            msg.value < batchTrade.totalTinybarPrice
-        ) {
-            revert InsufficientPayment();
-        }
-
-        if (batchTrade.totalLazyPrice > 0) {
-            if (
-                IERC20(lazyToken).balanceOf(msg.sender) <
-                batchTrade.totalLazyPrice
-            ) {
-                revert InsufficientPayment();
-            }
-            if (
-                IERC20(lazyToken).allowance(
-                    msg.sender,
-                    address(lazyGasStation)
-                ) < batchTrade.totalLazyPrice
-            ) {
-                revert InsufficientPayment();
-            }
-        }
     }
 
     /***
