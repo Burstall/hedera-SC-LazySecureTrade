@@ -145,6 +145,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
 
     event FeesWithdrawn(address indexed recipient, uint256 hbarAmount);
 
+    // v0.3 Factory Authorization Events
+    event FactoryAuthorized(address indexed factory, bool authorized);
+
     event SecureTradeStatus(string message, address sender, uint256 value);
 
     error TradeNotFoundOrInvalid();
@@ -163,6 +166,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     error BatchTradeNotFound(bytes32 batchId);
     error BatchSizeExceedsLimit(uint256 provided, uint256 maximum);
 
+    // v0.3 Factory Authorization Errors
+    error UnauthorizedFactory();
+
     // General Batch Errors
     error InvalidBatchParameters(); // Consolidated: ArrayLengthMismatch, EmptyBatchNotAllowed
 
@@ -174,6 +180,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     mapping(bytes32 => BatchTrade) private batchTradesMap;
     mapping(address => EnumerableSet.Bytes32Set) private userBatchTradesMap;
     mapping(bytes32 => bytes32) private itemToBatch; // hash(token,serial) → batchId
+
+    // v0.3 BidderContractFactory Integration
+    mapping(address => bool) public authorizedFactories;
 
     EnumerableSet.AddressSet private tokens;
 
@@ -259,21 +268,91 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         uint256 _lazyPrice,
         uint256 _expiryTime
     ) external nonReentrant returns (bytes32 tradeId) {
-        // Handle $LAZY charging for open market trades before creation
+        return
+            _createTradeInternal(
+                msg.sender,
+                _token,
+                _buyer,
+                _serial,
+                _tinybarPrice,
+                _lazyPrice,
+                _expiryTime
+            );
+    }
+
+    /***
+     * @notice Create a trade on behalf of a user (factory use only)
+     * @param _seller Address of the NFT seller
+     * @param _token Address of the NFT token contract
+     * @param _buyer Address of the buyer (BidderContract address)
+     * @param _serial Serial number of the NFT
+     * @param _tinybarPrice The price in tinybars (0 for free)
+     * @param _lazyPrice The price in Lazy tokens (0 for free)
+     * @param _expiryTime The expiry time of the trade (0 for no expiry)
+     * @return tradeId The ID of the trade as a bytes32 hash of token and serial
+     */
+    function createTradeOnBehalf(
+        address _seller,
+        address _token,
+        address _buyer,
+        uint256 _serial,
+        uint256 _tinybarPrice,
+        uint256 _lazyPrice,
+        uint256 _expiryTime
+    ) external nonReentrant returns (bytes32 tradeId) {
+        if (!authorizedFactories[msg.sender]) {
+            revert UnauthorizedFactory();
+        }
+
+        return
+            _createTradeInternal(
+                _seller,
+                _token,
+                _buyer,
+                _serial,
+                _tinybarPrice,
+                _lazyPrice,
+                _expiryTime
+            );
+    }
+
+    /***
+     * @notice Internal unified function to create trades
+     * @param _seller Address of the NFT seller
+     * @param _token Address of the NFT token contract
+     * @param _buyer Address of the buyer
+     * @param _serial Serial number of the NFT
+     * @param _tinybarPrice The price in tinybars
+     * @param _lazyPrice The price in Lazy tokens
+     * @param _expiryTime The expiry time of the trade
+     * @return tradeId The ID of the trade
+     */
+    function _createTradeInternal(
+        address _seller,
+        address _token,
+        address _buyer,
+        uint256 _serial,
+        uint256 _tinybarPrice,
+        uint256 _lazyPrice,
+        uint256 _expiryTime
+    ) internal returns (bytes32 tradeId) {
+        // Handle $LAZY charging for open market trades only
+        // Factory trades are always private (_buyer != address(0)) so no $LAZY charging
         if (_buyer == address(0)) {
             // check if the user does not own an LSH Gen 1 or Gen 2
-            if (!areAdvancedTradesFree(msg.sender)) {
+            if (!areAdvancedTradesFree(_seller)) {
                 // if not then charge the user for the trade
                 lazyGasStation.drawLazyFrom(
-                    msg.sender,
+                    _seller,
                     lazyCostForTrade,
                     lazyBurnPercentage
                 );
             }
         }
 
-        // Use common validation and creation logic
+        // Use common validation and creation logic with seller context
         tradeId = _validateAndCreateTrade(
+            _seller,
             _token,
             _serial,
             _buyer,
@@ -283,7 +362,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         );
 
         emit TradeCreated(
-            msg.sender,
+            _seller,
             _buyer,
             _token,
             _serial,
@@ -559,6 +638,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
 
                 // Use common validation and creation logic
                 tradeIds[tradeIndex] = _validateAndCreateTrade(
+                    msg.sender,
                     token,
                     serial,
                     _buyer,
@@ -1251,6 +1331,23 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     }
 
     /***
+     * @notice Authorize or deauthorize a factory contract to create trades on behalf of users
+     * **ONLY OWNER**
+     * @param _factory Address of the factory contract
+     * @param _authorized Whether the factory is authorized
+     */
+    function authorizeFactory(
+        address _factory,
+        bool _authorized
+    ) external onlyOwner {
+        if (_factory == address(0)) {
+            revert BadArguments();
+        }
+        authorizedFactories[_factory] = _authorized;
+        emit FactoryAuthorized(_factory, _authorized);
+    }
+
+    /***
      * @notice Calculate the cost in $LAZY for creating a batch trade based on item count
      * @param _itemCount Number of items in the batch
      * @return batchCost The cost in $LAZY tokens
@@ -1569,16 +1666,17 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     /***
      * @notice Internal helper to validate and create a single trade
      * @dev Encapsulates common validation logic shared between createTrade and createMultipleTrades
+     * @param _seller The seller address (may differ from msg.sender for factory calls)
      * @param _token The token address
      * @param _serial The serial number
      * @param _buyer The buyer address (0x0 for open market)
      * @param _tinybarPrice The tinybar price
      * @param _lazyPrice The lazy price
      * @param _expiryTime The expiry time
-     * @return tradeId The created trade ID, or bytes32(0) if creation failed
-     * @return success Whether the trade was successfully created
+     * @return tradeId The created trade ID
      */
     function _validateAndCreateTrade(
+        address _seller,
         address _token,
         uint256 _serial,
         address _buyer,
@@ -1596,8 +1694,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
             revert BadArguments();
         }
 
-        // Validate ownership
-        if (!_validateNFTOwnershipAndApproval(_token, _serial, msg.sender)) {
+        // Validate ownership - use _seller instead of msg.sender
+        if (!_validateNFTOwnershipAndApproval(_token, _serial, _seller)) {
             revert UserDoesNotOwnOrHasNotApprovedNFT(_token, _serial);
         }
         // Ensure token association
@@ -1615,12 +1713,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
 
         if (tradeExists) {
             // Always emit TradeCancelled event for the old trade before overwriting
-            emit TradeCancelled(
-                msg.sender,
-                _token,
-                _serial,
-                existingTrade.nonce
-            );
+            emit TradeCancelled(_seller, _token, _serial, existingTrade.nonce);
 
             // Clean up old mappings
             userTradesMap[existingTrade.seller].remove(tradeId);
@@ -1633,7 +1726,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
 
         // Create/overwrite the trade
         Trade storage trade = allTradesMap[tradeId];
-        trade.seller = msg.sender;
+        trade.seller = _seller;
         trade.buyer = _buyer;
         trade.token = _token;
         trade.serial = _serial;
@@ -1643,7 +1736,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         trade.nonce = ++tradeNonce;
 
         // Add to appropriate mappings (always add since we cleaned up above if trade existed)
-        userTradesMap[msg.sender].add(tradeId);
+        userTradesMap[_seller].add(tradeId);
         if (_buyer != address(0)) {
             userTradesMap[_buyer].add(tradeId);
         } else {

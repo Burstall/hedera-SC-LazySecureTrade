@@ -512,7 +512,7 @@ describe('Deployment', () => {
 		}
 
 		// check the GasStationAccessControlEvent on the mirror node
-		await sleep(4500);
+		await sleep(5000);
 		const lgsEvent = await checkLastMirrorEvent(
 			env,
 			lazyGasStationId,
@@ -2100,7 +2100,7 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 
 			// Wait for mirror node sync
 			console.log('⏳ Waiting for mirror node sync...');
-			await sleep(4500);
+			await sleep(5000);
 
 			// Check event emission
 			const eventCheck = await checkLastMirrorEvent(
@@ -2308,7 +2308,7 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 				lazyCost,
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// validate the allowance is set
 			const allowances = await checkFTAllowances(env, charlieId);
@@ -2422,7 +2422,7 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 
 			// Wait for mirror node sync
 			console.log('⏳ Waiting for mirror node sync...');
-			await sleep(4500);
+			await sleep(5000);
 
 			const eventCheck = await checkLastMirrorEvent(
 				env,
@@ -2661,7 +2661,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				AccountId.fromString(lstContractId.toString()),
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// Create atomic batch trade using createBatchTrade with mixed payment types
 			// This creates a single batch that must be executed all-or-none
@@ -2710,7 +2710,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			console.log('Created atomic batch trade with ID:', batchId);
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// pull the user's batch trade data via mirror node to verify
 			// DEV NOTE: call this for the ZeroAddress to get open batches for any user
@@ -2806,7 +2806,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			console.log('Alice executed batch trade with tx:', executeResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify batch execution event
 			const eventCheck = await checkLastMirrorEvent(
@@ -2842,7 +2842,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				Number(lazyCost[0]) * 3,
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// Organize trades by unique tokens for multiple individual trade creation
 			const uniqueTokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
@@ -2887,7 +2887,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			console.log('Created multiple individual trades with tx:', result[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify trades were created with fee collection
 			const eventCheck = await checkLastMirrorEvent(
@@ -2969,7 +2969,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 
 			console.log('Alice executed individual trade with tx:', executeResult[2]?.transactionId?.toString());
 
-			await sleep(4500);
+			await sleep(5000);
 			console.log('✅ Individual trade with LAZY payment executed successfully');
 		});
 
@@ -3009,7 +3009,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 				),
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			let tradesCostInTinybars = 0;
 			let tradesCostInLazy = 0;
@@ -3067,7 +3067,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			console.log('Alice executed multiple individual trades with tx:', result[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify multi-token fee collection
 			const eventCheck = await checkLastMirrorEvent(
@@ -3134,7 +3134,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			// Test 1: Try to execute all 6 trades - should fail with BatchSizeExceedsLimit
 			client.setOperator(bobId, bobPK);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// get Bob's hbar balance before test using checkMirrorHbarBalance()
 			const bobHbarBalance = await checkMirrorHbarBalance(env, bobId);
@@ -3201,7 +3201,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 					lstContractId,
 					lazySecureTradeIface,
 					client,
-					5_000_000,
+					1_500_000,
 					'executeTrades',
 					[createdTradeIds],
 					new Hbar(totalTinybarPrice, HbarUnit.Tinybar),
@@ -3258,7 +3258,7 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			console.log('✅ Successfully executed remaining 6th trade individually');
 
 			// Verify all NFTs were transferred to Bob
-			await sleep(4500);
+			await sleep(5000);
 			const bobNFTA = await getSerialsOwned(env, bobId, StkNFTA_TokenId);
 			const transferredSerials = aliceNFTA.slice(0, 6);
 
@@ -3377,7 +3377,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 				Number(lazyCost[0]) * 2,
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// Create a single trade to cancel using Charlie's actual NFT
 			const createResult = await contractExecuteFunction(
@@ -3404,7 +3404,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('✅ Trade created successfully. Transaction ID:', createResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Generate trade ID for cancellation using the actual serial
 			const tradeId = ethers.solidityPackedKeccak256(
@@ -3430,7 +3430,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('✅ Trade cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify trade is cancelled via mirror node query
 			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
@@ -3484,7 +3484,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 				Number(lazyCost[0]) * 5,
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// Create 4 individual trades using createMultipleTrades for efficiency
 			const uniqueTokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
@@ -3526,7 +3526,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('✅ 4 trades created successfully. Transaction ID:', createResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Generate trade IDs for the trades we want to cancel (first StkNFTB and first StkNFTC)
 			const tradesToCancel = [
@@ -3560,7 +3560,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('✅ 2 trades cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify cancelled trades via mirror node
 			for (const tradeId of tradesToCancel) {
@@ -3652,7 +3652,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 				Number(lazyCost[0]) * 3,
 			);
 
-			await sleep(4500);
+			await sleep(5000);
 
 			// Create atomic batch trade for cancellation testing
 			const tokens = [StkNFTB_TokenId.toSolidityAddress(), StkNFTC_TokenId.toSolidityAddress()];
@@ -3695,7 +3695,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('Batch ID:', batchId);
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Cancel the batch trade
 			const cancelResult = await contractExecuteFunction(
@@ -3715,7 +3715,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			console.log('✅ Batch trade cancelled successfully. Transaction ID:', cancelResult[2]?.transactionId?.toString());
 
 			// Wait for mirror node sync
-			await sleep(4500);
+			await sleep(5000);
 
 			// Verify batch is cancelled via mirror node
 			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
@@ -4157,7 +4157,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 					Number(lazyCost[0]) * tokens.length,
 				);
 
-				await sleep(4500);
+				await sleep(5000);
 
 				// Monitor gas usage for maximum batch
 				const startTime = Date.now();
@@ -4204,7 +4204,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 
 			// Wait to ensure mirror node has indexed the batch trade
 			console.log('Waiting for mirror node to index the batch trade...');
-			await sleep(4500);
+			await sleep(5000);
 
 			// Get the batch ID from the previous test by checking Charlie's batch trades
 			const userBatches = await readOnlyEVMFromMirrorNode(
@@ -4265,7 +4265,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 				lstContractId,
 				lazySecureTradeIface,
 				client,
-				3_500_000,
+				2_750_000,
 				'executeBatchTrade',
 				[latestBatch],
 				new Hbar(tinybarPrice, HbarUnit.Tinybar),
@@ -4313,7 +4313,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 					Number(lazyCost[0]) * 2,
 				);
 
-				await sleep(4500);
+				await sleep(5000);
 
 				const createResult = await contractExecuteFunction(
 					lstContractId,
@@ -4341,7 +4341,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 					[StkNFTB_TokenId.toSolidityAddress(), testSerial],
 				);
 
-				await sleep(4500);
+				await sleep(5000);
 
 				// Verify trade exists
 				const encodedCheck = lazySecureTradeIface.encodeFunctionData(
@@ -4387,7 +4387,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 				}
 				console.log('✅ Trade executed successfully');
 
-				await sleep(4500);
+				await sleep(5000);
 
 				// Verify trade is cleaned up (should not exist)
 				const cleanupCheck = await readOnlyEVMFromMirrorNode(
@@ -4437,7 +4437,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 					Number(lazyCost[0]) * 3,
 				);
 
-				await sleep(4500);
+				await sleep(5000);
 
 				// Create first trade
 				const createResult1 = await contractExecuteFunction(
@@ -4513,7 +4513,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 					fail();
 				}
 
-				await sleep(4500);
+				await sleep(5000);
 
 				// Verify only the second trade exists with the new price
 				tradeId = ethers.solidityPackedKeccak256(
@@ -4696,7 +4696,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 		}
 
 		// ensure mirrors have caught up
-		await sleep(4500);
+		await sleep(5000);
 
 		const outstandingAllowances = [];
 		// get the FT allowances for operator
