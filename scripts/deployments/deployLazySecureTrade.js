@@ -272,7 +272,7 @@ const main = async () => {
 		return;
 	}
 
-	const gasLimit = 2_500_000;
+	const gasLimit = 6_500_000;
 
 	// now deploy main contract
 	const lazySecureTradeJSON = JSON.parse(
