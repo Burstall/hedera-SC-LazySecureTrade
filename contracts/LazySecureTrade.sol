@@ -5,7 +5,7 @@ pragma solidity >=0.8.12 <0.9.0;
 /// @author stowerling.eth / stowerling.hbar
 /// @notice A decentralized secure trade contract for Hedera Token Service (HTS) NFTs with advanced features
 /// @dev Supports single trades, batch trades, platform fees with LSH token discounts, and 2-step NFT transfers for royalty compliance
-/// @custom:version 0.2
+/// @custom:version 0.3.0-dev
 /// @custom:security-contact security@lazysecuretrade.com
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -18,32 +18,18 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 import {TokenStakerV2} from "./TokenStakerV2.sol";
+import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 
-contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
+contract LazySecureTrade is
+    Ownable,
+    ReentrancyGuard,
+    TokenStakerV2,
+    ILazySecureTrade
+{
     using EnumerableSet for EnumerableSet.AddressSet;
     using EnumerableSet for EnumerableSet.Bytes32Set;
     using SafeCast for uint256;
     using Address for address;
-
-    /// @notice Individual trade structure for single NFT trades
-    /// @param seller Address of the NFT seller
-    /// @param buyer Address of the buyer (address(0) for open market trades)
-    /// @param token Address of the NFT token contract
-    /// @param serial Serial number of the NFT
-    /// @param tinybarPrice Price in tinybars (HBAR)
-    /// @param lazyPrice Price in LAZY tokens
-    /// @param expiryTime Unix timestamp when trade expires (0 for no expiry)
-    /// @param nonce Unique identifier for the trade
-    struct Trade {
-        address seller;
-        address buyer;
-        address token;
-        uint256 serial;
-        uint256 tinybarPrice;
-        uint256 lazyPrice;
-        uint256 expiryTime;
-        uint256 nonce;
-    }
 
     /// @notice Batch trade structure for multiple NFT atomic trades
     /// @param seller Address of the NFT seller
@@ -147,8 +133,6 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
 
     // v0.3 Factory Authorization Events
     event FactoryAuthorized(address indexed factory, bool authorized);
-
-    event SecureTradeStatus(string message, address sender, uint256 value);
 
     error TradeNotFoundOrInvalid();
     error TradeExpired();
@@ -276,7 +260,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
                 _serial,
                 _tinybarPrice,
                 _lazyPrice,
-                _expiryTime
+                _expiryTime,
+                false // Direct user calls pay $LAZY for open market trades
             );
     }
 
@@ -312,7 +297,8 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
                 _serial,
                 _tinybarPrice,
                 _lazyPrice,
-                _expiryTime
+                _expiryTime,
+                true // Factory calls bypass $LAZY cost (NFTs already in escrow)
             );
     }
 
@@ -325,6 +311,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
      * @param _tinybarPrice The price in tinybars
      * @param _lazyPrice The price in Lazy tokens
      * @param _expiryTime The expiry time of the trade
+     * @param _bypassLazyCost Whether to bypass $LAZY listing cost (true for factory calls)
      * @return tradeId The ID of the trade
      */
     function _createTradeInternal(
@@ -334,11 +321,12 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         uint256 _serial,
         uint256 _tinybarPrice,
         uint256 _lazyPrice,
-        uint256 _expiryTime
+        uint256 _expiryTime,
+        bool _bypassLazyCost
     ) internal returns (bytes32 tradeId) {
         // Handle $LAZY charging for open market trades only
-        // Factory trades are always private (_buyer != address(0)) so no $LAZY charging
-        if (_buyer == address(0)) {
+        // Factory trades can bypass charging when NFTs are already in escrow
+        if (_buyer == address(0) && !_bypassLazyCost) {
             // check if the user does not own an LSH Gen 1 or Gen 2
             if (!areAdvancedTradesFree(_seller)) {
                 // if not then charge the user for the trade
@@ -797,13 +785,17 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
      * @notice Get LSH token tier for a user (consolidated logic)
      * @param _user The address to check
      * @return tier 0=none, 1=Gen2, 2=Mutant, 3=Gen1 (highest)
+     * @dev LazyDelegateRegistry is an immutable deployed contract with known edge
+     *      cases. If an LDR call reverts, we fall back to "no delegation" rather
+     *      than bricking the entire trade path. The user still gets at least their
+     *      direct balance considered, so this is a safe degradation (worst case
+     *      they lose their delegated-tier benefit for that trade).
      */
     function getLSHTokenTier(address _user) public view returns (uint256 tier) {
         // Check Gen1 first (highest tier) - includes delegated tokens
         if (
             IERC721(LSH_GEN1).balanceOf(_user) > 0 ||
-            lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN1).length >
-            0
+            _safeGetDelegatedLength(_user, LSH_GEN1) > 0
         ) {
             return 3; // Gen1 tier
         }
@@ -811,10 +803,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         // Check Mutant (second tier) - includes delegated tokens
         if (
             IERC721(LSH_GEN1_MUTANT).balanceOf(_user) > 0 ||
-            lazyDelegateRegistry
-                .getSerialsDelegatedTo(_user, LSH_GEN1_MUTANT)
-                .length >
-            0
+            _safeGetDelegatedLength(_user, LSH_GEN1_MUTANT) > 0
         ) {
             return 2; // Mutant tier
         }
@@ -822,13 +811,29 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         // Check Gen2 (third tier) - includes delegated tokens
         if (
             IERC721(LSH_GEN2).balanceOf(_user) > 0 ||
-            lazyDelegateRegistry.getSerialsDelegatedTo(_user, LSH_GEN2).length >
-            0
+            _safeGetDelegatedLength(_user, LSH_GEN2) > 0
         ) {
             return 1; // Gen2 tier
         }
 
         return 0; // No LSH tokens
+    }
+
+    /// @dev Defensive wrapper around LazyDelegateRegistry.getSerialsDelegatedTo.
+    ///      LDR is an immutable deployed contract with known issues; if a call
+    ///      reverts, we return 0 (treated as "no delegation") rather than
+    ///      bricking every trade execution that touches the LSH tier path.
+    function _safeGetDelegatedLength(
+        address _user,
+        address _token
+    ) private view returns (uint256) {
+        try lazyDelegateRegistry.getSerialsDelegatedTo(_user, _token) returns (
+            uint256[] memory delegatedSerials
+        ) {
+            return delegatedSerials.length;
+        } catch {
+            return 0;
+        }
     }
 
     /***
@@ -1684,7 +1689,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
         uint256 _lazyPrice,
         uint256 _expiryTime
     ) internal returns (bytes32 tradeId) {
-        // Validate expiry time (contract sunset checked by caller)
+        // Validate expiry time
         if (_expiryTime != 0 && _expiryTime < block.timestamp) {
             revert ExpiryTimeInPast();
         }
@@ -1746,8 +1751,9 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     }
 
     /***
-     * @notice Remove Lazy from the contract
-     * Used on sunset to avoid trapped collateral
+     * @notice Emergency LAZY recovery — owner can withdraw $LAZY stuck in the contract.
+     * Typical use: recovering $LAZY sent here by mistake or left over from edge cases in
+     * the refund flow. Not used during normal trade operation.
      * **ONLY OWNER**
      * @param _receiver the address to send the $LAZY to
      * @param _amount the amount of $LAZY to send
@@ -1764,11 +1770,7 @@ contract LazySecureTrade is Ownable, ReentrancyGuard, TokenStakerV2 {
     }
 
     // Default methods to allow HBAR to be received in EVM
-    receive() external payable {
-        emit SecureTradeStatus("R", msg.sender, msg.value);
-    }
+    receive() external payable {}
 
-    fallback() external payable {
-        emit SecureTradeStatus("F", msg.sender, msg.value);
-    }
+    fallback() external payable {}
 }

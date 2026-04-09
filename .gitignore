@@ -10,6 +10,8 @@ typechain-types
 #Hardhat files
 cache
 artifacts
-yarn.lock
 logs/*
 .DS_Store
+
+# Claude Code frameworks (exclude all)
+.claude/
