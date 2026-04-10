@@ -20,11 +20,29 @@ contract TokenStakerV2 is HederaTokenService {
     using SafeCast for uint256;
     using SafeCast for int256;
 
-    error FailedToInitialize();
+    /// @notice Unified HTS precompile call failure error. Surfaces
+    ///         the actual response code from the HTS system contract
+    ///         plus a 4-byte operation identifier so callers and
+    ///         off-chain consumers can diagnose which precompile call
+    ///         failed and why without guesswork.
+    ///
+    ///         Common operation identifiers:
+    ///         - "INIT": initContracts LAZY token association
+    ///         - "XFER": cryptoTransfer (NFT move + HBAR hop)
+    ///         - "ASSC": single-token associateToken
+    ///         - "BASC": batch associateTokens
+    ///
+    ///         Response code meanings: see HederaResponseCodes.sol for
+    ///         the canonical mapping. Common ones:
+    ///         - 22  = SUCCESS (should not appear in an error)
+    ///         - 167 = TOKEN_NOT_ASSOCIATED_TO_ACCOUNT
+    ///         - 168 = TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT (tolerated
+    ///                 by `tokenAssociate` and `batchTokenAssociate`)
+    ///         - 178 = SPENDER_DOES_NOT_HAVE_ALLOWANCE
+    ///         - 181 = INSUFFICIENT_TOKEN_BALANCE
+    error HTSCallFailed(int256 code, bytes4 op);
+
     error BadArguments();
-    error NFTTransferFailed(TransferDirection _direction);
-    error AssociationFailed();
-    error BatchAssociationFailed();
 
     enum TransferDirection {
         STAKING,
@@ -70,7 +88,7 @@ contract TokenStakerV2 is HederaTokenService {
         );
 
         if (response != HederaResponseCodes.SUCCESS) {
-            revert FailedToInitialize();
+            revert HTSCallFailed(response, "INIT");
         }
     }
 
@@ -161,8 +179,7 @@ contract TokenStakerV2 is HederaTokenService {
         );
 
         if (response != HederaResponseCodes.SUCCESS) {
-            // could be $LAZY or serials causing the issue. Check $LAZY balance of contract first
-            revert NFTTransferFailed(_direction);
+            revert HTSCallFailed(response, "XFER");
         }
 
         if (_delegate && _direction == TransferDirection.STAKING) {
@@ -189,7 +206,7 @@ contract TokenStakerV2 is HederaTokenService {
             !(response == SUCCESS ||
                 response == TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT)
         ) {
-            revert AssociationFailed();
+            revert HTSCallFailed(response, "ASSC");
         }
     }
 
@@ -207,7 +224,7 @@ contract TokenStakerV2 is HederaTokenService {
             !(response == SUCCESS ||
                 response == TOKEN_ALREADY_ASSOCIATED_TO_ACCOUNT)
         ) {
-            revert BatchAssociationFailed();
+            revert HTSCallFailed(response, "BASC");
         }
     }
 

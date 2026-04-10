@@ -41,12 +41,45 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     /// @notice Initialization guard (for proxy pattern)
     bool private initialized;
 
+    /// @notice Maximum percentage of stash HBAR balance that can be
+    ///         pulled by the factory in a single `arbitrageSettle`
+    ///         call, expressed in basis points (10_000 = 100%).
+    ///         Defense-in-depth: even if the factory has a bug and
+    ///         computes an incorrect settlement amount, this cap
+    ///         limits the per-tx blast radius. Hardcoded so no admin
+    ///         key can weaken it.
+    uint256 private constant ARB_SETTLE_MAX_BPS = 7500; // 75%
+
     // ============================================
     // Events
     // ============================================
 
-    // Note: No user-level events needed - only router cares about bid lifecycle
-    // Users can monitor their BidderContract address for LazySecureTrade events
+    // Note: bid lifecycle events are emitted only by the router (the
+    // BidderContractFactory). Users monitor the factory + their stash
+    // address directly via mirror node. The events declared here are
+    // for sovereignty actions that originate at the stash itself and
+    // have no factory-side equivalent.
+
+    /// @notice Emitted when a stash owner permanently severs the factory
+    ///         link via `detachFromFactory()`. The stash remains fully
+    ///         controlled by the owner but can no longer participate in
+    ///         bidding via the factory.
+    event FactoryDetached(
+        address indexed owner,
+        address indexed formerFactory
+    );
+
+    /// @notice Emitted when the factory pulls funds from this stash as
+    ///         arbitrage settlement. Off-chain consumers can subscribe
+    ///         to this event on a specific stash's deterministic
+    ///         address to track arbitrage events affecting that user.
+    ///         Dual-context with `BidderContractFactory.ArbitrageExecuted`.
+    event StashArbSettled(
+        bytes32 indexed bidId,
+        bytes32 indexed tradeId,
+        uint256 hbarAmount,
+        uint256 lazyAmount
+    );
 
     // ============================================
     // Errors
@@ -62,6 +95,9 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     error TransferFailed();
     error TokenAlreadyAssociated();
     error InvalidBidParameters();
+    /// @notice Thrown when detachFromFactory is called on a stash whose
+    ///         factory link has already been severed.
+    error AlreadyDetached();
 
     // ============================================
     // Modifiers
@@ -189,30 +225,197 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     }
 
     /**
-     * @notice Factory withdrawal for arbitrage profits
-     * @param amount Amount to withdraw in tinybars
+     * @notice Scoped settlement path for arbitrage — called by the
+     *         factory during `executeArbitrage` to pull the spread
+     *         out of this stash.
+     * @dev Replaces the removed `factoryWithdrawHbar` / `factoryWithdrawLazy`
+     *      blanket-drain paths. The factory is only allowed to pull
+     *      funds from this stash in the context of a specific
+     *      (bidId, tradeId) arbitrage settlement, with bounded amounts
+     *      computed by `executeArbitrage` from the verified spread.
+     *      The stash cannot verify the factory's computation without
+     *      querying the bid + trade itself (which would add subcalls
+     *      and is redundant with the factory's own verification), so
+     *      the trust model is: the factory is trusted to compute
+     *      correct settlement amounts, and both sides emit events so
+     *      any discrepancy is publicly auditable.
+     *
+     *      Emitting from the stash side (not just the factory) is an
+     *      intentional design choice — with deterministic CREATE2
+     *      stash addresses, off-chain consumers can subscribe to
+     *      `StashArbSettled` on a specific user's stash address to
+     *      track arbitrage events affecting that user.
+     * @param bidId The bid being settled.
+     * @param tradeId The LST trade being arbitraged against.
+     * @param hbarAmount HBAR to transfer to the factory.
+     * @param lazyAmount $LAZY to transfer to the factory (currently always 0
+     *                   because LAZY trades are fee-free, but the parameter
+     *                   exists for forward compatibility).
      */
-    function factoryWithdrawHbar(
-        uint256 amount
+    function arbitrageSettle(
+        bytes32 bidId,
+        bytes32 tradeId,
+        uint256 hbarAmount,
+        uint256 lazyAmount
     ) external onlyFactory nonReentrant {
+        if (hbarAmount > 0) {
+            // Defense-in-depth: reject if the factory tries to pull
+            // more than 75% of the stash's current HBAR balance in a
+            // single call. A legitimate arbitrage of a 100 HBAR bid
+            // against a 50 HBAR trade produces a 50 HBAR spread — at
+            // most ~50% of the pre-trade balance. The 75% cap gives
+            // headroom for edge cases while limiting blast radius.
+            uint256 cap = (address(this).balance * ARB_SETTLE_MAX_BPS) / 10_000;
+            if (hbarAmount > cap) revert InsufficientBalance();
+            (bool ok, ) = payable(factory).call{value: hbarAmount}("");
+            if (!ok) revert TransferFailed();
+        }
+
+        if (lazyAmount > 0) {
+            bool ok = IERC20(lazyToken).transfer(factory, lazyAmount);
+            if (!ok) revert TransferFailed();
+        }
+
+        emit StashArbSettled(bidId, tradeId, hbarAmount, lazyAmount);
+    }
+
+    // ============================================
+    // Sovereignty / Emergency Escape Hatches
+    // ============================================
+
+    /**
+     * @notice Emergency HBAR rescue to any address.
+     * @dev Unconditional escape hatch — bypasses `withdrawHbar`'s
+     *      keep-1-HBAR minimum balance guard and allows sending to an
+     *      arbitrary destination, not just `owner`. No HTS interaction,
+     *      no royalty machinery, no dependency on TokenStakerV2 — just a
+     *      raw native value call. The only prerequisite is that `to` is a
+     *      valid Hedera account (i.e. exists on the network).
+     *
+     *      Use when:
+     *      - The normal `withdrawHbar` path is revert-blocked for any
+     *        reason (bug, validation, exhausted 1-HBAR floor)
+     *      - The user wants to migrate HBAR to a new stash or a fresh
+     *        address without going via `owner`
+     *      - The factory has been detached or is otherwise inert and
+     *        the user needs to drain the stash
+     * @param to Destination address (must already exist on Hedera)
+     * @param amount Amount to rescue in tinybars
+     */
+    function rescueHbar(
+        address payable to,
+        uint256 amount
+    ) external onlyOwner nonReentrant {
+        if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
         if (address(this).balance < amount) revert InsufficientBalance();
 
-        (bool success, ) = payable(factory).call{value: amount}("");
+        (bool success, ) = to.call{value: amount}("");
         if (!success) revert TransferFailed();
     }
 
     /**
-     * @notice Factory withdrawal for arbitrage profits
-     * @param amount Amount to withdraw
+     * @notice Emergency $LAZY rescue to any address.
+     * @dev Unconditional escape hatch — raw ERC-20 transfer with no
+     *      royalty machinery (LAZY is a fungible HTS token with no
+     *      royalty). Equivalent in reliability to `rescueHbar`.
+     *      Allows sending to an arbitrary destination, not just `owner`.
+     * @param to Destination address (must be associated with $LAZY)
+     * @param amount Amount to rescue
      */
-    function factoryWithdrawLazy(
+    function rescueLazy(
+        address to,
         uint256 amount
-    ) external onlyFactory nonReentrant {
+    ) external onlyOwner nonReentrant {
+        if (to == address(0)) revert InvalidAddress();
         if (amount == 0) revert InvalidAmount();
 
-        bool success = IERC20(lazyToken).transfer(factory, amount);
+        bool success = IERC20(lazyToken).transfer(to, amount);
         if (!success) revert TransferFailed();
+    }
+
+    /**
+     * @notice Emergency single-NFT rescue via direct moveNFTs call.
+     * @dev Calls `TokenStakerV2.moveNFTs` directly, skipping the outer
+     *      `withdrawNFTs` argument-array validation and the
+     *      `batchMoveNFTs` batching loop. The rescue target is the full
+     *      TokenStakerV2 capability — including the 2-step custody-hop
+     *      pattern required to move royalty-bearing NFTs on Hedera.
+     *
+     *      `moveNFTs` is well-tested infrastructure used across the
+     *      LazySuperheroes ecosystem (staking, swaps, all royalty NFT
+     *      movements). The rescue function exists to provide a fallback
+     *      if a bug is ever found in the OUTER wrapping code — NOT
+     *      because the base transfer is a risk surface we consider
+     *      fragile.
+     *
+     *      Caveat: if `moveNFTs` itself is somehow broken (e.g., a
+     *      future breaking Hedera HIP changes the royalty engine's
+     *      interaction with the 1-tinybar custody hop), royalty-bearing
+     *      NFTs cannot be rescued via this function. In that scenario
+     *      the only escape is off-chain (contacting the NFT collection
+     *      admin, if one exists). See SECURITY.md for the full framing.
+     * @param token NFT token address
+     * @param serial NFT serial number
+     * @param to Destination address (must be associated with `token`)
+     * @param hbarValue Tinybar value to declare to the royalty engine.
+     *                  For standard collections this should be
+     *                  CUSTODY_HOP_TINYBAR (1). Set higher only if the
+     *                  target collection has a fixed-fee royalty that
+     *                  requires a larger consideration.
+     */
+    function rescueNFT(
+        address token,
+        uint256 serial,
+        address to,
+        int64 hbarValue
+    ) external onlyOwner nonReentrant {
+        if (token == address(0) || to == address(0)) revert InvalidAddress();
+
+        uint256[] memory serials = new uint256[](1);
+        serials[0] = serial;
+
+        moveNFTs(
+            TransferDirection.WITHDRAWAL,
+            token,
+            serials,
+            to,
+            false, // no delegation
+            hbarValue
+        );
+    }
+
+    /**
+     * @notice Permanently sever this stash's relationship with its
+     *         factory.
+     * @dev After calling this function:
+     *      - `factory` is set to address(0)
+     *      - `onlyFactory` functions revert permanently (including any
+     *        future factory-initiated trade execution or arbitrage
+     *        settlement)
+     *      - `createBid` / `cancelBid` / `createTrade` fail because the
+     *        stash can no longer reach the factory
+     *      - `withdrawHbar`, `withdrawLazy`, `withdrawNFTs`,
+     *        `rescueHbar`, `rescueLazy`, `rescueNFT` continue to work
+     *        normally — the stash becomes a pure vault under the owner's
+     *        control
+     *
+     *      Use when the factory is being retired (a new factory is
+     *      deployed and the user wants the old stash to be inert), or
+     *      when the user simply wants to opt out of factory-mediated
+     *      flows while keeping custody of their assets.
+     *
+     *      IRREVERSIBLE. If you detach, you cannot re-attach; you must
+     *      deploy a fresh stash under a factory to participate in
+     *      bidding again. Note that the new stash will be at a
+     *      different address because the CREATE2 salt includes the
+     *      factory address.
+     */
+    function detachFromFactory() external onlyOwner {
+        if (factory == address(0)) revert AlreadyDetached();
+        address formerFactory = factory;
+        factory = address(0);
+        emit FactoryDetached(owner, formerFactory);
     }
 
     // ============================================
@@ -271,6 +474,10 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      * @param hbarAmount HBAR bid amount in tinybars
      * @param lazyAmount $LAZY bid amount
      * @param expiry Expiry timestamp (0 = no expiry)
+     * @param minAcceptablePrice Minimum tinybar trade price the bid will
+     *        match in arbitrage. 0 = accept any price. Set this to guard
+     *        against surprise-cheap matches (e.g., a junk NFT listed at
+     *        1 tinybar in the same collection).
      * @return bidId Unique bid identifier
      */
     function createBid(
@@ -278,13 +485,19 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256[] memory serials,
         uint256 hbarAmount,
         uint256 lazyAmount,
-        uint256 expiry
+        uint256 expiry,
+        uint256 minAcceptablePrice
     ) external onlyOwner nonReentrant returns (bytes32 bidId) {
         // Validate parameters
         if (token == address(0)) revert InvalidBidParameters();
         if (hbarAmount == 0 && lazyAmount == 0) revert InvalidBidParameters();
         if (expiry != 0 && expiry <= block.timestamp)
             revert InvalidBidParameters();
+        // minAcceptablePrice above the bid itself is nonsensical — it
+        // would mean the bid can never be arbitraged because the spread
+        // would be negative. Reject at creation time rather than letting
+        // it create an unreachable bid.
+        if (minAcceptablePrice > hbarAmount) revert InvalidBidParameters();
 
         // Validate sufficient funds
         if (hbarAmount > 0 && address(this).balance < hbarAmount) {
@@ -307,7 +520,8 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         // Increment nonce for uniqueness
         nonce++;
 
-        // Create bid details
+        // Create bid details. The factory sets `createdAt` and
+        // `status` on its side, so we pass placeholder values here.
         IBidderContractFactory.BidDetails
             memory bidDetails = IBidderContractFactory.BidDetails({
                 user: owner,
@@ -318,7 +532,9 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
                 token: token,
                 serials: serials,
                 stashNonce: nonce,
-                createdAt: 0 // Factory will set this
+                createdAt: 0, // factory sets
+                minAcceptablePrice: minAcceptablePrice,
+                status: IBidderContractFactory.BidStatus.None // factory sets
             });
 
         // Call factory to create bid

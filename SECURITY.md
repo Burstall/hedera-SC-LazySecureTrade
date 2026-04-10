@@ -69,6 +69,54 @@ Do not rename this in code or docs to anything containing "defeat" or "evade". T
 
 ---
 
+## Stash Sovereignty — Emergency Escape Hatches
+
+Every per-user stash (`BidderContract` clone) exposes three rescue functions and a factory-detachment path. These exist so a user is never trapped if the normal withdraw flow has a bug, the factory is retired, or the user wants to opt out of factory-mediated flows entirely.
+
+### The rescue functions
+
+- **`rescueHbar(address payable to, uint256 amount)`** — raw native call, no HTS interaction, no royalty machinery. Unconditional escape for HBAR: the only prerequisite is that `to` is an existing Hedera account.
+- **`rescueLazy(address to, uint256 amount)`** — raw ERC-20 transfer. $LAZY is a fungible HTS token with no royalty, so this is equivalent in reliability to `rescueHbar`. Unconditional escape for $LAZY.
+- **`rescueNFT(address token, uint256 serial, address to, int64 hbarValue)`** — calls `TokenStakerV2.moveNFTs` directly, skipping the outer `withdrawNFTs` argument validation and the `batchMoveNFTs` batching loop. Provides a thinner wrapper around the same well-tested 2-step custody-hop path used by every other NFT movement in the LST codebase.
+
+The NFT rescue uses the same `moveNFTs` path as all LazySuperheroes staking, swaps, and royalty NFT movements across the ecosystem. It is battle-tested infrastructure, not a risk surface we consider fragile. The rescue function exists to provide a fallback if a bug is ever found in the *outer* wrapping code added on top of it — not because `moveNFTs` itself is in doubt.
+
+### Tail risk: a breaking HIP
+
+The 2-step custody-hop pattern depends on Hedera's current royalty engine honouring the 1-tinybar minimum-consideration rule. A future HIP could in principle change that. Such changes come with long advance notice — typically 6 to 18 months of visibility before activation — and would be so fundamentally disruptive to every contract in the Hedera ecosystem that touches royalty NFTs (staking, marketplaces, swaps, wallets, bridges) that the likelihood is considered low.
+
+The mitigation in that scenario would be a user announcement to withdraw any royalty-bearing NFTs from their stash before the HIP activates. This is acknowledged here for transparency, not because it is a live concern. We consider the ecosystem-wide deployment of the current pattern sufficient evidence that it is stable infrastructure.
+
+### `detachFromFactory()` — one-way factory severance
+
+Every stash can permanently sever its relationship with the factory by calling `detachFromFactory()`. After detach:
+
+- `factory` is set to address(0)
+- All `onlyFactory` functions revert permanently (including any future factory-initiated trade execution or arbitrage settlement)
+- `createBid`, `cancelBid`, and `createTrade` fail because the stash can no longer reach the factory
+- `withdrawHbar`, `withdrawLazy`, `withdrawNFTs`, `rescueHbar`, `rescueLazy`, `rescueNFT` continue to work normally — the stash becomes a pure vault under the owner's control
+
+This exists for two scenarios:
+
+1. **Factory retirement**: a new factory is deployed and the user wants their old stash to be inert while retaining custody of the funds it holds. They call `detachFromFactory()`, then drain the old stash via the withdraw or rescue paths, then deploy a fresh stash under the new factory.
+2. **Factory trust divergence**: the user concludes the current factory is no longer trustworthy and wants out of factory-mediated flows entirely, without waiting for any factory-side action.
+
+Detachment is **irreversible**. A detached stash cannot be re-attached, and a new stash under a (new or existing) factory will live at a different CREATE2 address because the factory address is part of the salt derivation.
+
+### Migration runbook
+
+If a new factory is ever deployed:
+
+1. New factory is deployed with fresh `BidderContract` implementation. Users are notified via an ecosystem announcement.
+2. User calls `detachFromFactory()` on their old stash. The old stash becomes inert but withdrawals still work.
+3. User calls `withdrawHbar`, `withdrawLazy`, `withdrawNFTs` to pull funds out. If any of those revert for any reason, the user falls back to `rescueHbar` / `rescueLazy` / `rescueNFT` which bypass the outer wrappers.
+4. User calls `deployStashFor(msg.sender)` on the new factory to get a fresh stash at a new deterministic address.
+5. User re-associates collections (~1M gas per new collection) and re-deposits funds.
+
+There is no automatic migration, no beacon proxy, no admin upgrade path. The stash is immutable by design; the escape hatches exist only so users are never trapped when something unexpected happens.
+
+---
+
 ## Detailed Security Analysis
 
 ### 1. Payment Validation & Network Enforcement

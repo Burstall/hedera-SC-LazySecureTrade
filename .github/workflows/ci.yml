@@ -1,0 +1,75 @@
+name: CI — Lint, Compile & Size Gate
+
+on:
+  push:
+    branches: [main, v0.3]
+  pull_request:
+    branches: [main, v0.3]
+
+  # Manual dispatch for testnet test runs (costs HBAR — use sparingly)
+  workflow_dispatch:
+    inputs:
+      run_tests:
+        description: 'Run testnet integration tests (burns HBAR)'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  lint-compile:
+    name: Lint + Compile + Size Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Solhint lint
+        run: npx solhint 'contracts/**/*.sol' --max-warnings 0
+        continue-on-error: true  # Advisory until existing warnings are triaged
+
+      - name: Compile with strict size gate
+        run: yarn hardhat compile
+        # contractSizer.strict = true in hardhat.config.js means this
+        # step FAILS if any contract exceeds the 24,576-byte EVM limit.
+        # No explicit size check needed — it's built into the compiler.
+
+  testnet-tests:
+    name: Testnet Integration Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event.inputs.run_tests == 'true' }}
+    needs: lint-compile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Compile
+        run: yarn hardhat compile
+
+      - name: Run test suite
+        run: yarn run test-trade
+        env:
+          ENVIRONMENT: test
+          ACCOUNT_ID: ${{ secrets.HEDERA_ACCOUNT_ID }}
+          PRIVATE_KEY: ${{ secrets.HEDERA_PRIVATE_KEY }}
+        timeout-minutes: 30

@@ -8,8 +8,22 @@ pragma solidity >=0.8.12 <0.9.0;
  *      names here reflect that — note `createTradeOnBehalfOfStash` replaces
  *      the earlier `createTradeOnBehalfOfBidderContract` name, and the
  *      BidDetails struct uses `stash` / `stashNonce` field names.
+ *
+ *      The BidStatus enum and the `status` field inside BidDetails must
+ *      stay byte-compatible with the factory's local definitions so
+ *      cross-contract struct encoding works. See BidderContractFactory.sol.
  */
 interface IBidderContractFactory {
+    /// @notice Lifecycle state of a bid. Must match the variant order
+    ///         of `BidderContractFactory.BidStatus` exactly.
+    enum BidStatus {
+        None,
+        Active,
+        Cancelled,
+        Executed,
+        Expired
+    }
+
     struct BidDetails {
         address user;
         address stash;
@@ -20,6 +34,17 @@ interface IBidderContractFactory {
         uint256[] serials;
         uint256 stashNonce;
         uint256 createdAt;
+        /// @notice Minimum tinybar trade price this bid is willing to be
+        ///         matched against in arbitrage flows. Guards against
+        ///         surprise-cheap trades routing through the bidder —
+        ///         e.g., a junk NFT listed at 1 tinybar under the same
+        ///         collection address. Set to 0 to accept any price.
+        uint256 minAcceptablePrice;
+        /// @notice Lifecycle state. Set to `None` when building the
+        ///         struct; the factory overwrites it with `Active` on
+        ///         successful createBid and later transitions it via
+        ///         `_closeBid`.
+        BidStatus status;
     }
 
     /**

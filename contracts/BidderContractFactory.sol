@@ -58,8 +58,24 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     /// @notice User's active bids
     mapping(address => bytes32[]) public userToBids;
 
-    /// @notice Core bid registry
+    /// @notice Core bid registry. Soft-deleted: closed bids stay in
+    ///         place with an updated `status` field rather than being
+    ///         removed, so post-mortem queries work for historical
+    ///         bids. See `BidStatus` for the state machine.
     mapping(bytes32 => BidDetails) public bidRegistry;
+
+    /// @notice Index of a bid inside `tokenToBids[token]`. Enables
+    ///         O(1) swap-pop removal without scanning the array.
+    mapping(bytes32 => uint256) internal _tokenBidIndex;
+
+    /// @notice Index of a bid inside `userToBids[user]`. Same
+    ///         purpose as `_tokenBidIndex`.
+    mapping(bytes32 => uint256) internal _userBidIndex;
+
+    /// @notice Maximum allowed `limit` on paginated view calls.
+    ///         Enforced so a single caller can't accidentally blow
+    ///         the view gas ceiling on a popular collection.
+    uint256 public constant MAX_VIEW_PAGINATION = 200;
 
     /// @notice Track valid stashes deployed by this factory
     mapping(address => bool) public isValidStash;
@@ -76,8 +92,68 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     bytes12 internal constant STASH_SALT_VERSION = "LST_STASH_v1";
 
     // ============================================
+    // Arbitrage State
+    // ============================================
+
+    /// @notice Basis points of the arbitrage spread paid to the
+    ///         arbitrageur. Default 5000 = 50%. The remainder goes to the
+    ///         protocol. Changes are subject to a 48h timelock via
+    ///         setArbitragePayoutBps + executeArbPayoutBpsChange.
+    uint256 public arbitragePayoutBps = 5000;
+
+    /// @notice Pending arbitrage payout bps change — zero when no change
+    ///         is queued.
+    uint256 public pendingArbPayoutBps;
+
+    /// @notice Unix timestamp at which the pending bps change can be
+    ///         applied. Zero when no change is queued.
+    uint256 public arbPayoutBpsChangeEta;
+
+    /// @notice Timelock delay for arbitrage parameter changes.
+    uint256 internal constant ARB_PAYOUT_TIMELOCK = 48 hours;
+
+    /// @notice Maximum arbitrage payout bps (100%) — above this the
+    ///         protocol receives a negative share which is nonsensical.
+    uint256 internal constant MAX_BPS = 10_000;
+
+    /// @notice Per-arbitrageur HBAR profit ledger. Arbitrageurs call
+    ///         claimArbProfit() to pull their accumulated profit.
+    ///         Accrual is separated from payout so reentrancy during
+    ///         the arbitrage execution path cannot race a payout.
+    mapping(address => uint256) public pendingArbProfit;
+
+    /// @notice Accumulated protocol share of arbitrage profits (HBAR).
+    ///         Withdrawn by the factory owner via withdrawProtocolProfit.
+    uint256 public pendingProtocolProfit;
+
+    // ============================================
     // Structs
     // ============================================
+
+    /// @notice Lifecycle state of a bid. Replaces the implicit
+    ///         "user == address(0) means gone" convention with an
+    ///         explicit status field so post-mortem queries can
+    ///         distinguish between Cancelled / Executed / Expired.
+    enum BidStatus {
+        None, // 0 — struct default, means the bid has never existed
+        Active, // 1 — live, eligible for execution and arbitrage
+        Cancelled, // 2 — explicitly cancelled by the bidder
+        Executed, // 3 — matched against a seller via executeAgainstBid or executeArbitrage
+        Expired // 4 — swept by cleanupExpiredBids or marked on an execute attempt
+    }
+
+    /// @notice Reason code returned by `isBidValid` — replaces the
+    ///         string-return pattern with a stable enum, saves
+    ///         substantial bytecode on the factory, and gives
+    ///         off-chain consumers a programmatic API.
+    enum BidValidityCode {
+        Valid, // 0
+        NotFound, // 1
+        NotActive, // 2 — exists but has been Cancelled / Executed / Expired
+        Expired, // 3 — active but past expiry timestamp
+        InsufficientHbar, // 4 — stash has less HBAR than bid.hbarAmount
+        InsufficientLazy // 5 — stash has less $LAZY than bid.lazyAmount
+    }
 
     struct BidDetails {
         address user; // Original bidder (owner of the stash)
@@ -89,6 +165,12 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         uint256[] serials; // Empty array = any serial, specific serials = exact match
         uint256 stashNonce; // Stash internal nonce for uniqueness
         uint256 createdAt; // Creation timestamp
+        // Minimum tinybar trade price this bid will match in arbitrage.
+        // 0 = accept any price; non-zero = reject arbitrage below the floor.
+        uint256 minAcceptablePrice;
+        // Lifecycle state. Populated by the factory on createBid /
+        // transitions; off-chain consumers can read it directly.
+        BidStatus status;
     }
 
     // ============================================
@@ -126,6 +208,34 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         uint256 serial
     );
 
+    // ===== Arbitrage events =====
+
+    /// @notice Emitted on a successful arbitrage. The arbitrageur's cut
+    ///         accrues to `pendingArbProfit[arbitrageur]`; the protocol's
+    ///         share accrues to `pendingProtocolProfit`.
+    event ArbitrageExecuted(
+        bytes32 indexed bidId,
+        bytes32 indexed tradeId,
+        address indexed arbitrageur,
+        uint256 arbCut,
+        uint256 protocolCut
+    );
+
+    /// @notice Emitted when an arbitrageur claims their accrued profit.
+    event ArbProfitClaimed(address indexed arbitrageur, uint256 amount);
+
+    /// @notice Emitted when the factory owner withdraws accrued protocol
+    ///         profit.
+    event ProtocolProfitWithdrawn(address indexed to, uint256 amount);
+
+    /// @notice Emitted when a payoutBps change is proposed by the owner.
+    ///         `eta` is the earliest timestamp at which the change can
+    ///         be applied via executeArbPayoutBpsChange.
+    event ArbPayoutBpsChangePending(uint256 newBps, uint256 eta);
+
+    /// @notice Emitted when a pending payoutBps change is applied.
+    event ArbPayoutBpsChanged(uint256 newBps);
+
     // ============================================
     // Errors
     // ============================================
@@ -141,8 +251,50 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     error TradeExecutionFailed();
     error EmptyBidArray();
     error InvalidAddress();
-    // NOTE: ArbitrageNotImplemented is kept until Phase 3 rips out the stub.
-    error ArbitrageNotImplemented();
+
+    // ===== Arbitrage errors =====
+
+    /// @notice The referenced trade cannot be arbitraged against this bid —
+    ///         it does not exist, is not open-market, targets a different
+    ///         token, or targets a serial not matched by the bid.
+    error ArbitrageTradeInvalid();
+
+    /// @notice The spread between the bid and trade is insufficient — the
+    ///         trade price is below the bid's minAcceptablePrice floor,
+    ///         the bid is smaller than the trade, or the realized spread
+    ///         is less than the caller's minProfit parameter.
+    error ArbitrageProfitInsufficient();
+
+    /// @notice The arbitrage call would trigger a wash trade or
+    ///         self-arbitrage — the caller is either the bidder or the
+    ///         seller, or the bidder and seller are the same address.
+    error SelfArbitrageBlocked();
+
+    /// @notice The bid registry snapshot for `bidId` drifted between
+    ///         the pre-call and post-call checks — likely a
+    ///         cross-contract reentrancy attempt during execution.
+    error RegistryDriftDetected();
+
+    /// @notice An invalid basis-points value was supplied (> MAX_BPS).
+    error InvalidBps();
+
+    /// @notice The requested timelock operation has no pending change.
+    error NoPendingBpsChange();
+
+    /// @notice The timelock delay has not yet elapsed for the pending change.
+    error TimelockNotElapsed();
+
+    /// @notice Nothing to claim / withdraw.
+    error NothingToClaim();
+
+    /// @notice A paginated view call was supplied with a `limit`
+    ///         greater than `MAX_VIEW_PAGINATION`.
+    error PaginationLimitTooLarge();
+
+    /// @notice A bid state transition was attempted from the wrong
+    ///         source status (e.g., trying to execute an already-
+    ///         cancelled bid).
+    error BidNotActive();
 
     // ============================================
     // Constructor
@@ -331,14 +483,20 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Create a bid (called by BidderContract)
-     * @param bidDetails Bid details struct
-     * @return bidId Unique bid identifier
+     * @notice Create a bid (called by a user's stash).
+     * @dev The stash constructs the BidDetails struct and passes it
+     *      here. This function validates the caller is a factory-
+     *      deployed stash, sanity-checks the parameters, assigns an
+     *      Active status, and populates the lookup indexes used for
+     *      O(1) removal later.
+     * @param bidDetails Bid details struct (status field is set here,
+     *                   not by the caller).
+     * @return bidId Unique bid identifier.
      */
     function createBid(
         BidDetails memory bidDetails
     ) external nonReentrant returns (bytes32 bidId) {
-        // Validate caller is a valid BidderContract
+        // Validate caller is a factory-deployed stash
         if (!isValidStash[msg.sender]) {
             revert InvalidStash();
         }
@@ -365,12 +523,19 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
             )
         );
 
-        // Store bid details
+        // Populate the fields the factory owns (createdAt + initial status).
+        // The caller-provided `status` is intentionally overwritten — only
+        // the factory can mint a bid into Active state.
         bidDetails.createdAt = block.timestamp;
+        bidDetails.status = BidStatus.Active;
         bidRegistry[bidId] = bidDetails;
 
-        // Add to discovery mappings
+        // Add to discovery arrays and record each bid's index for
+        // O(1) swap-pop removal later.
+        _tokenBidIndex[bidId] = tokenToBids[bidDetails.token].length;
         tokenToBids[bidDetails.token].push(bidId);
+
+        _userBidIndex[bidId] = userToBids[bidDetails.user].length;
         userToBids[bidDetails.user].push(bidId);
 
         // Increment counter
@@ -380,24 +545,29 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Cancel a bid
-     * @param bidId Bid identifier to cancel
+     * @notice Cancel a bid.
+     * @dev Transitions the bid from Active to Cancelled and removes it
+     *      from the discovery indexes via O(1) swap-pop. The registry
+     *      entry itself is retained so post-mortem lookups succeed
+     *      (the entry's `status` field will read Cancelled).
+     * @param bidId Bid identifier to cancel.
      */
     function cancelBid(bytes32 bidId) external nonReentrant {
-        BidDetails memory bid = bidRegistry[bidId];
+        BidDetails storage bid = bidRegistry[bidId];
 
-        if (bid.user == address(0)) {
+        if (bid.status == BidStatus.None) {
             revert BidNotFound();
         }
+        if (bid.status != BidStatus.Active) {
+            revert BidNotActive();
+        }
 
-        // Only bid owner or their BidderContract can cancel
+        // Only bid owner or their stash can cancel
         if (msg.sender != bid.user && msg.sender != bid.stash) {
             revert UnauthorizedCaller();
         }
 
-        // Remove bid from registry
-        _removeBidFromRegistry(bidId);
-
+        _closeBid(bidId, BidStatus.Cancelled);
         emit BidCancelled(bidId, bid.user);
     }
 
@@ -417,17 +587,24 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get all bids for a specific token (paginated)
-     * @param token Token address to query
-     * @param offset Starting index
-     * @param limit Maximum number of results
-     * @return Array of bid IDs
+     * @notice Get a page of active bids for a specific token.
+     * @dev Enforces `limit <= MAX_VIEW_PAGINATION` to prevent
+     *      unbounded view calls that could hit the eth_call gas ceiling
+     *      on popular collections. For truly global scans, callers must
+     *      page through multiple calls.
+     * @param token Token address to query.
+     * @param offset Starting index into `tokenToBids[token]`.
+     * @param limit Maximum number of results; must be in (0, 200].
+     * @return Array of bid IDs (may be shorter than `limit` near the end).
      */
     function getBidsForTokenPaginated(
         address token,
         uint256 offset,
         uint256 limit
     ) external view returns (bytes32[] memory) {
+        if (limit == 0 || limit > MAX_VIEW_PAGINATION) {
+            revert PaginationLimitTooLarge();
+        }
         bytes32[] memory allBids = tokenToBids[token];
 
         if (offset >= allBids.length) {
@@ -450,37 +627,62 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get all bids for a specific token/serial combination
-     * @param token Token address
-     * @param serial Serial number
-     * @return Array of matching bid IDs
+     * @notice Get a page of bids for a specific (token, serial)
+     *         combination.
+     * @dev Paginated rewrite of the previous unbounded O(n²) version.
+     *      Scans `tokenToBids[token]` starting at `offset`, testing
+     *      each candidate with `_bidMatchesSerial`, and collects up to
+     *      `limit` matches. Returns the matches plus `nextOffset` so
+     *      callers can resume paging after the window.
+     * @param token Token address.
+     * @param serial Serial number to match against bid filters.
+     * @param offset Starting index into `tokenToBids[token]`.
+     * @param limit Maximum number of matches to return; in (0, 200].
+     * @return matches Array of matching bid IDs (up to `limit`).
+     * @return nextOffset Index into `tokenToBids[token]` after the last
+     *                    scanned element. Pass this as the `offset` of
+     *                    the next call to continue paging; a value
+     *                    equal to `tokenToBids[token].length` means the
+     *                    scan is exhausted.
      */
-    function getBidsForTokenSerial(
+    function getBidsForTokenSerialPaginated(
         address token,
-        uint256 serial
-    ) external view returns (bytes32[] memory) {
+        uint256 serial,
+        uint256 offset,
+        uint256 limit
+    ) external view returns (bytes32[] memory matches, uint256 nextOffset) {
+        if (limit == 0 || limit > MAX_VIEW_PAGINATION) {
+            revert PaginationLimitTooLarge();
+        }
         bytes32[] memory tokenBids = tokenToBids[token];
-        uint256 matchCount = 0;
+        if (offset >= tokenBids.length) {
+            return (new bytes32[](0), tokenBids.length);
+        }
 
-        // First pass: count matches
-        for (uint256 i = 0; i < tokenBids.length; i++) {
+        bytes32[] memory buffer = new bytes32[](limit);
+        uint256 found = 0;
+        uint256 i = offset;
+        while (i < tokenBids.length && found < limit) {
             if (_bidMatchesSerial(tokenBids[i], serial)) {
-                matchCount++;
+                buffer[found] = tokenBids[i];
+                unchecked {
+                    ++found;
+                }
+            }
+            unchecked {
+                ++i;
             }
         }
 
-        // Second pass: populate result
-        bytes32[] memory result = new bytes32[](matchCount);
-        uint256 resultIndex = 0;
-
-        for (uint256 i = 0; i < tokenBids.length; i++) {
-            if (_bidMatchesSerial(tokenBids[i], serial)) {
-                result[resultIndex] = tokenBids[i];
-                resultIndex++;
+        // Trim to the actual number of matches found
+        matches = new bytes32[](found);
+        for (uint256 j = 0; j < found; ) {
+            matches[j] = buffer[j];
+            unchecked {
+                ++j;
             }
         }
-
-        return result;
+        nextOffset = i;
     }
 
     /**
@@ -516,60 +718,134 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Check if a bid is valid (not expired, sufficient funds)
-     * @param bidId Bid identifier
-     * @return valid Whether the bid is valid
-     * @return reason Reason if invalid
+     * @notice Check whether a bid is currently valid and, if not, why.
+     * @dev Returns a `(bool, BidValidityCode)` pair instead of the
+     *      previous `(bool, string)` shape. The enum is stable,
+     *      programmatically comparable, and drops all string heap
+     *      allocations from view calls — meaningful bytecode savings.
+     * @param bidId Bid identifier.
+     * @return valid True iff the bid is Active, unexpired, and backed
+     *               by sufficient stash funds.
+     * @return code  Structured reason code — see BidValidityCode.
      */
     function isBidValid(
         bytes32 bidId
-    ) public view returns (bool valid, string memory reason) {
+    ) public view returns (bool valid, BidValidityCode code) {
         BidDetails memory bid = bidRegistry[bidId];
 
-        // Check if bid exists
-        if (bid.user == address(0)) {
-            return (false, "Bid not found");
+        // Never existed
+        if (bid.status == BidStatus.None) {
+            return (false, BidValidityCode.NotFound);
         }
 
-        // Check expiry first (cheapest check)
+        // Was closed (cancelled / executed / expired)
+        if (bid.status != BidStatus.Active) {
+            return (false, BidValidityCode.NotActive);
+        }
+
+        // Active but past expiry
         if (bid.expiry != 0 && block.timestamp > bid.expiry) {
-            return (false, "Bid expired");
+            return (false, BidValidityCode.Expired);
         }
 
-        // Check HBAR balance
-        if (bid.hbarAmount > 0) {
-            uint256 hbarBalance = bid.stash.balance;
-            if (hbarBalance < bid.hbarAmount) {
-                return (false, "Insufficient HBAR");
-            }
+        // Stash must hold enough HBAR
+        if (bid.hbarAmount > 0 && bid.stash.balance < bid.hbarAmount) {
+            return (false, BidValidityCode.InsufficientHbar);
         }
 
-        // Check $LAZY balance if needed
-        if (bid.lazyAmount > 0) {
-            if (
-                IERC20(LAZY_TOKEN).balanceOf(bid.stash) < bid.lazyAmount
-            ) {
-                return (false, "Insufficient $LAZY");
-            }
+        // Stash must hold enough $LAZY
+        if (
+            bid.lazyAmount > 0 &&
+            IERC20(LAZY_TOKEN).balanceOf(bid.stash) < bid.lazyAmount
+        ) {
+            return (false, BidValidityCode.InsufficientLazy);
         }
 
-        return (true, "Valid");
+        return (true, BidValidityCode.Valid);
     }
 
     /**
-     * @notice Validate multiple bids at once
-     * @param bidIds Array of bid IDs
-     * @return validBids Boolean array of validity
-     * @return reasons String array of reasons
+     * @notice Validate multiple bids in one call.
+     * @param bidIds Array of bid IDs.
+     * @return validBids Parallel bool array.
+     * @return codes Parallel reason-code array.
      */
     function validateBids(
         bytes32[] memory bidIds
-    ) external view returns (bool[] memory validBids, string[] memory reasons) {
-        validBids = new bool[](bidIds.length);
-        reasons = new string[](bidIds.length);
+    )
+        external
+        view
+        returns (bool[] memory validBids, BidValidityCode[] memory codes)
+    {
+        uint256 n = bidIds.length;
+        validBids = new bool[](n);
+        codes = new BidValidityCode[](n);
 
-        for (uint256 i = 0; i < bidIds.length; i++) {
-            (validBids[i], reasons[i]) = isBidValid(bidIds[i]);
+        for (uint256 i = 0; i < n; ) {
+            (validBids[i], codes[i]) = isBidValid(bidIds[i]);
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /**
+     * @notice Aggregated snapshot of a user's stash state for wallets,
+     *         MCP agents, and indexers.
+     * @dev One view call returns everything a front-end needs to
+     *      render a "your stash" dashboard: the deterministic stash
+     *      address, its HBAR and $LAZY balances, and the user's
+     *      active bid IDs (which can then be looked up via
+     *      `bidRegistry`). Replaces 5+ scattered RPC calls with one.
+     *
+     *      If the stash has not been deployed yet, `stash` returns
+     *      the predicted CREATE2 address (from `getStashAddress`),
+     *      balances are 0, and `activeBidIds` is empty.
+     * @param user Owner address to query.
+     * @return stash The stash address (deployed or predicted).
+     * @return deployed True if the stash clone has been deployed.
+     * @return hbarBalance Current HBAR balance of the stash (0 if
+     *                      not deployed).
+     * @return lazyBalance Current $LAZY balance of the stash (0 if
+     *                      not deployed).
+     * @return activeBidIds Snapshot of the user's active bid IDs,
+     *                      capped at MAX_VIEW_PAGINATION. If the
+     *                      user has more, caller should page via
+     *                      the `userToBids` array getter directly.
+     */
+    function getStashSnapshot(
+        address user
+    )
+        external
+        view
+        returns (
+            address stash,
+            bool deployed,
+            uint256 hbarBalance,
+            uint256 lazyBalance,
+            bytes32[] memory activeBidIds
+        )
+    {
+        address stored = userToStash[user];
+        deployed = stored != address(0);
+        stash = deployed ? stored : getStashAddress(user);
+
+        if (deployed) {
+            hbarBalance = stash.balance;
+            lazyBalance = IERC20(LAZY_TOKEN).balanceOf(stash);
+        }
+
+        bytes32[] storage userArr = userToBids[user];
+        uint256 n = userArr.length;
+        if (n > MAX_VIEW_PAGINATION) {
+            n = MAX_VIEW_PAGINATION;
+        }
+        activeBidIds = new bytes32[](n);
+        for (uint256 i = 0; i < n; ) {
+            activeBidIds[i] = userArr[i];
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -578,39 +854,55 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Remove bid from all registries
-     * @param bidId Bid identifier
+     * @notice Close a bid and remove it from active discovery indexes.
+     * @dev Soft-deletes the bid by setting its `status` field to the
+     *      supplied terminal state (Cancelled / Executed / Expired),
+     *      then removes it from `tokenToBids[token]` and
+     *      `userToBids[user]` via O(1) swap-pop using the stored
+     *      indexes. The registry entry itself stays in place so
+     *      post-mortem queries return the historical details plus
+     *      the terminal status.
+     * @param bidId Bid identifier.
+     * @param terminalStatus One of Cancelled, Executed, or Expired.
      */
-    function _removeBidFromRegistry(bytes32 bidId) internal {
-        BidDetails memory bid = bidRegistry[bidId];
+    function _closeBid(bytes32 bidId, BidStatus terminalStatus) internal {
+        BidDetails storage bid = bidRegistry[bidId];
 
-        // Remove from tokenToBids
-        _removeFromArray(tokenToBids[bid.token], bidId);
+        // Snap the soft-delete state change first so any subsequent
+        // reentry via view call observes the closed status.
+        bid.status = terminalStatus;
 
-        // Remove from userToBids
-        _removeFromArray(userToBids[bid.user], bidId);
-
-        // Delete from main registry
-        delete bidRegistry[bidId];
+        // Swap-pop removal from tokenToBids
+        _swapPopIndexed(tokenToBids[bid.token], _tokenBidIndex, bidId);
+        // Swap-pop removal from userToBids
+        _swapPopIndexed(userToBids[bid.user], _userBidIndex, bidId);
     }
 
     /**
-     * @notice Remove an element from a bytes32 array
-     * @param array Storage reference to array
-     * @param element Element to remove
+     * @notice O(1) swap-pop remove of `bidId` from a bytes32 array,
+     *         keeping the companion index mapping in sync.
+     * @dev When the removed element is not the last element, the last
+     *      element is moved into its slot AND its own index entry is
+     *      rewritten to reflect the new position. Failing to rewrite
+     *      that index would corrupt future removals of the moved bid.
+     * @param array Storage array reference.
+     * @param indexOf Mapping from bidId to its position in `array`.
+     * @param bidId The element being removed.
      */
-    function _removeFromArray(
+    function _swapPopIndexed(
         bytes32[] storage array,
-        bytes32 element
+        mapping(bytes32 => uint256) storage indexOf,
+        bytes32 bidId
     ) internal {
-        for (uint256 i = 0; i < array.length; i++) {
-            if (array[i] == element) {
-                // Move last element to this position and pop
-                array[i] = array[array.length - 1];
-                array.pop();
-                break;
-            }
+        uint256 idx = indexOf[bidId];
+        uint256 lastIdx = array.length - 1;
+        if (idx != lastIdx) {
+            bytes32 moved = array[lastIdx];
+            array[idx] = moved;
+            indexOf[moved] = idx;
         }
+        array.pop();
+        delete indexOf[bidId];
     }
 
     /**
@@ -656,17 +948,24 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
             revert EmptyBidArray();
         }
 
-        for (uint256 i = 0; i < bidIds.length; i++) {
-            BidDetails memory bid = bidRegistry[bidIds[i]];
+        for (uint256 i = 0; i < bidIds.length; ) {
+            BidDetails storage bid = bidRegistry[bidIds[i]];
 
             if (
-                bid.user != address(0) &&
+                bid.status == BidStatus.Active &&
                 bid.expiry != 0 &&
                 block.timestamp > bid.expiry
             ) {
-                _removeBidFromRegistry(bidIds[i]);
-                emit BidExpired(bidIds[i], bid.user);
-                cleanedCount++;
+                address bidUser = bid.user;
+                _closeBid(bidIds[i], BidStatus.Expired);
+                emit BidExpired(bidIds[i], bidUser);
+                unchecked {
+                    ++cleanedCount;
+                }
+            }
+
+            unchecked {
+                ++i;
             }
         }
 
@@ -748,14 +1047,17 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     ) external nonReentrant returns (bytes32 tradeId) {
         BidDetails memory bid = bidRegistry[bidId];
 
-        // Check if bid exists
-        if (bid.user == address(0)) {
+        // Bid must exist and be in the Active state
+        if (bid.status == BidStatus.None) {
             revert BidNotFound();
         }
+        if (bid.status != BidStatus.Active) {
+            revert BidNotActive();
+        }
 
-        // Check if expired
+        // Check if expired — sweep to Expired and revert
         if (bid.expiry != 0 && block.timestamp > bid.expiry) {
-            _removeBidFromRegistry(bidId);
+            _closeBid(bidId, BidStatus.Expired);
             emit BidExpired(bidId, bid.user);
             revert BidHasExpired();
         }
@@ -797,59 +1099,242 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
             bid.lazyAmount
         );
 
-        // Remove bid from registry (cleanup after successful execution)
-        _removeBidFromRegistry(bidId);
+        // Transition the bid to Executed and remove from discovery
+        // indexes via O(1) swap-pop. The registry entry stays in place
+        // so post-mortem lookups return the historical details.
+        _closeBid(bidId, BidStatus.Executed);
 
         // Emit execution event
         emit BidExecuted(bidId, msg.sender, tradeId, 0);
     }
 
+    // ============================================
+    // Arbitrage
+    // ============================================
+
     /**
-     * @notice Execute arbitrage opportunity (third-party initiated)
-     * @param bidId Bid identifier
-     * @param existingTradeId Existing trade in LazySecureTrade
-     * @return success Whether arbitrage was successful
-     * @return arbitrageProfit Profit amount extracted
+     * @notice Execute an arbitrage against an existing LST trade.
+     * @dev Finds a mispriced trade (ask) sitting below a live bid,
+     *      routes the purchase through the bidder's stash at the trade
+     *      price, and captures the spread as arbitrage profit split
+     *      between the caller and the protocol.
+     *
+     *      Economic model: the bidder's stash spends the full
+     *      bid.hbarAmount (matching the user's budget), but only
+     *      trade.tinybarPrice flows to the seller via LST. The
+     *      remainder (spread = bid.hbarAmount - trade.tinybarPrice) is
+     *      pulled from the stash via `arbitrageSettle` and split by
+     *      `arbitragePayoutBps` — arbCut to the arbitrageur, rest to
+     *      the protocol treasury. The stash still ends up with the NFT,
+     *      so the bidder gets what they wanted; the economic rent from
+     *      the bid/ask mismatch goes to the arbitrageur and protocol,
+     *      not back to the bidder.
+     *
+     *      Self-arbitrage is blocked at three points: caller cannot be
+     *      the bidder, caller cannot be the seller, and bidder cannot
+     *      equal seller. This closes the wash-trading loophole where a
+     *      single actor would otherwise extract value from their own
+     *      bid against their own ask.
+     *
+     *      Hedera has no MEV (consensus timestamp ordering), so no
+     *      commit-reveal or sandwich-defense mechanics are needed.
+     *
+     *      A pre/post registry snapshot of `bidRegistry[bidId]` is
+     *      used to detect cross-contract reentrancy — if the bid
+     *      entry changes during execution, the tx reverts with
+     *      `RegistryDriftDetected`.
+     *
+     * @param bidId The bid to arbitrage against.
+     * @param existingTradeId An open-market LST trade whose price is
+     *                        at or below the bid's effective price.
+     * @param minProfit Minimum acceptable HBAR spread for the caller.
+     *                  Reverts cheaply with `ArbitrageProfitInsufficient`
+     *                  if the realized spread is below this threshold.
+     * @return spread The HBAR spread captured, pre-split.
      */
     function executeArbitrage(
         bytes32 bidId,
-        bytes32 existingTradeId
-    ) external nonReentrant returns (bool, uint256) {
+        bytes32 existingTradeId,
+        uint256 minProfit
+    ) external nonReentrant returns (uint256 spread) {
         BidDetails memory bid = bidRegistry[bidId];
 
-        // Check if bid exists
-        if (bid.user == address(0)) {
-            revert BidNotFound();
-        }
+        // Bid must exist and be Active
+        if (bid.status == BidStatus.None) revert BidNotFound();
+        if (bid.status != BidStatus.Active) revert BidNotActive();
 
-        // Check if expired
+        // Bid expired?
         if (bid.expiry != 0 && block.timestamp > bid.expiry) {
             revert BidHasExpired();
         }
 
-        // Check HBAR balance if needed
-        if (bid.hbarAmount > 0) {
-            uint256 hbarBalance = bid.stash.balance;
-            if (hbarBalance < bid.hbarAmount) {
-                revert InsufficientFunds();
-            }
+        // Fetch the trade from LST
+        ILazySecureTrade.Trade memory trade = LAZY_SECURE_TRADE.getTrade(
+            existingTradeId
+        );
+
+        // Trade must exist, be open-market, target the same token, and
+        // match the bid's serial filter
+        if (
+            trade.seller == address(0) ||
+            trade.buyer != address(0) ||
+            trade.token != bid.token ||
+            !_bidMatchesSerial(bidId, trade.serial)
+        ) {
+            revert ArbitrageTradeInvalid();
         }
 
-        // Get existing trade details from LazySecureTrade
-        // Note: This requires getTrade to be public/external in LazySecureTrade
-        // For now, we'll implement the basic structure
+        // Self-arb / wash-trade guard
+        if (
+            msg.sender == bid.user ||
+            msg.sender == trade.seller ||
+            bid.user == trade.seller
+        ) {
+            revert SelfArbitrageBlocked();
+        }
 
-        // TODO: Implement arbitrage logic
-        // 1. Validate existing trade is compatible with bid
-        // 2. Execute trade via BidderContract
-        // 3. Calculate arbitrage profit (bid price - trade price - fees)
-        // 4. Split profit 50/50 between arbitrageur and factory
-        // 5. Extract factory share from BidderContract
-        // 6. Transfer arbitrageur share
+        // Bid must fully cover the trade price AND respect the bidder's
+        // price floor. Consolidated into a single error since all three
+        // cases are "the spread isn't profitable enough to arbitrage".
+        if (
+            bid.hbarAmount < trade.tinybarPrice ||
+            trade.tinybarPrice < bid.minAcceptablePrice ||
+            bid.lazyAmount < trade.lazyPrice
+        ) {
+            revert ArbitrageProfitInsufficient();
+        }
 
-        // Silence unused variable warnings
-        existingTradeId;
+        spread = bid.hbarAmount - trade.tinybarPrice;
+        if (spread < minProfit) revert ArbitrageProfitInsufficient();
 
-        revert ArbitrageNotImplemented();
+        // Stash must actually hold the full bid amount
+        if (bid.stash.balance < bid.hbarAmount) revert InsufficientFunds();
+
+        // Snapshot the registry entry for post-call drift detection.
+        // Any cross-function reentrancy that mutates this bid's entry
+        // will cause the post-call compare to fail.
+        bytes32 preSnapshot = keccak256(abi.encode(bidRegistry[bidId]));
+
+        // Step 1: route the trade execution through the stash at the
+        // TRADE price (not the bid price). The stash becomes the buyer
+        // of the existing trade. LST pays the seller, NFT ends up in
+        // the stash.
+        BidderContract(payable(bid.stash)).executeTrade(
+            existingTradeId,
+            trade.tinybarPrice,
+            trade.lazyPrice
+        );
+
+        // Step 2: pull the HBAR spread from the stash into the factory.
+        // This is the scoped replacement for the removed
+        // `factoryWithdrawHbar` — bounded to the computed spread for a
+        // specific (bid, trade) pair, event-logged on both sides.
+        BidderContract(payable(bid.stash)).arbitrageSettle(
+            bidId,
+            existingTradeId,
+            spread,
+            0 // LAZY spread not captured — LAZY trades are fee-free
+        );
+
+        // Post-call drift check. If the registry entry for this bid
+        // changed during execution (a cross-contract reentrancy attempt
+        // that somehow modified state), revert.
+        if (keccak256(abi.encode(bidRegistry[bidId])) != preSnapshot) {
+            revert RegistryDriftDetected();
+        }
+
+        // Split the spread between the arbitrageur and the protocol.
+        uint256 arbCut = (spread * arbitragePayoutBps) / MAX_BPS;
+        uint256 protocolCut = spread - arbCut;
+
+        pendingArbProfit[msg.sender] += arbCut;
+        pendingProtocolProfit += protocolCut;
+
+        // Transition to Executed and remove from discovery indexes.
+        _closeBid(bidId, BidStatus.Executed);
+
+        emit ArbitrageExecuted(
+            bidId,
+            existingTradeId,
+            msg.sender,
+            arbCut,
+            protocolCut
+        );
+    }
+
+    /**
+     * @notice Claim accrued arbitrage profit as the arbitrageur.
+     * @dev Separated from `executeArbitrage` so the payout transfer
+     *      happens in a distinct transaction — eliminates any
+     *      reentrancy pressure on the execution path. Uses a
+     *      checks-effects-interactions pattern within the claim itself.
+     */
+    function claimArbProfit() external nonReentrant {
+        uint256 amount = pendingArbProfit[msg.sender];
+        if (amount == 0) revert NothingToClaim();
+        pendingArbProfit[msg.sender] = 0;
+
+        (bool ok, ) = payable(msg.sender).call{value: amount}("");
+        if (!ok) revert TradeExecutionFailed();
+
+        emit ArbProfitClaimed(msg.sender, amount);
+    }
+
+    /**
+     * @notice Withdraw accumulated protocol profit to an arbitrary
+     *         address.
+     * @dev `onlyOwner`. The factory owner is expected to be a
+     *      multisig + timelock at the operational layer — this is
+     *      the payout endpoint for that setup.
+     * @param to Destination address for the HBAR transfer.
+     * @param amount Amount to withdraw, must be <= pendingProtocolProfit.
+     */
+    function withdrawProtocolProfit(
+        address payable to,
+        uint256 amount
+    ) external onlyOwner nonReentrant {
+        if (to == address(0)) revert InvalidAddress();
+        if (amount == 0 || amount > pendingProtocolProfit) {
+            revert NothingToClaim();
+        }
+        pendingProtocolProfit -= amount;
+
+        (bool ok, ) = to.call{value: amount}("");
+        if (!ok) revert TradeExecutionFailed();
+
+        emit ProtocolProfitWithdrawn(to, amount);
+    }
+
+    /**
+     * @notice Propose a change to the arbitrage payout basis points.
+     * @dev Enters a 48-hour timelock before the change can be applied
+     *      via `executeArbPayoutBpsChange`. Replaces any previously
+     *      pending change.
+     * @param newBps New payout bps (0-10000 = 0%-100%).
+     */
+    function setArbitragePayoutBps(uint256 newBps) external onlyOwner {
+        if (newBps > MAX_BPS) revert InvalidBps();
+        pendingArbPayoutBps = newBps;
+        arbPayoutBpsChangeEta = block.timestamp + ARB_PAYOUT_TIMELOCK;
+        emit ArbPayoutBpsChangePending(newBps, arbPayoutBpsChangeEta);
+    }
+
+    /**
+     * @notice Apply a pending arbitrage payout bps change once the
+     *         timelock has elapsed.
+     * @dev Permissionless once the ETA is reached — anyone can apply
+     *      the change. This avoids requiring the owner to be live at
+     *      the exact ETA.
+     */
+    function executeArbPayoutBpsChange() external {
+        if (arbPayoutBpsChangeEta == 0) revert NoPendingBpsChange();
+        if (block.timestamp < arbPayoutBpsChangeEta) {
+            revert TimelockNotElapsed();
+        }
+        uint256 newBps = pendingArbPayoutBps;
+        arbitragePayoutBps = newBps;
+        pendingArbPayoutBps = 0;
+        arbPayoutBpsChangeEta = 0;
+        emit ArbPayoutBpsChanged(newBps);
     }
 }
