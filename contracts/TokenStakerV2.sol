@@ -244,39 +244,6 @@ contract TokenStakerV2 is HederaTokenService {
     }
 
     /**
-     * @dev associate a group of tokens one at a time comparing to a list of already associated tokens
-     * less gas efficient than batchTokenAssociate but should be more efficient than safeBatchTokenAssociate
-     * lots of loop work here, so gas costs are high
-     * @param tokenIds array of token addresses to associate
-     * @param existingTokenIds array of token addresses already associated
-     */
-    function noClashBatchTokenAssociate(
-        address[] memory tokenIds,
-        address[] memory existingTokenIds
-    ) public {
-        uint256 tokenArrayLength = tokenIds.length;
-        uint256 existingTokenArrayLength = existingTokenIds.length;
-        for (uint256 i = 0; i < tokenArrayLength; ) {
-            bool clash = false;
-            for (uint256 j = 0; j < existingTokenArrayLength; ) {
-                if (tokenIds[i] == existingTokenIds[j]) {
-                    clash = true;
-                    break;
-                }
-                unchecked {
-                    ++j;
-                }
-            }
-            if (!clash) {
-                tokenAssociate(tokenIds[i]);
-            }
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    /**
      * @dev Batch move NFTs in a single transaction
      * @param _direction Direction of the transfer (staking or unstaking)
      * @param _collectionAddress Address of the NFT collection

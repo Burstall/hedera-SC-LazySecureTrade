@@ -1488,14 +1488,14 @@ contract LazySecureTrade is
             int64(Math.max(salePrice, 1).toUint64())
         );
 
-        // Step 2: Smart Contract → Buyer (completes the trade)
+        // Step 2: Smart Contract → Buyer (internal custody hop, not a sale)
         batchMoveNFTs(
             TransferDirection.WITHDRAWAL,
             token,
             serialArray,
             buyer,
             false,
-            1
+            CUSTODY_HOP_TINYBAR
         );
     }
 

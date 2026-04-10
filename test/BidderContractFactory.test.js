@@ -888,6 +888,165 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
+	// Extended Coverage (T1-T10 from second-pass panel)
+	// ============================================
+	describe('Extended Coverage', function () {
+		it('T4: Should enforce minAcceptablePrice in arbitrage', async function () {
+			// Create a bid with a high price floor
+			const freshSerial = await mintFreshSerial();
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [freshSerial]);
+
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(10, HbarUnit.Hbar).toTinybars());
+			const minPrice = Number(new Hbar(8, HbarUnit.Hbar).toTinybars()); // floor = 8 HBAR
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, minPrice],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const floorBidId = bids[0][bids[0].length - 1];
+
+			// Alice lists at 3 HBAR — BELOW the 8 HBAR floor
+			client.setOperator(aliceId, alicePK);
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[nftTokenId.toSolidityAddress(), ethers.ZeroAddress, freshSerial, Number(new Hbar(3, HbarUnit.Hbar).toTinybars()), 0, 0],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const floorTradeId = ethers.keccak256(
+				ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [nftTokenId.toSolidityAddress(), freshSerial]),
+			);
+
+			// Carol tries arbitrage — should be blocked by price floor
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				'executeArbitrage', [floorBidId, floorTradeId, 0], 0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('T4: minAcceptablePrice enforcement confirmed (3 HBAR < 8 HBAR floor)');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('T7: Should block self-arb variant: caller == seller', async function () {
+			// Alice bids (via a stash she doesn't have — skip for simplicity, test the factory-level block)
+			// Instead: test bid.user == trade.seller guard
+			// Create a fresh bid from Bob, and a trade from Bob (same person)
+			const freshSerial = await mintFreshSerial();
+			// Give serial to Bob (need to associate + send)
+			await associateTokensToAccount(client, bobId, bobPK, [nftTokenId]).catch(() => {});
+			await sendNFT(client, operatorId, bobId, nftTokenId, [freshSerial]);
+
+			// Bob approves LST for NFT
+			client.setOperator(bobId, bobPK);
+			await setNFTAllowanceAll(client, [nftTokenId], bobId, lstContractId);
+			await setHbarAllowance(client, bobId, lstContractId, 10, HbarUnit.Hbar);
+
+			// Bob creates bid from his stash at 10 HBAR
+			const bidHbar = Number(new Hbar(10, HbarUnit.Hbar).toTinybars());
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid', [nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, 0],
+			);
+
+			// Bob also lists the same NFT at 5 HBAR on LST (bid.user == trade.seller)
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[nftTokenId.toSolidityAddress(), ethers.ZeroAddress, freshSerial, Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const washBidId = bids[0][bids[0].length - 1];
+			const washTradeId = ethers.keccak256(
+				ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [nftTokenId.toSolidityAddress(), freshSerial]),
+			);
+
+			// Carol (third party) tries to arb — should fail because bid.user == trade.seller
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				'executeArbitrage', [washBidId, washTradeId, 0], 0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('T7: Self-arb blocked (bid.user == trade.seller)');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('T8: Should reject initialize on the implementation contract', async function () {
+			// The implementation's constructor set initialized = true.
+			// Calling initialize on it should revert with AlreadyInitialized.
+			// We need the implementation contract ID — it was deployed during scaffold.
+			// For this test we redeploy a fresh implementation to isolate.
+			const bcJson = JSON.parse(
+				fs.readFileSync('./artifacts/contracts/BidderContract.sol/BidderContract.json', 'utf8'),
+			);
+			const { contractDeployFunction: deploy } = require('../utils/solidityHelpers');
+			const [freshImplId] = await deploy(client, bcJson.bytecode, 1_500_000);
+
+			// Try to initialize the implementation directly
+			const result = await contractExecuteFunction(
+				freshImplId, bidderContractIface, client, 500_000,
+				'initialize',
+				[
+					operatorId.toSolidityAddress(),
+					bidderFactoryId.toSolidityAddress(),
+					'0x0000000000000000000000000000000000000001', // dummy addresses
+					'0x0000000000000000000000000000000000000002',
+					'0x0000000000000000000000000000000000000003',
+					'0x0000000000000000000000000000000000000004',
+				],
+				0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('T8: Implementation lock confirmed — initialize rejected');
+		});
+
+		it('T10: Should reject cancel on an already-closed bid', async function () {
+			// Create and cancel a bid, then try to cancel again
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+			);
+			await sleep(MIRROR_DELAY);
+
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const doubleCancelBidId = bids[0][bids[0].length - 1];
+
+			// First cancel — should succeed
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'cancelBid', [doubleCancelBidId],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+
+			// Second cancel — should fail (bid already deleted)
+			const result = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'cancelBid', [doubleCancelBidId], 0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('T10: Double-cancel rejected (bid already closed)');
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
 	// Cleanup
 	// ============================================
 	after(async function () {

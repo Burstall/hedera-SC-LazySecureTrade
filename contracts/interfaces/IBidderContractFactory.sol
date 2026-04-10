@@ -42,8 +42,8 @@ interface IBidderContractFactory {
         uint256 minAcceptablePrice;
         /// @notice Lifecycle state. Set to `None` when building the
         ///         struct; the factory overwrites it with `Active` on
-        ///         successful createBid and later transitions it via
-        ///         `_closeBid`.
+        ///         successful createBid. Bids are hard-deleted on close
+        ///         (events carry the terminal state for history).
         BidStatus status;
     }
 

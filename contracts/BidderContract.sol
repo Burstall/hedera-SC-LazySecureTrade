@@ -272,6 +272,10 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         }
 
         if (lazyAmount > 0) {
+            // Same BPS cap as HBAR — prevents full LAZY drain in a single
+            // call if the factory ever routes LAZY through arbitrage.
+            uint256 lazyCap = (IERC20(lazyToken).balanceOf(address(this)) * ARB_SETTLE_MAX_BPS) / 10_000;
+            if (lazyAmount > lazyCap) revert InsufficientBalance();
             bool ok = IERC20(lazyToken).transfer(factory, lazyAmount);
             if (!ok) revert TransferFailed();
         }

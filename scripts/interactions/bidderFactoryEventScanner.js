@@ -124,10 +124,17 @@ const main = async () => {
 		);
 	}
 
-	// Scan factory events
+	// Scan factory events (emitted by the factory contract itself)
 	const { bids, events, maxTimestamp } = await scanFactoryEvents(contractId, lastTimestamp);
 
-	if (!suppressLogs) console.log(`Found ${bids.length} bid events, ${events.length} other events`);
+	// S1: Scan stash-emitted events (StashArbSettled, FactoryDetached) via
+	// topic-hash queries. These events live on individual stash contracts,
+	// not the factory, so we use /api/v1/contracts/results/logs with a
+	// topic0 filter instead of a contract-scoped endpoint.
+	const stashEvents = await scanStashEventsByTopic(lastTimestamp);
+	events.push(...stashEvents);
+
+	if (!suppressLogs) console.log(`Found ${bids.length} bid events, ${events.length} other events (incl. ${stashEvents.length} stash-emitted)`);
 
 	// Upload bids to cache
 	if (bids.length > 0) {
@@ -187,6 +194,8 @@ async function scanFactoryEvents(contractId, lastTimestamp) {
 			switch (event.name) {
 			case 'BidCreated': {
 				const details = event.args[3]; // BidDetails tuple
+				// S2: persist serials array as JSON for frontend bid discovery
+				const serialsArr = details.serials ? details.serials.map(s => Number(s)) : [];
 				bids.push({
 					bidId: event.args[0],
 					user: await resolveAccount(event.args[1]),
@@ -195,6 +204,7 @@ async function scanFactoryEvents(contractId, lastTimestamp) {
 					lazyAmount: Number(details.lazyAmount),
 					expiry: Number(details.expiry),
 					minAcceptablePrice: Number(details.minAcceptablePrice),
+					serials: JSON.stringify(serialsArr),
 					status: 'Active',
 					stash: details.stash,
 					timestamp: log.timestamp,
@@ -283,6 +293,30 @@ async function scanFactoryEvents(contractId, lastTimestamp) {
 					timestamp: log.timestamp,
 				});
 				break;
+			// S3: previously unhandled governance + cleanup events
+			case 'ExpiredBidsCleanup':
+				events.push({
+					type: 'ExpiredBidsCleanup',
+					cleaner: await resolveAccount(event.args[0]),
+					cleanedCount: Number(event.args[1]),
+					timestamp: log.timestamp,
+				});
+				break;
+			case 'ArbPayoutBpsChangePending':
+				events.push({
+					type: 'ArbPayoutBpsChangePending',
+					newBps: Number(event.args[0]),
+					eta: Number(event.args[1]),
+					timestamp: log.timestamp,
+				});
+				break;
+			case 'ArbPayoutBpsChanged':
+				events.push({
+					type: 'ArbPayoutBpsChanged',
+					newBps: Number(event.args[0]),
+					timestamp: log.timestamp,
+				});
+				break;
 			default:
 				if (!suppressLogs) console.log('Unhandled event:', event.name);
 			}
@@ -294,6 +328,78 @@ async function scanFactoryEvents(contractId, lastTimestamp) {
 	while (url);
 
 	return { bids, events, maxTimestamp };
+}
+
+/**
+ * S1: Scan stash-emitted events (StashArbSettled, FactoryDetached) across
+ * ALL stash contracts by querying the mirror node with topic0 filters.
+ *
+ * The mirror node endpoint /api/v1/contracts/results/logs supports a
+ * `topic0` parameter to find logs by event signature hash across all
+ * contracts, not just one. This lets us discover stash events without
+ * iterating every deployed stash address individually.
+ */
+async function scanStashEventsByTopic(lastTimestamp) {
+	const baseUrl = getBaseURL();
+	const stashEvents = [];
+
+	// Topic0 hashes for stash events
+	const stashArbSettledTopic = ethers.id('StashArbSettled(bytes32,bytes32,uint256,uint256)');
+	const factoryDetachedTopic = ethers.id('FactoryDetached(address,address)');
+
+	for (const topic0 of [stashArbSettledTopic, factoryDetachedTopic]) {
+		let url = lastTimestamp
+			? `${baseUrl}/api/v1/contracts/results/logs?topic0=${topic0}&order=asc&limit=100&timestamp=gt:${lastTimestamp}`
+			: `${baseUrl}/api/v1/contracts/results/logs?topic0=${topic0}&order=asc&limit=100`;
+
+		do {
+			try {
+				if (!suppressLogs) console.log('Stash topic scan:', url);
+				const response = await axios.get(url);
+				const jsonResponse = response.data;
+
+				for (const log of jsonResponse.logs) {
+					if (log.data === '0x') continue;
+					try {
+						const event = stashIface.parseLog({ topics: log.topics, data: log.data });
+						switch (event.name) {
+						case 'StashArbSettled':
+							stashEvents.push({
+								type: 'StashArbSettled',
+								bidId: event.args[0],
+								tradeId: event.args[1],
+								hbarAmount: Number(event.args[2]),
+								lazyAmount: Number(event.args[3]),
+								contract: log.address,
+								timestamp: log.timestamp,
+							});
+							break;
+						case 'FactoryDetached':
+							stashEvents.push({
+								type: 'FactoryDetached',
+								owner: await resolveAccount(event.args[0]),
+								formerFactory: event.args[1],
+								contract: log.address,
+								timestamp: log.timestamp,
+							});
+							break;
+						}
+					}
+					catch { /* skip unparseable logs */ }
+				}
+
+				if (!jsonResponse.links?.next) break;
+				url = `${baseUrl}${jsonResponse.links.next}`;
+			}
+			catch (err) {
+				if (!suppressLogs) console.log('Stash topic scan error:', err.message);
+				break;
+			}
+		}
+		while (url);
+	}
+
+	return stashEvents;
 }
 
 // ===== Directus operations =====
@@ -357,6 +463,7 @@ async function uploadBidsToDirectus(contractIdStr, bids) {
 		lazyAmount: b.lazyAmount,
 		expiry: b.expiry,
 		minAcceptablePrice: b.minAcceptablePrice,
+		serials: b.serials, // S2: JSON string of serial numbers (or "[]" for any-serial)
 		status: b.status,
 		environment: env,
 		timestamp: b.timestamp,
@@ -421,14 +528,23 @@ async function uploadStashEventsToDirectus(contractIdStr, events) {
 
 async function resolveAccount(evmAddress) {
 	if (evmToHederaMap.has(evmAddress)) return evmToHederaMap.get(evmAddress);
+	const baseUrl = getBaseURL();
+	// S4: try /accounts first (EOAs), then /contracts (stash clones, factory)
 	try {
-		const url = `${getBaseURL()}/api/v1/accounts/${evmAddress}`;
-		const acct = (await axios.get(url)).data.account;
+		const acct = (await axios.get(`${baseUrl}/api/v1/accounts/${evmAddress}`)).data.account;
 		evmToHederaMap.set(evmAddress, acct);
 		return acct;
 	}
 	catch {
-		return evmAddress; // fallback to EVM address
+		try {
+			const contract = (await axios.get(`${baseUrl}/api/v1/contracts/${evmAddress}`)).data.contract_id;
+			if (contract) {
+				evmToHederaMap.set(evmAddress, contract);
+				return contract;
+			}
+		}
+		catch { /* fall through */ }
+		return evmAddress; // fallback to raw EVM address
 	}
 }
 

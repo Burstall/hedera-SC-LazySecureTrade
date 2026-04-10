@@ -5,6 +5,7 @@ import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
+import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
 import {BidderContract} from "./BidderContract.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -22,7 +23,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
  *      uses "stash" terminology. A user has exactly one stash. "Stash" and
  *      "BidderContract" refer to the same thing.
  */
-contract BidderContractFactory is Ownable, ReentrancyGuard {
+contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFactory {
     // ============================================
     // State Variables
     // ============================================
@@ -127,50 +128,19 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     uint256 public pendingProtocolProfit;
 
     // ============================================
-    // Structs
+    // Factory-only enums (BidStatus + BidDetails inherited from IBidderContractFactory)
     // ============================================
 
-    /// @notice Lifecycle state of a bid. Replaces the implicit
-    ///         "user == address(0) means gone" convention with an
-    ///         explicit status field so post-mortem queries can
-    ///         distinguish between Cancelled / Executed / Expired.
-    enum BidStatus {
-        None, // 0 — struct default, means the bid has never existed
-        Active, // 1 — live, eligible for execution and arbitrage
-        Cancelled, // 2 — explicitly cancelled by the bidder
-        Executed, // 3 — matched against a seller via executeAgainstBid or executeArbitrage
-        Expired // 4 — swept by cleanupExpiredBids or marked on an execute attempt
-    }
-
-    /// @notice Reason code returned by `isBidValid` — replaces the
-    ///         string-return pattern with a stable enum, saves
-    ///         substantial bytecode on the factory, and gives
-    ///         off-chain consumers a programmatic API.
+    /// @notice Reason code returned by `isBidValid`. Factory-only — not
+    ///         part of the cross-contract interface because only the factory
+    ///         exposes bid validation views.
     enum BidValidityCode {
         Valid, // 0
         NotFound, // 1
-        NotActive, // 2 — exists but has been Cancelled / Executed / Expired
+        NotActive, // 2 — kept for ABI stability; unreachable after hard-delete
         Expired, // 3 — active but past expiry timestamp
         InsufficientHbar, // 4 — stash has less HBAR than bid.hbarAmount
         InsufficientLazy // 5 — stash has less $LAZY than bid.lazyAmount
-    }
-
-    struct BidDetails {
-        address user; // Original bidder (owner of the stash)
-        address stash; // The user's stash (BidderContract clone) address
-        uint256 hbarAmount; // HBAR bid amount (in tinybars)
-        uint256 lazyAmount; // $LAZY bid amount
-        uint256 expiry; // Block timestamp expiry (0 = no expiry)
-        address token; // Target NFT collection
-        uint256[] serials; // Empty array = any serial, specific serials = exact match
-        uint256 stashNonce; // Stash internal nonce for uniqueness
-        uint256 createdAt; // Creation timestamp
-        // Minimum tinybar trade price this bid will match in arbitrage.
-        // 0 = accept any price; non-zero = reject arbitrage below the floor.
-        uint256 minAcceptablePrice;
-        // Lifecycle state. Populated by the factory on createBid /
-        // transitions; off-chain consumers can read it directly.
-        BidStatus status;
     }
 
     // ============================================
@@ -434,6 +404,40 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         return allStashes.length;
     }
 
+    /**
+     * @notice Get a page of deployed stash addresses.
+     * @dev Bounded by MAX_VIEW_PAGINATION to prevent view OOG.
+     *      `getAllStashes()` is retained for small collections but
+     *      callers should prefer this for production use.
+     * @param offset Starting index.
+     * @param limit Max results; in (0, 200].
+     * @return Array of stash addresses.
+     */
+    function getStashesPaginated(
+        uint256 offset,
+        uint256 limit
+    ) external view returns (address[] memory) {
+        if (limit == 0 || limit > MAX_VIEW_PAGINATION) {
+            revert PaginationLimitTooLarge();
+        }
+        if (offset >= allStashes.length) {
+            return new address[](0);
+        }
+        uint256 end = offset + limit;
+        if (end > allStashes.length) {
+            end = allStashes.length;
+        }
+        uint256 resultLength = end - offset;
+        address[] memory result = new address[](resultLength);
+        for (uint256 i = 0; i < resultLength; ) {
+            result[i] = allStashes[offset + i];
+            unchecked {
+                ++i;
+            }
+        }
+        return result;
+    }
+
     // ============================================
     // Internal CREATE2 deployment helpers
     // ============================================
@@ -567,8 +571,10 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
             revert UnauthorizedCaller();
         }
 
-        _closeBid(bidId, BidStatus.Cancelled);
-        emit BidCancelled(bidId, bid.user);
+        // Save before _closeBid hard-deletes the storage struct
+        address bidUser = bid.user;
+        _closeBid(bidId);
+        emit BidCancelled(bidId, bidUser);
     }
 
     // ============================================
@@ -702,6 +708,36 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
      */
     function getTotalBidCount() external view returns (uint256) {
         return totalBidCount;
+    }
+
+    /**
+     * @notice Find the highest HBAR bid for a token (best bid / floor price).
+     * @dev Iterates `tokenToBids[token]` up to `MAX_VIEW_PAGINATION`
+     *      entries. For collections with more active bids, the caller
+     *      should page via `getBidsForTokenPaginated` and compute the
+     *      best bid off-chain.
+     * @param token NFT collection address.
+     * @return bestBidId The bid ID with the highest hbarAmount (or 0x0 if none).
+     * @return bestHbar The highest HBAR amount (or 0).
+     */
+    function getBestBidForToken(
+        address token
+    ) external view returns (bytes32 bestBidId, uint256 bestHbar) {
+        bytes32[] memory allBids = tokenToBids[token];
+        uint256 scanLimit = allBids.length > MAX_VIEW_PAGINATION
+            ? MAX_VIEW_PAGINATION
+            : allBids.length;
+
+        for (uint256 i = 0; i < scanLimit; ) {
+            BidDetails memory bid = bidRegistry[allBids[i]];
+            if (bid.hbarAmount > bestHbar) {
+                bestHbar = bid.hbarAmount;
+                bestBidId = allBids[i];
+            }
+            unchecked {
+                ++i;
+            }
+        }
     }
 
     /**
@@ -854,28 +890,56 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Close a bid and remove it from active discovery indexes.
-     * @dev Soft-deletes the bid by setting its `status` field to the
-     *      supplied terminal state (Cancelled / Executed / Expired),
-     *      then removes it from `tokenToBids[token]` and
-     *      `userToBids[user]` via O(1) swap-pop using the stored
-     *      indexes. The registry entry itself stays in place so
-     *      post-mortem queries return the historical details plus
-     *      the terminal status.
+     * @notice Shared validation for bid execution paths. Checks that the
+     *         bid exists, is Active, has not expired, and that the stash
+     *         holds sufficient HBAR. Expired bids are swept (hard-deleted
+     *         + event emitted) before reverting.
      * @param bidId Bid identifier.
-     * @param terminalStatus One of Cancelled, Executed, or Expired.
+     * @return bid Memory copy of the BidDetails (safe to use after
+     *             _closeBid since it's a memory copy, not a storage ref).
      */
-    function _closeBid(bytes32 bidId, BidStatus terminalStatus) internal {
+    function _validateBidForExecution(
+        bytes32 bidId
+    ) internal returns (BidDetails memory bid) {
+        bid = bidRegistry[bidId];
+
+        // Must exist and be Active
+        if (bid.status == BidStatus.None) revert BidNotFound();
+        if (bid.status != BidStatus.Active) revert BidNotActive();
+
+        // Expired? — sweep and revert
+        if (bid.expiry != 0 && block.timestamp > bid.expiry) {
+            emit BidExpired(bidId, bid.user);
+            _closeBid(bidId);
+            revert BidHasExpired();
+        }
+
+        // Stash must hold enough HBAR for the bid
+        if (bid.hbarAmount > 0 && bid.stash.balance < bid.hbarAmount) {
+            revert InsufficientFunds();
+        }
+    }
+
+    /**
+     * @notice Close a bid: remove from discovery arrays and hard-delete
+     *         the registry entry.
+     * @dev Events carry the terminal state (BidCancelled / BidExecuted /
+     *      BidExpired) — on-chain storage is for live state only. Callers
+     *      MUST save any needed fields into local/memory variables before
+     *      calling this, because the storage struct is zeroed.
+     * @param bidId Bid identifier.
+     */
+    function _closeBid(bytes32 bidId) internal {
         BidDetails storage bid = bidRegistry[bidId];
 
-        // Snap the soft-delete state change first so any subsequent
-        // reentry via view call observes the closed status.
-        bid.status = terminalStatus;
-
-        // Swap-pop removal from tokenToBids
+        // Swap-pop removal from tokenToBids (O(1))
         _swapPopIndexed(tokenToBids[bid.token], _tokenBidIndex, bidId);
-        // Swap-pop removal from userToBids
+        // Swap-pop removal from userToBids (O(1))
         _swapPopIndexed(userToBids[bid.user], _userBidIndex, bidId);
+
+        // Hard-delete the struct — reclaims all storage slots including
+        // the dynamic serials array. Event logs are the history layer.
+        delete bidRegistry[bidId];
     }
 
     /**
@@ -957,7 +1021,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
                 block.timestamp > bid.expiry
             ) {
                 address bidUser = bid.user;
-                _closeBid(bidIds[i], BidStatus.Expired);
+                _closeBid(bidIds[i]);
                 emit BidExpired(bidIds[i], bidUser);
                 unchecked {
                     ++cleanedCount;
@@ -1045,37 +1109,13 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         address nftToken,
         uint256 serial
     ) external nonReentrant returns (bytes32 tradeId) {
-        BidDetails memory bid = bidRegistry[bidId];
+        // Shared validation: exists, Active, not expired, stash funded
+        BidDetails memory bid = _validateBidForExecution(bidId);
 
-        // Bid must exist and be in the Active state
-        if (bid.status == BidStatus.None) {
-            revert BidNotFound();
-        }
-        if (bid.status != BidStatus.Active) {
-            revert BidNotActive();
-        }
-
-        // Check if expired — sweep to Expired and revert
-        if (bid.expiry != 0 && block.timestamp > bid.expiry) {
-            _closeBid(bidId, BidStatus.Expired);
-            emit BidExpired(bidId, bid.user);
-            revert BidHasExpired();
-        }
-
-        // Check HBAR balance if needed
-        if (bid.hbarAmount > 0) {
-            uint256 hbarBalance = bid.stash.balance;
-            if (hbarBalance < bid.hbarAmount) {
-                revert InsufficientFunds();
-            }
-        }
-
-        // Validate serial matches bid requirements
+        // Serial + token match (specific to seller-initiated flow)
         if (!_bidMatchesSerial(bidId, serial)) {
             revert InvalidBidDetails();
         }
-
-        // Validate token matches
         if (bid.token != nftToken) {
             revert InvalidBidDetails();
         }
@@ -1102,7 +1142,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         // Transition the bid to Executed and remove from discovery
         // indexes via O(1) swap-pop. The registry entry stays in place
         // so post-mortem lookups return the historical details.
-        _closeBid(bidId, BidStatus.Executed);
+        _closeBid(bidId);
 
         // Emit execution event
         emit BidExecuted(bidId, msg.sender, tradeId, 0);
@@ -1157,16 +1197,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         bytes32 existingTradeId,
         uint256 minProfit
     ) external nonReentrant returns (uint256 spread) {
-        BidDetails memory bid = bidRegistry[bidId];
-
-        // Bid must exist and be Active
-        if (bid.status == BidStatus.None) revert BidNotFound();
-        if (bid.status != BidStatus.Active) revert BidNotActive();
-
-        // Bid expired?
-        if (bid.expiry != 0 && block.timestamp > bid.expiry) {
-            revert BidHasExpired();
-        }
+        // Shared validation: exists, Active, not expired, stash funded
+        BidDetails memory bid = _validateBidForExecution(bidId);
 
         // Fetch the trade from LST
         ILazySecureTrade.Trade memory trade = LAZY_SECURE_TRADE.getTrade(
@@ -1251,7 +1283,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard {
         pendingProtocolProfit += protocolCut;
 
         // Transition to Executed and remove from discovery indexes.
-        _closeBid(bidId, BidStatus.Executed);
+        _closeBid(bidId);
 
         emit ArbitrageExecuted(
             bidId,

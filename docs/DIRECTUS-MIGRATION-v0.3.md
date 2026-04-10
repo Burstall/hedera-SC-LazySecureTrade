@@ -62,6 +62,7 @@ Caches bid data from `BidCreated` events and tracks lifecycle status updates fro
 | `lazyAmount` | bigInteger | Bid $LAZY amount |
 | `expiry` | bigInteger | Unix timestamp (0 = no expiry) |
 | `minAcceptablePrice` | bigInteger | Bidder's arbitrage price floor (tinybars) |
+| `serials` | json / text | JSON array of target serial numbers (e.g., `[1,2,3]`); empty array `[]` = any serial |
 | `status` | string (16) | `Active`, `Cancelled`, `Executed`, `Expired` |
 | `environment` | string (16) | Network environment |
 | `timestamp` | string (32) | Mirror node consensus timestamp when the bid was created |
