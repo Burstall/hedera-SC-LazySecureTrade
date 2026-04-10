@@ -31,6 +31,7 @@
   "dependencies": {
     "@directus/sdk": "^15",
     "@hashgraph/sdk": "^2.18.3",
+    "@lazysuperheroes/hedera-multisig": "^2.0.0",
     "@nomicfoundation/hardhat-toolbox": "^3.0.0",
     "@openzeppelin/contracts": "^4.6.0",
     "@openzeppelin/test-helpers": "^0.5.16",
