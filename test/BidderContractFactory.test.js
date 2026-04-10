@@ -6,16 +6,17 @@ const {
 	Client,
 	AccountId,
 	PrivateKey,
-	ContractId,
 	TokenId,
+	ContractId,
 	ContractFunctionParameters,
 	HbarUnit,
+	Hbar,
 } = require('@hashgraph/sdk');
 
 const {
 	contractDeployFunction,
 	contractExecuteFunction,
-	contractExecuteQuery,
+	readOnlyEVMFromMirrorNode,
 } = require('../utils/solidityHelpers');
 const {
 	accountCreator,
@@ -23,18 +24,21 @@ const {
 	mintNFT,
 	sendNFT,
 	setNFTAllowanceAll,
-	setFTAllowance,
+	sendHbar,
 	setHbarAllowance,
+	setFTAllowance,
 } = require('../utils/hederaHelpers');
 const {
 	checkMirrorHbarBalance,
-	getSerialsOwned,
+	checkMirrorBalance,
 } = require('../utils/hederaMirrorHelpers');
 const { sleep } = require('../utils/nodeHelpers');
-const { fail } = require('assert');
 require('dotenv').config();
 
-// Get operator from .env file
+// ============================================
+// Configuration
+// ============================================
+
 let operatorKey;
 let operatorId;
 try {
@@ -45,1431 +49,853 @@ catch (err) {
 	console.log('ERROR: Must specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
 }
 
-let client;
-let lazyTokenId;
-let lazySecureTradeIface;
-let lstContractId;
-let LAZYTokenCreatorId;
-let lazyTokenCreatorIFace;
-let lazyGasStationId;
-let lazyDelegateRegistryId;
-let bidderFactoryContractId;
-let bidderFactoryIface;
-let aliceId, alicePK;
-let bobId, bobPK;
-let carolId, carolPK;
-let nftTokenId;
-let nftSerial;
-// Track which serial number to use next for tests
-let nextSerialToUse = 1;
-// LSH NFT tokens for fee discounts
-let lshGen1TokenId;
-let lshGen2TokenId;
-let lshMutantTokenId;
-
+const env = process.env.ENVIRONMENT ?? null;
 const LAZY_BURN_PERCENT = process.env.LAZY_BURN_PERCENT ?? 25;
 const LAZY_DECIMAL = process.env.LAZY_DECIMALS ?? 1;
 const LAZY_MAX_SUPPLY = process.env.LAZY_MAX_SUPPLY ?? 250_000_000;
 const LAZY_COST_FOR_TRADE = process.env.LAZY_COST_FOR_TRADE ?? 103;
+const MIRROR_DELAY = 5500;
 
-describe('BidderContractFactory Tests', function () {
-	this.timeout(9000000);
+// ============================================
+// Shared state (populated in scaffold, reused in tests)
+// ============================================
 
+let client;
+
+// Core contracts
+let lazySCT, lazyTokenId, lazyGasStationId, ldrContractId, lstContractId;
+let lazyIface, lazyGasStationIface, lstIface, ldrIface;
+let bidderFactoryId, bidderFactoryIface;
+let bidderContractIface;
+
+// Test accounts
+let alicePK, aliceId; // Seller / NFT holder
+let bobPK, bobId; // Bidder / stash owner
+let carolPK, carolId; // Arbitrageur (third party)
+
+// NFT collection (with royalty, minted to operator then distributed)
+let nftTokenId, nftSupplyKey;
+
+// Stash addresses (populated during tests)
+let bobStashAddress, bobStashId;
+let carolStashAddress, carolStashId;
+
+// ============================================
+// Helper: mirror-node read (encode → REST → decode)
+// ============================================
+async function mirrorQuery(contractId, iface, fcnName, params = []) {
+	const encoded = iface.encodeFunctionData(fcnName, params);
+	const raw = await readOnlyEVMFromMirrorNode(env, contractId, encoded, operatorId, false);
+	return iface.decodeFunctionResult(fcnName, raw);
+}
+
+// ============================================
+// Helper: mint a fresh NFT serial and return its number
+// ============================================
+async function mintFreshSerial() {
+	const mintTx = new (require('@hashgraph/sdk').TokenMintTransaction)()
+		.setTokenId(nftTokenId)
+		.addMetadata(Buffer.from('ipfs://bafybeihbyr6ldwpowrejyzq623lv374kggemmvebdyanrayuviufdhi6xu/metadata.json'))
+		.setMaxTransactionFee(new Hbar(10, HbarUnit.Hbar));
+
+	mintTx.freezeWith(client);
+	const signed = await mintTx.sign(nftSupplyKey);
+	const resp = await signed.execute(client);
+	const receipt = await resp.getReceipt(client);
+	return receipt.serials[0].toNumber();
+}
+
+// ============================================
+// Test Suite
+// ============================================
+
+describe('BidderContractFactory v0.3 Tests', function () {
+	this.timeout(300_000); // 5 min — live testnet ops are slow
+
+	// ============================================
+	// Top-level scaffold: deploy core contracts ONCE
+	// ============================================
 	before(async function () {
-		console.log('Starting setup...');
+		this.timeout(600_000); // 10 min for full scaffold
 
-		if (operatorKey === undefined || operatorKey == null || operatorId === undefined || operatorId == null) {
-			console.log('Environment required, please specify PRIVATE_KEY & ACCOUNT_ID in the .env file');
+		if (!operatorKey || !operatorId || !env) {
+			console.log('ERROR: .env must have ENVIRONMENT, ACCOUNT_ID, PRIVATE_KEY');
 			process.exit(1);
 		}
 
-		client = Client.forTestnet();
-		client.setOperator(operatorId, operatorKey);
-
-		// Check if contracts are already deployed
-		if (process.env.LAZY_SECURE_TRADE_CONTRACT_ID && process.env.LAZY_GAS_STATION_CONTRACT_ID && process.env.LAZY_TOKEN_ID && process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
-			console.log('Using existing contract deployments from .env');
-			lstContractId = ContractId.fromString(process.env.LAZY_SECURE_TRADE_CONTRACT_ID);
-			lazyGasStationId = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
-			lazyTokenId = TokenId.fromString(process.env.LAZY_TOKEN_ID);
-			lazyDelegateRegistryId = ContractId.fromString(process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID);
-
-			// Load LST ABI to query LSH token addresses
-			const lstJson = JSON.parse(fs.readFileSync('./artifacts/contracts/LazySecureTrade.sol/LazySecureTrade.json', 'utf8'));
-			lazySecureTradeIface = new ethers.Interface(lstJson.abi);
-
-			// Query LSH token addresses from deployed contract
-			const lshGen1Addr = await contractExecuteQuery(
-				lstContractId,
-				lazySecureTradeIface,
-				client,
-				null,
-				'LSH_GEN1',
-				[],
-			);
-			lshGen1TokenId = TokenId.fromSolidityAddress(lshGen1Addr);
-			console.log('LSH Gen1 Token:', lshGen1TokenId.toString());
-
-			const lshGen2Addr = await contractExecuteQuery(
-				lstContractId,
-				lazySecureTradeIface,
-				client,
-				null,
-				'LSH_GEN2',
-				[],
-			);
-			lshGen2TokenId = TokenId.fromSolidityAddress(lshGen2Addr);
-			console.log('LSH Gen2 Token:', lshGen2TokenId.toString());
-
-			const lshMutantAddr = await contractExecuteQuery(
-				lstContractId,
-				lazySecureTradeIface,
-				client,
-				null,
-				'LSH_GEN1_MUTANT',
-				[],
-			);
-			lshMutantTokenId = TokenId.fromSolidityAddress(lshMutantAddr);
-			console.log('LSH Mutant Token:', lshMutantTokenId.toString());
-
-			// Check operator's holdings of these tokens
-			console.log('Checking operator holdings of LSH tokens...');
-			const gen1Serials = await getSerialsOwned(operatorId.toString(), lshGen1TokenId.toString());
-			console.log(`  Operator owns ${gen1Serials.length} LSH Gen1 NFTs:`, gen1Serials.length > 0 ? gen1Serials : 'none');
-
-			const gen2Serials = await getSerialsOwned(operatorId.toString(), lshGen2TokenId.toString());
-			console.log(`  Operator owns ${gen2Serials.length} LSH Gen2 NFTs:`, gen2Serials.length > 0 ? gen2Serials : 'none');
-
-			const mutantSerials = await getSerialsOwned(operatorId.toString(), lshMutantTokenId.toString());
-			console.log(`  Operator owns ${mutantSerials.length} LSH Mutant NFTs:`, mutantSerials.length > 0 ? mutantSerials : 'none');
+		// --- Client setup
+		if (env.toUpperCase() === 'TEST') client = Client.forTestnet();
+		else if (env.toUpperCase() === 'PREVIEW') client = Client.forPreviewnet();
+		else if (env.toUpperCase() === 'LOCAL') {
+			const node = { '127.0.0.1:50211': new AccountId(3) };
+			client = Client.forNetwork(node).setMirrorNetwork('127.0.0.1:5600');
 		}
 		else {
-			console.log('Deploying fresh contracts for testing...');
+			console.log('ERROR: ENVIRONMENT must be test|preview|local');
+			process.exit(1);
+		}
+		client.setOperator(operatorId, operatorKey);
+		console.log(`\n=== Scaffold: ${env.toUpperCase()} ===`);
+		console.log('Operator:', operatorId.toString());
 
-			// Step 1: Deploy LAZYTokenCreator and mint $LAZY token
-			console.log('Deploying LAZYTokenCreator...');
-			const lazyCreatorJson = JSON.parse(fs.readFileSync('./artifacts/contracts/legacy/LAZYTokenCreator.sol/LAZYTokenCreator.json', 'utf8'));
-			const lazyCreatorByteCode = lazyCreatorJson.bytecode;
-			[LAZYTokenCreatorId] = await contractDeployFunction(
-				client,
-				lazyCreatorByteCode,
-				5_800_000,
-				new ContractFunctionParameters(),
+		// --- Create test accounts
+		alicePK = PrivateKey.generateED25519();
+		aliceId = await accountCreator(client, alicePK, 200, 10);
+		console.log('Alice:', aliceId.toString());
+
+		bobPK = PrivateKey.generateED25519();
+		bobId = await accountCreator(client, bobPK, 200, 10);
+		console.log('Bob:', bobId.toString());
+
+		carolPK = PrivateKey.generateED25519();
+		carolId = await accountCreator(client, carolPK, 50, 10);
+		console.log('Carol:', carolId.toString());
+
+		// --- Deploy LAZYTokenCreator + mint $LAZY
+		const lazyJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/legacy/LAZYTokenCreator.sol/LAZYTokenCreator.json', 'utf8'),
+		);
+		lazyIface = new ethers.Interface(lazyJson.abi);
+
+		if (process.env.LAZY_SCT_CONTRACT_ID && process.env.LAZY_TOKEN_ID) {
+			lazySCT = ContractId.fromString(process.env.LAZY_SCT_CONTRACT_ID);
+			lazyTokenId = TokenId.fromString(process.env.LAZY_TOKEN_ID);
+			console.log('Reusing LAZY SCT:', lazySCT.toString(), 'Token:', lazyTokenId.toString());
+		}
+		else {
+			[lazySCT] = await contractDeployFunction(client, lazyJson.bytecode, 5_800_000);
+			console.log('LAZY SCT deployed:', lazySCT.toString());
+
+			// Mint $LAZY
+			const [, lazySCTResult] = await contractExecuteFunction(
+				lazySCT, lazyIface, client, 3_000_000,
+				'createFungibleWithBurn',
+				['Test_Lazy', 'TLAZY', `${LAZY_MAX_SUPPLY}`, LAZY_DECIMAL, 30],
+				15,
 			);
-			console.log('LAZYTokenCreator deployed:', LAZYTokenCreatorId.toString());
+			lazyTokenId = TokenId.fromSolidityAddress(lazySCTResult[0]);
+			console.log('$LAZY minted:', lazyTokenId.toString());
+		}
 
-			// Mint $LAZY token
-			console.log('Minting $LAZY token...');
-			lazyTokenCreatorIFace = new ethers.Interface(lazyCreatorJson.abi);
-			// mint the $LAZY FT
-			await mintLazy(
-				'Test_Lazy',
-				'TLazy',
-				'Test Lazy FT',
-				LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
-				LAZY_DECIMAL,
-				LAZY_MAX_SUPPLY * 10 ** LAZY_DECIMAL,
-				30,
-			);
+		// --- Deploy LazyGasStation
+		const lgsJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/LazyGasStation.sol/LazyGasStation.json', 'utf8'),
+		);
+		lazyGasStationIface = new ethers.Interface(lgsJson.abi);
 
-			console.log('$LAZY Token created:', lazyTokenId.toString());
-
-			// Step 2: Deploy LazyGasStation
-			console.log('Deploying LazyGasStation...');
-			const lgsJson = JSON.parse(fs.readFileSync('./artifacts/contracts/LazyGasStation.sol/LazyGasStation.json', 'utf8'));
-			const lgsByteCode = lgsJson.bytecode;
+		if (process.env.LAZY_GAS_STATION_CONTRACT_ID) {
+			lazyGasStationId = ContractId.fromString(process.env.LAZY_GAS_STATION_CONTRACT_ID);
+			console.log('Reusing LGS:', lazyGasStationId.toString());
+		}
+		else {
 			const lgsParams = new ContractFunctionParameters()
 				.addAddress(lazyTokenId.toSolidityAddress())
-				.addAddress(LAZYTokenCreatorId.toSolidityAddress());
-			[lazyGasStationId] = await contractDeployFunction(
-				client,
-				lgsByteCode,
-				6_800_000,
-				lgsParams,
-			);
-			console.log('LazyGasStation deployed:', lazyGasStationId.toString());
+				.addAddress(lazySCT.toSolidityAddress());
+			[lazyGasStationId] = await contractDeployFunction(client, lgsJson.bytecode, 1_200_000, lgsParams);
+			console.log('LGS deployed:', lazyGasStationId.toString());
 
-			// Step 3: Deploy LazyDelegateRegistry
-			console.log('Deploying LazyDelegateRegistry...');
-			const ldrJson = JSON.parse(fs.readFileSync('./artifacts/contracts/LazyDelegateRegistry.sol/LazyDelegateRegistry.json', 'utf8'));
-			const ldrByteCode = ldrJson.bytecode;
-			[lazyDelegateRegistryId] = await contractDeployFunction(
-				client,
-				ldrByteCode,
-				6_800_000,
-				new ContractFunctionParameters(),
-			);
-			console.log('LazyDelegateRegistry deployed:', lazyDelegateRegistryId.toString());
+			// Fund LGS with HBAR + $LAZY
+			await sendHbar(client, operatorId, lazyGasStationId, 50, HbarUnit.Hbar);
+			await contractExecuteFunction(lazySCT, lazyIface, client, 400_000, 'transferLazy', [lazyGasStationId.toSolidityAddress(), 50_000 * 10 ** LAZY_DECIMAL]);
+		}
 
-			// Step 3.5: Create LSH NFT tokens for fee discounts (operator creates them)
-			console.log('Creating LSH NFT tokens...');
-			client.setOperator(operatorId, operatorKey);
+		// --- Deploy LazyDelegateRegistry
+		const ldrJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/LazyDelegateRegistry.sol/LazyDelegateRegistry.json', 'utf8'),
+		);
+		ldrIface = new ethers.Interface(ldrJson.abi);
 
-			// 15 NFTs each for testing
-			const lshSize = 15;
-			let [result, tokenId] = await mintNFT(
-				client,
-				operatorId,
-				'LSH Gen 1',
-				'LSHG1',
-				lshSize,
-			);
-			expect(result).to.be.equal('SUCCESS');
-			lshGen1TokenId = tokenId;
-			console.log('LSH Gen1 Token created:', lshGen1TokenId.toString());
+		if (process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID) {
+			ldrContractId = ContractId.fromString(process.env.LAZY_DELEGATE_REGISTRY_CONTRACT_ID);
+			console.log('Reusing LDR:', ldrContractId.toString());
+		}
+		else {
+			[ldrContractId] = await contractDeployFunction(client, ldrJson.bytecode, 1_200_000);
+			console.log('LDR deployed:', ldrContractId.toString());
+		}
 
-			[result, tokenId] = await mintNFT(
-				client,
-				operatorId,
-				'LSH Gen 2',
-				'LSHG2',
-				lshSize,
-			);
-			expect(result).to.be.equal('SUCCESS');
-			lshGen2TokenId = tokenId;
-			console.log('LSH Gen2 Token created:', lshGen2TokenId.toString());
+		// --- Mint an NFT collection with 2% royalty + fallback
+		client.setOperator(operatorId, operatorKey);
+		nftSupplyKey = PrivateKey.generateED25519();
+		const [nftStatus, mintedTokenId] = await mintNFT(
+			client, operatorId, 'TestNFT_v03', 'TNFT03', 50, 50, nftSupplyKey,
+		);
+		expect(nftStatus).to.equal('SUCCESS');
+		nftTokenId = mintedTokenId;
+		console.log('NFT collection:', nftTokenId.toString());
 
-			[result, tokenId] = await mintNFT(
-				client,
-				operatorId,
-				'LSH Mutant',
-				'LSHM',
-				lshSize,
-			);
-			expect(result).to.be.equal('SUCCESS');
-			lshMutantTokenId = tokenId;
-			console.log('LSH Mutant Token created:', lshMutantTokenId.toString());
+		// --- Deploy LST (with mock LSH tokens = our test NFTs)
+		const lstJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/LazySecureTrade.sol/LazySecureTrade.json', 'utf8'),
+		);
+		lstIface = new ethers.Interface(lstJson.abi);
 
-			// Check operator's holdings of these tokens
-			console.log('Checking operator holdings of LSH tokens...');
-			const gen1Serials = await getSerialsOwned(operatorId.toString(), lshGen1TokenId.toString());
-			console.log(`  Operator owns ${gen1Serials.length} LSH Gen1 NFTs:`, gen1Serials);
-
-			const gen2Serials = await getSerialsOwned(operatorId.toString(), lshGen2TokenId.toString());
-			console.log(`  Operator owns ${gen2Serials.length} LSH Gen2 NFTs:`, gen2Serials);
-
-			const mutantSerials = await getSerialsOwned(operatorId.toString(), lshMutantTokenId.toString());
-			console.log(`  Operator owns ${mutantSerials.length} LSH Mutant NFTs:`, mutantSerials);
-
-			// Step 4: Deploy LazySecureTrade with all dependencies
-			console.log('Deploying LazySecureTrade...');
-			const lstJson = JSON.parse(fs.readFileSync('./artifacts/contracts/LazySecureTrade.sol/LazySecureTrade.json', 'utf8'));
-			const lstByteCode = lstJson.bytecode;
-
-			// LAZY_COST_FOR_TRADE = 103
-			// LAZY_BURN_PERCENT = 25
+		if (process.env.LAZY_SECURE_TRADE_CONTRACT_ID) {
+			lstContractId = ContractId.fromString(process.env.LAZY_SECURE_TRADE_CONTRACT_ID);
+			console.log('Reusing LST:', lstContractId.toString());
+		}
+		else {
 			const lstParams = new ContractFunctionParameters()
 				.addAddress(lazyTokenId.toSolidityAddress())
 				.addAddress(lazyGasStationId.toSolidityAddress())
-				.addAddress(lazyDelegateRegistryId.toSolidityAddress())
-				.addAddress(lshGen1TokenId.toSolidityAddress())
-				.addAddress(lshGen2TokenId.toSolidityAddress())
-				.addAddress(lshMutantTokenId.toSolidityAddress())
-				.addUint256(LAZY_COST_FOR_TRADE)
+				.addAddress(ldrContractId.toSolidityAddress())
+				.addAddress(nftTokenId.toSolidityAddress()) // LSH_GEN1 (mock — just need a valid NFT token)
+				.addAddress(nftTokenId.toSolidityAddress()) // LSH_GEN2 (mock)
+				.addAddress(nftTokenId.toSolidityAddress()) // LSH_GEN1_MUTANT (mock)
+				.addUint256(LAZY_COST_FOR_TRADE * 10 ** LAZY_DECIMAL)
 				.addUint256(LAZY_BURN_PERCENT);
+			[lstContractId] = await contractDeployFunction(client, lstJson.bytecode, 6_000_000, lstParams);
+			console.log('LST deployed:', lstContractId.toString());
 
-			lstContractId = await contractDeployFunction(
-				client,
-				lstByteCode,
-				6_800_000,
-				lstParams,
-			);
-			console.log('LazySecureTrade deployed:', lstContractId.toString());
+			// Fund LST with HBAR for gas
+			await sendHbar(client, operatorId, lstContractId, 30, HbarUnit.Hbar);
 
-			// Configure LazyGasStation
-			const lgsIface = new ethers.Interface(lgsJson.abi);
-			await contractExecuteFunction(
-				lazyGasStationId,
-				lgsIface,
-				client,
-				null,
-				'addContractUser',
-				[lstContractId.toSolidityAddress()],
-			);
-
-			await sleep(5000);
-			console.log('Contracts configured');
+			// Register LST as a contract user on LGS
+			await contractExecuteFunction(lazyGasStationId, lazyGasStationIface, client, 200_000, 'addContractUser', [lstContractId.toSolidityAddress()]);
 		}
 
-		// Load ABIs
-		const lstJson = JSON.parse(fs.readFileSync('./artifacts/contracts/LazySecureTrade.sol/LazySecureTrade.json', 'utf8'));
-		lazySecureTradeIface = new ethers.Interface(lstJson.abi);
-
-		// Create test accounts
-		console.log('Creating test accounts...');
-		const aliceKey = PrivateKey.generateED25519();
-		alicePK = aliceKey;
-		aliceId = await accountCreator(client, aliceKey, 200);
-		console.log('Alice created:', aliceId.toString());
-
-		const bobKey = PrivateKey.generateED25519();
-		bobPK = bobKey;
-		bobId = await accountCreator(client, bobKey, 200);
-		console.log('Bob created:', bobId.toString());
-
-		const carolKey = PrivateKey.generateED25519();
-		carolPK = carolKey;
-		carolId = await accountCreator(client, carolKey, 200);
-		console.log('Carol created:', carolId.toString());
-
-		// Associate $LAZY token to test accounts
-		await associateTokensToAccount(client, aliceId, alicePK, [lazyTokenId]);
-		await associateTokensToAccount(client, bobId, bobPK, [lazyTokenId]);
-		await associateTokensToAccount(client, carolId, carolPK, [lazyTokenId]);
-
-		// Distribute $LAZY tokens to test accounts
-		client.setOperator(operatorId, operatorKey);
-		await sendLazy(aliceId, 50_000);
-		await sendLazy(bobId, 50_000);
-		await sendLazy(carolId, 50_000);
-
-		console.log('$LAZY distributed to test accounts');
-
-		// Deploy BidderContract implementation first (to be cloned)
-		console.log('Deploying BidderContract implementation...');
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContract.sol/BidderContract.json', 'utf8'));
-		const bidderContractByteCode = bidderContractJson.bytecode;
-		const [bidderContractImplId] = await contractDeployFunction(
-			client,
-			bidderContractByteCode,
-			3_500_000,
-			new ContractFunctionParameters(),
+		// --- Deploy BidderContract implementation
+		const bcJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/BidderContract.sol/BidderContract.json', 'utf8'),
 		);
-		console.log('BidderContract implementation deployed:', bidderContractImplId.toString());
+		bidderContractIface = new ethers.Interface(bcJson.abi);
 
-		// Deploy BidderContractFactory
-		console.log('Deploying BidderContractFactory...');
-		const gasLimit = 4_000_000;
-		const json = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContractFactory.json', 'utf8'));
-		const byteCode = json.bytecode;
-		bidderFactoryIface = new ethers.Interface(json.abi);
+		const [bidderImplId] = await contractDeployFunction(client, bcJson.bytecode, 1_500_000);
+		console.log('BidderContract impl:', bidderImplId.toString());
 
-		const constructorParams = new ContractFunctionParameters()
+		// --- Deploy BidderContractFactory
+		const factoryJson = JSON.parse(
+			fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContractFactory.json', 'utf8'),
+		);
+		bidderFactoryIface = new ethers.Interface(factoryJson.abi);
+
+		const factoryParams = new ContractFunctionParameters()
 			.addAddress(lstContractId.toSolidityAddress())
 			.addAddress(lazyTokenId.toSolidityAddress())
 			.addAddress(lazyGasStationId.toSolidityAddress())
-			.addAddress(lazyDelegateRegistryId.toSolidityAddress())
-			.addAddress(bidderContractImplId.toSolidityAddress());
+			.addAddress(ldrContractId.toSolidityAddress())
+			.addAddress(bidderImplId.toSolidityAddress());
+		[bidderFactoryId] = await contractDeployFunction(client, factoryJson.bytecode, 1_500_000, factoryParams);
+		console.log('Factory deployed:', bidderFactoryId.toString());
 
-		bidderFactoryContractId = await contractDeployFunction(
-			client,
-			byteCode,
-			gasLimit,
-			constructorParams,
-		);
-		console.log('BidderContractFactory deployed:', bidderFactoryContractId.toString());
+		// --- Authorize factory on LST
+		await contractExecuteFunction(lstContractId, lstIface, client, 200_000, 'authorizeFactory', [bidderFactoryId.toSolidityAddress(), true]);
+		console.log('Factory authorized on LST');
 
-		// Create test NFT collection from Alice's account (following LazySecureTrade.test.js pattern)
-		console.log('Creating test NFT collection...');
+		// --- Register factory as contract user on LGS (so stash clones can refill)
+		await contractExecuteFunction(lazyGasStationId, lazyGasStationIface, client, 200_000, 'addContractUser', [bidderFactoryId.toSolidityAddress()]);
+
+		// --- Associate $LAZY and NFTs to test accounts
+		await associateTokensToAccount(client, aliceId, alicePK, [lazyTokenId, nftTokenId]);
+		await associateTokensToAccount(client, bobId, bobPK, [lazyTokenId]);
+		await associateTokensToAccount(client, carolId, carolPK, [lazyTokenId]);
+		console.log('Token associations done');
+
+		// --- Fund accounts with $LAZY
+		const lazyAmount = 10_000 * 10 ** LAZY_DECIMAL;
+		await contractExecuteFunction(lazySCT, lazyIface, client, 400_000, 'transferLazy', [aliceId.toSolidityAddress(), lazyAmount]);
+		await contractExecuteFunction(lazySCT, lazyIface, client, 400_000, 'transferLazy', [bobId.toSolidityAddress(), lazyAmount]);
+		console.log('$LAZY distributed to Alice and Bob');
+
+		// --- Send some NFT serials to Alice (she's the seller)
+		// Serials 1-5 go to Alice for testing
+		for (let i = 1; i <= 5; i++) {
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [i]);
+		}
+		console.log('NFT serials 1-5 sent to Alice');
+
+		// --- Alice approves LST for ALL serials of the test collection
 		client.setOperator(aliceId, alicePK);
-
-		const nftSize = 20;
-
-		const [result, tokenId] = await mintNFT(
-			client,
-			aliceId,
-			'Test NFT',
-			'TNFT',
-			nftSize,
-		);
-		expect(result).to.be.equal('SUCCESS');
-		nftTokenId = tokenId;
-		console.log('Test NFT collection created:', nftTokenId.toString());
-
-		// Revert back to operator
-		client.setOperator(operatorId, operatorKey);
-
-		// Get the first serial (minted automatically)
-		nftSerial = [1];
-		console.log('NFT serials available: 1-20');
-
-		// Associate NFT with test accounts
-		await associateTokensToAccount(client, operatorId, operatorKey, [nftTokenId]);
-		await associateTokensToAccount(client, bobId, bobPK, [nftTokenId]);
-		await associateTokensToAccount(client, carolId, carolPK, [nftTokenId]);
-
-		await sleep(5000);
-		console.log('Setup complete');
-	});
-
-	after(async function () {
-		await client.close();
-	});
-
-	it('Should verify factory deployment and initial state', async function () {
-		const owner = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'owner',
-			[],
-		);
-		expect(AccountId.fromSolidityAddress(owner).toString()).to.equal(operatorId.toString());
-
-		const lstAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'lazySecureTrade',
-			[],
-		);
-		expect(ContractId.fromSolidityAddress(lstAddress).toString()).to.equal(lstContractId.toString());
-
-		console.log('✓ Factory deployment verified');
-	});
-
-	it('Should authorize factory to create BidderContracts', async function () {
-		const factoryAddress = bidderFactoryContractId.toSolidityAddress();
-
-		// Authorize the factory - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'authorizeFactory',
-			[factoryAddress, true],
-		);
-
-		await sleep(5000);
-
-		// Verify authorization
-		const isAuthorized = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'isAuthorizedFactory',
-			[factoryAddress],
-		);
-		expect(isAuthorized).to.be.true;
-
-		console.log('✓ Factory authorized');
-	});
-
-	it('Should deploy a BidderContract for Alice with 1 HBAR funding', async function () {
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		// Deploy BidderContract with 1 HBAR payment - using array params
-		await contractExecuteFunction(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'deployStash',
-			[],
-			1,
-			HbarUnit.Hbar,
-		);
-
-		await sleep(5000);
-
-		// Verify BidderContract was created
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		expect(aliceBidderAddress).to.not.equal('0x0000000000000000000000000000000000000000');
-
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
-		console.log('✓ BidderContract deployed for Alice:', aliceBidderContractId.toString());
-
-		// Setup HBAR allowance from BidderContract to LazySecureTrade for 100 HBAR
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'setHbarAllowance',
-			[lstContractId.toSolidityAddress(), ethers.parseUnits('100', 8).toString()],
-		);
-
-		await sleep(5000);
-		console.log('✓ HBAR allowance set from BidderContract to LST');
+		await setNFTAllowanceAll(client, [nftTokenId], aliceId, lstContractId);
+		// Alice also needs HBAR allowance to LST (for the custody hop tinybar)
+		await setHbarAllowance(client, aliceId, lstContractId, 100, HbarUnit.Hbar);
+		console.log('Alice allowances set (NFT + HBAR → LST)');
 
 		// Switch back to operator
 		client.setOperator(operatorId, operatorKey);
-	});
 
-	it('Should prevent duplicate BidderContract deployment', async function () {
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		// Try to deploy again - using array params
-		const result = await contractExecuteFunction(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'deployStash',
-			[],
-			1,
-			HbarUnit.Hbar,
-		);
-
-		// Check for revert - no try-catch, check status
-		if (result[0]?.status?.toString().includes('REVERT:')) {
-			console.log('✓ Duplicate deployment prevented as expected');
-		}
-		else {
-			throw new Error('Expected deployment to revert for duplicate');
-		}
-
-		// Switch back to operator
+		// --- Bob: set LAZY allowance to LGS (for $LAZY bid execution)
+		client.setOperator(bobId, bobPK);
+		await setFTAllowance(client, lazyTokenId, bobId, lazyGasStationId, 100_000 * 10 ** LAZY_DECIMAL);
 		client.setOperator(operatorId, operatorKey);
+		console.log('Bob LAZY allowance set → LGS');
+
+		await sleep(MIRROR_DELAY);
+		console.log('\n=== Scaffold complete ===\n');
 	});
 
-	it('Should allow Alice to withdraw HBAR from BidderContract keeping 1 HBAR', async function () {
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
+	// ============================================
+	// Stash Management
+	// ============================================
+	describe('Stash Management', function () {
+		it('Should deploy a stash for Bob via deployStash (CREATE2)', async function () {
+			client.setOperator(bobId, bobPK);
 
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
+			const [rx] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'deployStash', [],
+				1, // send 1 HBAR to fund the stash
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
 
-		// Check initial balance
-		const initialBalance = await checkMirrorHbarBalance(aliceBidderContractId.toString());
-		console.log('BidderContract initial balance:', initialBalance, 'tinybar');
+			await sleep(MIRROR_DELAY);
 
-		// Withdraw all but 1 HBAR (100_000_000 tinybars)
-		const withdrawAmount = initialBalance - 100_000_000;
-		if (withdrawAmount > 0) {
-			const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-			const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
+			// Read the deployed stash address via mirror
+			const result = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getStashOf', [bobId.toSolidityAddress()]);
+			bobStashAddress = result[0];
+			expect(bobStashAddress).to.not.equal(ethers.ZeroAddress);
+			bobStashId = ContractId.fromEvmAddress(0, 0, bobStashAddress);
+			console.log('Bob stash deployed:', bobStashId.toString(), bobStashAddress);
 
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should predict stash address correctly via getStashAddress', async function () {
+			const predicted = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getStashAddress', [bobId.toSolidityAddress()]);
+			expect(predicted[0].toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+			console.log('Predicted matches deployed:', predicted[0]);
+		});
+
+		it('Should reject duplicate stash deployment for Bob', async function () {
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 500_000,
+				'deployStash', [], 0, true,
+			);
+			// Expect a revert (StashAlreadyExists)
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('Duplicate stash rejected as expected');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should deploy stash FOR Carol permissionlessly (deployStashFor)', async function () {
+			// Operator (not Carol) pays gas to deploy Carol's stash
+			const [rx] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'deployStashFor', [carolId.toSolidityAddress()],
+				1,
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+
+			await sleep(MIRROR_DELAY);
+
+			const result = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getStashOf', [carolId.toSolidityAddress()]);
+			carolStashAddress = result[0];
+			expect(carolStashAddress).to.not.equal(ethers.ZeroAddress);
+			carolStashId = ContractId.fromEvmAddress(0, 0, carolStashAddress);
+			console.log('Carol stash deployed by operator:', carolStashId.toString());
+
+			// Verify the stash is legitimate
+			const verified = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'verifyStash', [carolStashAddress]);
+			expect(verified[0]).to.be.true;
+			console.log('Carol stash verified');
+		});
+
+		it('Should return correct getStashSnapshot', async function () {
+			const snapshot = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getStashSnapshot', [bobId.toSolidityAddress()]);
+			const [stash, deployed, hbarBal, lazyBal, bids] = snapshot;
+
+			expect(stash.toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+			expect(deployed).to.be.true;
+			expect(Number(hbarBal)).to.be.greaterThan(0); // funded with 1 HBAR
+			expect(bids.length).to.equal(0); // no bids yet
+			console.log('Snapshot — stash:', stash, 'HBAR:', hbarBal.toString(), 'LAZY:', lazyBal.toString(), 'bids:', bids.length);
+		});
+	});
+
+	// ============================================
+	// Fund Management
+	// ============================================
+	describe('Fund Management', function () {
+		it('Should accept HBAR deposits to stash', async function () {
+			const preBalance = await checkMirrorHbarBalance(env, bobStashId);
+
+			await sendHbar(client, operatorId, bobStashId, 10, HbarUnit.Hbar);
+			await sleep(MIRROR_DELAY);
+
+			const postBalance = await checkMirrorHbarBalance(env, bobStashId);
+			expect(Number(postBalance)).to.be.greaterThan(Number(preBalance));
+			console.log('Bob stash HBAR:', preBalance, '→', postBalance);
+		});
+
+		it('Should accept LAZY deposits to stash', async function () {
+			// Bob sends LAZY to his stash (stash already associated via init)
+			client.setOperator(bobId, bobPK);
+			const lazyToSend = 5_000 * 10 ** LAZY_DECIMAL;
+			const sendResult = await contractExecuteFunction(
+				lazySCT, lazyIface, client, 400_000,
+				'transferLazy', [bobStashAddress, lazyToSend],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			const lazyBal = await checkMirrorBalance(env, bobStashId, lazyTokenId);
+			expect(Number(lazyBal)).to.be.greaterThan(0);
+			console.log('Bob stash LAZY balance:', lazyBal);
+		});
+
+		it('Should allow owner to withdrawHbar (keeping 1 HBAR minimum)', async function () {
+			client.setOperator(bobId, bobPK);
+			// Withdraw 1 HBAR (should succeed, keeping at least 1 HBAR behind)
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'withdrawHbar', [Number(new Hbar(1, HbarUnit.Hbar).toTinybars())],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			console.log('Bob withdrew 1 HBAR from stash');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should reject non-owner withdrawals', async function () {
+			// Carol tries to withdraw from Bob's stash
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'withdrawHbar', [1], 0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('Non-owner withdrawal rejected');
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
+	// Bid Lifecycle
+	// ============================================
+	describe('Bid Lifecycle', function () {
+		let testBidId;
+
+		it('Should create a bid with valid parameters', async function () {
+			client.setOperator(bobId, bobPK);
+
+			// Set HBAR allowance from Bob's stash to LGS (stash needs to pay for refills)
 			await contractExecuteFunction(
-				aliceBidderContractId,
-				bidderContractIface,
-				client,
-				null,
-				'withdrawHbar',
-				[withdrawAmount.toString()],
+				bobStashId, bidderContractIface, client, 200_000,
+				'associateToken', [nftTokenId.toSolidityAddress()],
 			);
 
-			await sleep(5000);
+			// Create a bid: 5 HBAR for any serial of the test NFT
+			const bidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			const [rx, result] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[
+					nftTokenId.toSolidityAddress(), // token
+					[], // serials (empty = any)
+					bidHbar, // hbarAmount
+					0, // lazyAmount
+					0, // expiry (0 = never)
+					0, // minAcceptablePrice (0 = accept any)
+				],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
 
-			const finalBalance = await checkMirrorHbarBalance(aliceBidderContractId.toString());
-			console.log('BidderContract final balance:', finalBalance, 'tinybar');
-			// Within 0.01 HBAR tolerance
-			expect(finalBalance).to.be.approximately(100_000_000, 1_000_000);
+			await sleep(MIRROR_DELAY);
 
-			console.log('✓ HBAR withdrawn, 1 HBAR kept in contract');
-		}
-		else {
-			console.log('✓ Contract already at minimum balance');
-		}
+			// Read Bob's active bids
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			expect(bids[0].length).to.be.greaterThan(0);
+			testBidId = bids[0][0];
+			console.log('Bid created:', testBidId);
 
-		// Switch back to operator
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should return bid with Active status via isBidValid', async function () {
+			const result = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'isBidValid', [testBidId]);
+			const [valid, code] = result;
+			expect(valid).to.be.true;
+			expect(Number(code)).to.equal(0); // BidValidityCode.Valid
+			console.log('Bid is valid, code:', Number(code));
+		});
+
+		it('Should cancel a bid (Active → Cancelled)', async function () {
+			// First create a second bid to cancel (keep the first for later tests)
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
+			const [rx1] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+			);
+			expect(rx1.status.toString()).to.equal('SUCCESS');
+
+			await sleep(MIRROR_DELAY);
+
+			// Get the new bid ID
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const cancelBidId = bids[0][bids[0].length - 1]; // last one
+
+			// Cancel it
+			const [rx2] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'cancelBid', [cancelBidId],
+			);
+			expect(rx2.status.toString()).to.equal('SUCCESS');
+
+			await sleep(MIRROR_DELAY);
+
+			// Verify the cancelled bid is no longer valid
+			const result = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'isBidValid', [cancelBidId]);
+			expect(result[0]).to.be.false;
+			expect(Number(result[1])).to.equal(2); // BidValidityCode.NotActive
+			console.log('Bid cancelled, validity code:', Number(result[1]));
+
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
+	// Trade Execution — executeAgainstBid
+	// ============================================
+	describe('Trade Execution — executeAgainstBid', function () {
+		let execBidId;
+		let execSerial;
+
+		before(async function () {
+			// Create a fresh bid for this test block
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			execBidId = bids[0][bids[0].length - 1];
+			execSerial = 1; // Alice owns serial 1
+			console.log('Trade execution bid:', execBidId, 'serial:', execSerial);
+		});
+
+		it('Should execute a seller-initiated bid match', async function () {
+			// Alice executes against Bob's bid with serial 1
+			client.setOperator(aliceId, alicePK);
+
+			const [rx, result] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				'executeAgainstBid',
+				[execBidId, nftTokenId.toSolidityAddress(), execSerial],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			console.log('Trade executed! tx:', result?.[2]?.transactionId?.toString());
+
+			await sleep(MIRROR_DELAY);
+
+			// Verify the bid is now Executed (not Active)
+			const bidResult = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'isBidValid', [execBidId]);
+			expect(bidResult[0]).to.be.false;
+			expect(Number(bidResult[1])).to.equal(2); // BidValidityCode.NotActive (status = Executed)
+			console.log('Bid status after execution: NotActive (Executed), code:', Number(bidResult[1]));
+
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
+	// Arbitrage
+	// ============================================
+	describe('Arbitrage', function () {
+		let arbBidId;
+		let arbTradeId;
+		let arbSerial;
+
+		before(async function () {
+			// Mint a fresh serial for arbitrage testing
+			client.setOperator(operatorId, operatorKey);
+			arbSerial = await mintFreshSerial();
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [arbSerial]);
+			console.log('Fresh serial', arbSerial, 'sent to Alice for arbitrage test');
+
+			// Bob creates a bid at 10 HBAR
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(10, HbarUnit.Hbar).toTinybars());
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [arbSerial], bidHbar, 0, 0, 0],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			arbBidId = bids[0][bids[0].length - 1];
+
+			// Alice lists the NFT at 5 HBAR (open market) on LST directly
+			client.setOperator(aliceId, alicePK);
+			const askHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			const [tradeRx, tradeResult] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(),
+					ethers.ZeroAddress, // buyer = open market
+					arbSerial,
+					askHbar, // tinybarPrice
+					0, // lazyPrice
+					0, // expiryTime
+				],
+			);
+			expect(tradeRx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			// Get the trade ID: keccak256(token, serial)
+			arbTradeId = ethers.keccak256(
+				ethers.AbiCoder.defaultAbiCoder().encode(
+					['address', 'uint256'],
+					[nftTokenId.toSolidityAddress(), arbSerial],
+				),
+			);
+			console.log('Arbitrage setup: bid', arbBidId, 'at 10 HBAR, ask', arbTradeId, 'at 5 HBAR');
+		});
+
+		it('Should execute arbitrage when spread exists (bid > ask)', async function () {
+			// Carol (third party) executes arbitrage
+			client.setOperator(carolId, carolPK);
+
+			const [rx] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 3_000_000,
+				'executeArbitrage',
+				[arbBidId, arbTradeId, 0], // minProfit = 0
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			console.log('Arbitrage executed successfully');
+
+			await sleep(MIRROR_DELAY);
+
+			// Check Carol has pending arb profit
+			const profitResult = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'pendingArbProfit', [carolId.toSolidityAddress()]);
+			const profit = Number(profitResult[0]);
+			expect(profit).to.be.greaterThan(0);
+			console.log('Carol pending arb profit:', profit, 'tinybars');
+
+			// Check protocol profit accumulated
+			const protocolResult = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'pendingProtocolProfit', []);
+			const protocolProfit = Number(protocolResult[0]);
+			expect(protocolProfit).to.be.greaterThan(0);
+			console.log('Protocol pending profit:', protocolProfit, 'tinybars');
+
+			// Total should be the spread (10 - 5 = 5 HBAR)
+			const totalProfit = profit + protocolProfit;
+			const expectedSpread = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			expect(totalProfit).to.equal(expectedSpread);
+			console.log('Total spread:', totalProfit, '=', expectedSpread, '(5 HBAR)');
+
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should block self-arbitrage (caller == bidder)', async function () {
+			// Setup: create a fresh bid + trade for this test
+			const selfArbSerial = await mintFreshSerial();
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [selfArbSerial]);
+
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(8, HbarUnit.Hbar).toTinybars());
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [selfArbSerial], bidHbar, 0, 0, 0],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const bids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const selfBidId = bids[0][bids[0].length - 1];
+
+			// Alice lists cheaply
+			client.setOperator(aliceId, alicePK);
+			await contractExecuteFunction(lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[nftTokenId.toSolidityAddress(), ethers.ZeroAddress, selfArbSerial, Number(new Hbar(3, HbarUnit.Hbar).toTinybars()), 0, 0],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const selfTradeId = ethers.keccak256(
+				ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [nftTokenId.toSolidityAddress(), selfArbSerial]),
+			);
+
+			// Bob tries to arb his own bid — should be blocked (SelfArbitrageBlocked)
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				'executeArbitrage',
+				[selfBidId, selfTradeId, 0],
+				0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('Self-arbitrage blocked as expected');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should allow arbitrageur to claim profit', async function () {
+			client.setOperator(carolId, carolPK);
+
+			const preBal = await checkMirrorHbarBalance(env, carolId);
+			const [rx] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'claimArbProfit', [],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+
+			await sleep(MIRROR_DELAY);
+			const postBal = await checkMirrorHbarBalance(env, carolId);
+			expect(Number(postBal)).to.be.greaterThan(Number(preBal));
+			console.log('Carol claimed profit. Balance:', preBal, '→', postBal);
+
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should allow owner to withdraw protocol profit', async function () {
+			const preBal = await checkMirrorHbarBalance(env, operatorId);
+
+			const protocolResult = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'pendingProtocolProfit', []);
+			const protocolAmt = Number(protocolResult[0]);
+
+			if (protocolAmt > 0) {
+				const [rx] = await contractExecuteFunction(
+					bidderFactoryId, bidderFactoryIface, client, 200_000,
+					'withdrawProtocolProfit',
+					[operatorId.toSolidityAddress(), protocolAmt],
+				);
+				expect(rx.status.toString()).to.equal('SUCCESS');
+				console.log('Protocol profit withdrawn:', protocolAmt);
+			}
+			else {
+				console.log('No protocol profit to withdraw (may have been claimed already)');
+			}
+		});
+	});
+
+	// ============================================
+	// Sovereignty / Rescue
+	// ============================================
+	describe('Sovereignty / Rescue', function () {
+		it('Should rescue HBAR to arbitrary address', async function () {
+			// Fund Carol's stash first
+			await sendHbar(client, operatorId, carolStashId, 5, HbarUnit.Hbar);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(carolId, carolPK);
+			const rescueAmt = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
+			const [rx] = await contractExecuteFunction(
+				carolStashId, bidderContractIface, client, 200_000,
+				'rescueHbar', [carolId.toSolidityAddress(), rescueAmt],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			console.log('Rescued 1 HBAR from Carol stash');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('Should detach from factory', async function () {
+			client.setOperator(carolId, carolPK);
+			const [rx] = await contractExecuteFunction(
+				carolStashId, bidderContractIface, client, 200_000,
+				'detachFromFactory', [],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			console.log('Carol stash detached from factory');
+
+			// Verify factory ops fail after detach
+			const result = await contractExecuteFunction(
+				carolStashId, bidderContractIface, client, 500_000,
+				'createBid',
+				[nftTokenId.toSolidityAddress(), [], Number(new Hbar(1, HbarUnit.Hbar).toTinybars()), 0, 0, 0],
+				0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('Bid creation rejected after detach');
+
+			// But rescue still works
+			const rescueAmt = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
+			const [rx2] = await contractExecuteFunction(
+				carolStashId, bidderContractIface, client, 200_000,
+				'rescueHbar', [carolId.toSolidityAddress(), rescueAmt],
+			);
+			expect(rx2.status.toString()).to.equal('SUCCESS');
+			console.log('Rescue still works after detach');
+
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
+	// Governance
+	// ============================================
+	describe('Governance', function () {
+		it('Should timelock arbitrage payout bps changes', async function () {
+			// Propose a change to 60% (6000 bps)
+			const [rx1] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'setArbitragePayoutBps', [6000],
+			);
+			expect(rx1.status.toString()).to.equal('SUCCESS');
+			console.log('Proposed payoutBps change to 6000');
+
+			// Try to apply immediately — should fail (TimelockNotElapsed)
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'executeArbPayoutBpsChange', [],
+				0, true,
+			);
+			const status = result[0]?.status?.toString() ?? result[0];
+			expect(status).to.not.equal('SUCCESS');
+			console.log('Early execution rejected (timelock not elapsed)');
+
+			// NOTE: We can't wait 48 hours in a test, so we just verify
+			// the proposal is registered and the early execution fails.
+			// Full timelock testing would require a local-node time-skip.
+		});
+	});
+
+	// ============================================
+	// Pagination & View Queries
+	// ============================================
+	describe('Pagination & View Queries', function () {
+		it('Should return paginated bids via getBidsForTokenPaginated', async function () {
+			const result = await mirrorQuery(
+				bidderFactoryId, bidderFactoryIface,
+				'getBidsForTokenPaginated',
+				[nftTokenId.toSolidityAddress(), 0, 10],
+			);
+			console.log('Paginated bids for token:', result[0].length, 'bids found');
+			// Just verifying it doesn't revert and returns an array
+			expect(Array.isArray(result[0])).to.be.true;
+		});
+
+		it('Should return paginated serial-specific bids', async function () {
+			const result = await mirrorQuery(
+				bidderFactoryId, bidderFactoryIface,
+				'getBidsForTokenSerialPaginated',
+				[nftTokenId.toSolidityAddress(), 1, 0, 10],
+			);
+			console.log('Serial-specific bids:', result[0].length, 'matches, nextOffset:', Number(result[1]));
+		});
+	});
+
+	// ============================================
+	// Cleanup
+	// ============================================
+	after(async function () {
 		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should deploy BidderContracts for Bob and Carol', async function () {
-		// Deploy for Bob
-		client.setOperator(bobId, bobPK);
-		await contractExecuteFunction(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'deployStash',
-			[],
-			1,
-			HbarUnit.Hbar,
-		);
-
-		await sleep(5000);
-
-		const bobBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[bobId.toSolidityAddress()],
-		);
-		expect(bobBidderAddress).to.not.equal('0x0000000000000000000000000000000000000000');
-		const bobBidderContractId = ContractId.fromSolidityAddress(bobBidderAddress);
-		console.log('✓ BidderContract deployed for Bob:', bobBidderContractId.toString());
-
-		// Setup HBAR allowance for Bob's BidderContract
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		await contractExecuteFunction(
-			bobBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'setHbarAllowance',
-			[lstContractId.toSolidityAddress(), ethers.parseUnits('100', 8).toString()],
-		);
-
-		await sleep(5000);
-
-		// Deploy for Carol
-		client.setOperator(carolId, carolPK);
-		await contractExecuteFunction(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'deployStash',
-			[],
-			1,
-			HbarUnit.Hbar,
-		);
-
-		await sleep(5000);
-
-		const carolBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[carolId.toSolidityAddress()],
-		);
-		expect(carolBidderAddress).to.not.equal('0x0000000000000000000000000000000000000000');
-		const carolBidderContractId = ContractId.fromSolidityAddress(carolBidderAddress);
-		console.log('✓ BidderContract deployed for Carol:', carolBidderContractId.toString());
-
-		// Setup HBAR allowance for Carol's BidderContract
-		await contractExecuteFunction(
-			carolBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'setHbarAllowance',
-			[lstContractId.toSolidityAddress(), ethers.parseUnits('100', 8).toString()],
-		);
-
-		await sleep(5000);
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should create a bid from Alice\'s BidderContract', async function () {
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
-
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		// Create bid - using array params
-		// 10 HBAR in tinybar
-		const bidAmount = ethers.parseUnits('10', 8);
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'createBid',
-			[nftTokenId.toSolidityAddress(), nftSerial[0].toString(), bidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify bid was created
-		const bidId = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveBidCount',
-			[],
-		);
-		expect(Number(bidId)).to.be.greaterThan(0);
-
-		console.log('✓ Bid created from Alice\'s BidderContract');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should accept Alice\'s bid and complete trade', async function () {
-		// Get Alice's bid details
-		const activeBids = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveBidCount',
-			[],
-		);
-		const bidCount = Number(activeBids);
-		expect(bidCount).to.be.greaterThan(0);
-
-		// Get the bid ID (assuming it's the last one)
-		const bidId = bidCount - 1;
-
-		// Set NFT allowance for LST
-		await setNFTAllowanceAll(client, nftTokenId, operatorId, lstContractId);
-
-		await sleep(5000);
-
-		// Accept the bid - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'acceptBid',
-			[bidId.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify trade completed
-		const serials = await getSerialsOwned(aliceId.toString(), nftTokenId.toString());
-		expect(serials).to.include(nftSerial[0]);
-
-		console.log('✓ Bid accepted and trade completed');
-	});
-
-	it('Should create trade using $LAZY for gas (non-factory)', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-		console.log('Using NFT serial:', newSerial);
-
-		// Send NFT from Alice (owner) to Alice to prepare for trade
-		client.setOperator(aliceId, alicePK);
-		await sendNFT(client, nftTokenId, aliceId, aliceId, [newSerial]);
-
-		await sleep(5000);
-
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		// Set $LAZY allowance to LazyGasStation for gas payment
-		await setFTAllowance(client, lazyTokenId, aliceId, lazyGasStationId, 1000);
-
-		// Set NFT allowance
-		await setNFTAllowanceAll(client, nftTokenId, aliceId, lstContractId);
-
-		await sleep(5000);
-
-		// Create trade - using array params
-		// 20 HBAR
-		const tradePrice = ethers.parseUnits('20', 8);
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'createTrade',
-			[
-				nftTokenId.toSolidityAddress(),
-				newSerial.toString(),
-				tradePrice.toString(),
-				'0x0000000000000000000000000000000000000000',
-				'0',
-				'0',
-			],
-		);
-
-		await sleep(5000);
-
-		// Verify trade created
-		const activeTrades = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveTradeCount',
-			[],
-		);
-		expect(Number(activeTrades)).to.be.greaterThan(0);
-
-		console.log('✓ Trade created using $LAZY for gas');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should execute trade with Bob as buyer', async function () {
-		// Get the last trade
-		const activeTrades = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveTradeCount',
-			[],
-		);
-		const tradeCount = Number(activeTrades);
-		const tradeId = tradeCount - 1;
-
-		// Switch to Bob's context
-		client.setOperator(bobId, bobPK);
-
-		// Set HBAR allowance for Bob to pay for the trade
-		await setHbarAllowance(client, bobId, lstContractId, 25, HbarUnit.Hbar);
-
-		await sleep(5000);
-
-		// Execute trade - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'executeTrade',
-			[tradeId.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify Bob owns the NFT
-		const bobSerials = await getSerialsOwned(bobId.toString(), nftTokenId.toString());
-		expect(bobSerials.length).to.be.greaterThan(0);
-
-		console.log('✓ Trade executed by Bob');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should create trade with FT payment requirement', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-
-		// Send from Alice (owner) to Alice to prepare for trade
-		client.setOperator(aliceId, alicePK);
-		await sendNFT(client, nftTokenId, aliceId, aliceId, [newSerial]);
-
-		await sleep(5000);
-
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		// Set $LAZY allowance for gas
-		await setFTAllowance(client, lazyTokenId, aliceId, lazyGasStationId, 1000);
-
-		// Set NFT allowance
-		await setNFTAllowanceAll(client, nftTokenId, aliceId, lstContractId);
-
-		await sleep(5000);
-
-		// Create trade with FT payment - using array params
-		// 5000 $LAZY
-		const ftPayment = 5000;
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'createTrade',
-			[
-				nftTokenId.toSolidityAddress(),
-				newSerial.toString(),
-				'0',
-				lazyTokenId.toSolidityAddress(),
-				ftPayment.toString(),
-				'0',
-			],
-		);
-
-		await sleep(5000);
-
-		console.log('✓ Trade created with FT payment requirement');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should execute FT payment trade', async function () {
-		// Get the last trade
-		const activeTrades = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveTradeCount',
-			[],
-		);
-		const tradeCount = Number(activeTrades);
-		const tradeId = tradeCount - 1;
-
-		// Switch to Carol's context
-		client.setOperator(carolId, carolPK);
-
-		// Set FT allowance for payment
-		await setFTAllowance(client, lazyTokenId, carolId, lstContractId, 6000);
-
-		await sleep(5000);
-
-		// Execute trade - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'executeTrade',
-			[tradeId.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify Carol owns the NFT
-		const carolSerials = await getSerialsOwned(carolId.toString(), nftTokenId.toString());
-		expect(carolSerials.length).to.be.greaterThan(0);
-
-		console.log('✓ FT payment trade executed by Carol');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should cancel a trade', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-
-		// Send from Alice (owner) to Alice to prepare for trade
-		client.setOperator(aliceId, alicePK);
-		await sendNFT(client, nftTokenId, aliceId, aliceId, [newSerial]);
-
-		await sleep(5000);
-
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		// Set $LAZY allowance for gas
-		await setFTAllowance(client, lazyTokenId, aliceId, lazyGasStationId, 1000);
-
-		// Set NFT allowance
-		await setNFTAllowanceAll(client, nftTokenId, aliceId, lstContractId);
-
-		await sleep(5000);
-
-		// Create trade
-		const tradePrice = ethers.parseUnits('15', 8);
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'createTrade',
-			[
-				nftTokenId.toSolidityAddress(),
-				newSerial.toString(),
-				tradePrice.toString(),
-				'0x0000000000000000000000000000000000000000',
-				'0',
-				'0',
-			],
-		);
-
-		await sleep(5000);
-
-		// Get the trade ID
-		const activeTrades = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveTradeCount',
-			[],
-		);
-		const tradeId = Number(activeTrades) - 1;
-
-		// Cancel trade - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'cancelTrade',
-			[tradeId.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify Alice got NFT back
-		const aliceSerials = await getSerialsOwned(aliceId.toString(), nftTokenId.toString());
-		expect(aliceSerials).to.include(newSerial);
-
-		console.log('✓ Trade cancelled successfully');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should add and remove NFT collection exemption', async function () {
-		// Add exemption - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'addNFTCollectionExemption',
-			[nftTokenId.toSolidityAddress()],
-		);
-
-		await sleep(5000);
-
-		// Verify exemption
-		const isExempt = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'isNFTCollectionExempt',
-			[nftTokenId.toSolidityAddress()],
-		);
-		expect(isExempt).to.be.true;
-
-		console.log('✓ NFT collection exemption added');
-
-		// Remove exemption - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'removeNFTCollectionExemption',
-			[nftTokenId.toSolidityAddress()],
-		);
-
-		await sleep(5000);
-
-		// Verify exemption removed
-		const isStillExempt = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'isNFTCollectionExempt',
-			[nftTokenId.toSolidityAddress()],
-		);
-		expect(isStillExempt).to.be.false;
-
-		console.log('✓ NFT collection exemption removed');
-	});
-
-	it('Should add and remove account exemption', async function () {
-		// Add exemption - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'addAccountExemption',
-			[aliceId.toSolidityAddress()],
-		);
-
-		await sleep(5000);
-
-		// Verify exemption
-		const isExempt = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'isAccountExempt',
-			[aliceId.toSolidityAddress()],
-		);
-		expect(isExempt).to.be.true;
-
-		console.log('✓ Account exemption added for Alice');
-
-		// Remove exemption - using array params
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'removeAccountExemption',
-			[aliceId.toSolidityAddress()],
-		);
-
-		await sleep(5000);
-
-		// Verify exemption removed
-		const isStillExempt = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'isAccountExempt',
-			[aliceId.toSolidityAddress()],
-		);
-		expect(isStillExempt).to.be.false;
-
-		console.log('✓ Account exemption removed for Alice');
-	});
-
-	it('Should test TokenStakerV2 interaction', async function () {
-		// This is a placeholder test for TokenStakerV2 functionality
-		// TokenStakerV2 would need to be deployed and configured separately
-		console.log('✓ TokenStakerV2 interaction test placeholder');
-	});
-
-	it('Should handle multiple concurrent bids', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-
-		// Serial is already owned by Alice, no need to transfer
-		await sleep(5000);
-
-		// Get BidderContract addresses
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		const bobBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[bobId.toSolidityAddress()],
-		);
-
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
-		const bobBidderContractId = ContractId.fromSolidityAddress(bobBidderAddress);
-
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		// Create bid from Alice - using array params
-		client.setOperator(aliceId, alicePK);
-		const aliceBidAmount = ethers.parseUnits('15', 8);
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'createBid',
-			[nftTokenId.toSolidityAddress(), newSerial.toString(), aliceBidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		// Create bid from Bob - using array params
-		client.setOperator(bobId, bobPK);
-		const bobBidAmount = ethers.parseUnits('20', 8);
-		await contractExecuteFunction(
-			bobBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'createBid',
-			[nftTokenId.toSolidityAddress(), newSerial.toString(), bobBidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify both bids exist
-		client.setOperator(operatorId, operatorKey);
-		const activeBids = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveBidCount',
-			[],
-		);
-		expect(Number(activeBids)).to.be.greaterThan(1);
-
-		console.log('✓ Multiple concurrent bids created');
-
-		// Accept Bob's higher bid
-		await setNFTAllowanceAll(client, nftTokenId, operatorId, lstContractId);
-
-		await sleep(5000);
-
-		// Bob's bid (last one)
-		const bidId = Number(activeBids) - 1;
-		await contractExecuteFunction(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'acceptBid',
-			[bidId.toString()],
-		);
-
-		await sleep(5000);
-
-		// Verify Bob owns the NFT
-		const bobSerials = await getSerialsOwned(bobId.toString(), nftTokenId.toString());
-		expect(bobSerials).to.include(newSerial);
-
-		console.log('✓ Higher bid accepted and executed');
-	});
-
-	it('Should cancel a bid', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-
-		// Serial is already owned by Alice, no need to transfer
-		await sleep(5000);
-
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
-
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		// Create bid - using array params
-		const bidAmount = ethers.parseUnits('12', 8);
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'createBid',
-			[nftTokenId.toSolidityAddress(), newSerial.toString(), bidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		// Get bid ID
-		const activeBids = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveBidCount',
-			[],
-		);
-		const bidId = Number(activeBids) - 1;
-
-		// Cancel bid - using array params
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'cancelBid',
-			[bidId.toString()],
-		);
-
-		await sleep(5000);
-
-		console.log('✓ Bid cancelled successfully');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
-	});
-
-	it('Should query getBidderContractsByCollection', async function () {
-		// Query all BidderContracts interested in the NFT collection - using array params
-		const bidders = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getBidderContractsByCollection',
-			[nftTokenId.toSolidityAddress()],
-		);
-
-		// Should return at least Alice and Bob's contracts
-		expect(bidders.length).to.be.greaterThan(0);
-
-		console.log('✓ BidderContracts queried by collection:', bidders.length);
-	});
-
-	it('Should query getCollectionsByBidderContract', async function () {
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-
-		// Query all collections Alice's BidderContract has bid on - using array params
-		const collections = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getCollectionsByBidderContract',
-			[aliceBidderAddress],
-		);
-
-		expect(collections.length).to.be.greaterThan(0);
-
-		console.log('✓ Collections queried for BidderContract:', collections.length);
-	});
-
-	it('Should update bid amount', async function () {
-		// Use next available serial
-		nextSerialToUse++;
-		const newSerial = nextSerialToUse;
-
-		// Serial is already owned by Alice, no need to transfer
-		await sleep(5000);
-
-		// Switch to Alice's context
-		client.setOperator(aliceId, alicePK);
-
-		const aliceBidderAddress = await contractExecuteQuery(
-			bidderFactoryContractId,
-			bidderFactoryIface,
-			client,
-			null,
-			'getStashOf',
-			[aliceId.toSolidityAddress()],
-		);
-		const aliceBidderContractId = ContractId.fromSolidityAddress(aliceBidderAddress);
-
-		const bidderContractJson = JSON.parse(fs.readFileSync('./artifacts/contracts/BidderContractFactory.sol/BidderContract.json', 'utf8'));
-		const bidderContractIface = new ethers.Interface(bidderContractJson.abi);
-
-		// Create initial bid - using array params
-		const initialBidAmount = ethers.parseUnits('10', 8);
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'createBid',
-			[nftTokenId.toSolidityAddress(), newSerial.toString(), initialBidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		// Get bid ID
-		const activeBids = await contractExecuteQuery(
-			lstContractId,
-			lazySecureTradeIface,
-			client,
-			null,
-			'getActiveBidCount',
-			[],
-		);
-		const bidId = Number(activeBids) - 1;
-
-		// Update bid amount - using array params
-		const newBidAmount = ethers.parseUnits('15', 8);
-		await contractExecuteFunction(
-			aliceBidderContractId,
-			bidderContractIface,
-			client,
-			null,
-			'updateBid',
-			[bidId.toString(), newBidAmount.toString()],
-		);
-
-		await sleep(5000);
-
-		console.log('✓ Bid amount updated successfully');
-
-		// Switch back to operator
-		client.setOperator(operatorId, operatorKey);
+		console.log('\n=== Test run complete ===');
+		console.log('Factory:', bidderFactoryId?.toString());
+		console.log('Bob stash:', bobStashId?.toString());
+		console.log('Carol stash:', carolStashId?.toString());
+		console.log('NFT collection:', nftTokenId?.toString());
 	});
 });
-
-/**
- * Helper function to encpapsualte minting an FT
- * @param {string} tokenName
- * @param {string} tokenSymbol
- * @param {string} tokenMemo
- * @param {number} tokenInitalSupply
- * @param {number} tokenDecimal
- * @param {number} tokenMaxSupply
- * @param {number} payment
- */
-async function mintLazy(
-	tokenName,
-	tokenSymbol,
-	tokenMemo,
-	tokenInitalSupply,
-	decimal,
-	tokenMaxSupply,
-	payment,
-) {
-	const gasLim = 800000;
-	// call associate method
-	const params = [
-		tokenName,
-		tokenSymbol,
-		tokenMemo,
-		tokenInitalSupply,
-		decimal,
-		tokenMaxSupply,
-	];
-
-	const [, , createTokenRecord] = await contractExecuteFunction(
-		LAZYTokenCreatorId,
-		lazyTokenCreatorIFace,
-		client,
-		gasLim,
-		'createFungibleWithBurn',
-		params,
-		payment,
-	);
-	const tokenIdSolidityAddr =
-		createTokenRecord.contractFunctionResult.getAddress(0);
-	lazyTokenId = TokenId.fromSolidityAddress(tokenIdSolidityAddr);
-}
-
-/**
- * Use the LSCT to send $LAZY out
- * @param {AccountId} receiverId
- * @param {*} amt
- */
-async function sendLazy(receiverId, amt) {
-	const result = await contractExecuteFunction(
-		LAZYTokenCreatorId,
-		lazyTokenCreatorIFace,
-		client,
-		300_000,
-		'transferHTS',
-		[lazyTokenId.toSolidityAddress(), receiverId.toSolidityAddress(), amt],
-	);
-	if (result[0]?.status?.toString() !== 'SUCCESS') {
-		console.log('Failed to send $LAZY:', result);
-		fail();
-	}
-	return result[0]?.status.toString();
-}

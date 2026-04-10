@@ -3,7 +3,7 @@ Decentralized NFT Trading without time constraint using Solidity EVM on Hedera v
 
 This is the building block to a full decentralized marketplace #HelloFuture
 
-**Version 0.2** - Individual trades, atomic batch trades, and non-atomic multiple trades with advanced gas management.
+**Version 0.3 (includes all v0.2 features)** - Individual trades, atomic batch trades, non-atomic multiple trades, and CLOB-style resting bids with per-user stash contracts, seller-executed bid matching, and third-party arbitrage.
 
 ## Quick Reference: Trade Types
 
@@ -12,6 +12,7 @@ This is the building block to a full decentralized marketplace #HelloFuture
 | **Individual** | `createTrade()` | 1 NFT | Single | 🟢 Low | Simple trades |
 | **Batch (Atomic)** | `createBatchTrade()` | 22 NFTs | All-or-nothing | 🔴 High | Bundle sales |
 | **Multiple Execution** | `executeTrades()` | 5 trades | All-or-nothing | 🟡 Medium | Bulk buying |
+| **Bid (Resting)** | `createBid()` | 1 NFT/bid | Seller-matched or arbitraged | 🟢 Low | CLOB-style buy orders |
 
 Key: 🔴 High gas risk requires careful planning • 🟡 Medium risk manageable • 🟢 Low risk straightforward
 
@@ -140,6 +141,165 @@ Plenty of scripts to allow easy usage from the command line. Highlights below.
   -> getTrade.js [get the trade details from a hash]
   -> getTradesForUser.js
   -> isTradeValid.js [checks validity of trade based on specified buyer, allowances and expiry if set]
+
+# v0.3 — CLOB-Style Bidding with Per-User Stash Contracts
+
+v0.3 adds a resting-bid system to LazySecureTrade. Each user gets a **stash** — a dedicated contract (deployed as a minimal proxy clone at a deterministic CREATE2 address) that holds their HBAR, $LAZY, and any NFTs received from executed bids. Bids are resting buy orders registered in a central factory (BidderContractFactory), which sellers can match directly via `executeAgainstBid`. Third parties can also capture bid/ask spread via `executeArbitrage`, with profit splitting between the arbitrageur and the protocol. Every stash owner retains full sovereignty over their funds through escape hatches (`rescueHbar`, `rescueLazy`, `rescueNFT`) and a one-way `detachFromFactory` severance that converts the stash into a pure self-custody vault.
+
+All v0.2 functionality (individual trades, batch trades, multiple trade execution, platform fees, LSH tier discounts) remains fully operational and unchanged.
+
+## Stash (Per-User Contract)
+
+- **One stash per user**, deployed via the factory's `deployStash()` or `deployStashFor(user)` (permissionless — anyone can pay gas to bootstrap another user's stash)
+- Each stash lives at a **deterministic CREATE2 address** derived from `keccak256("LST_STASH_v1", userAddress)` — predictable off-chain given the factory address and implementation address, with no RPC call needed
+- Holds **HBAR + $LAZY + received NFTs** in user-sovereign custody
+- The stash owner can deposit, withdraw, create bids, cancel bids, and list NFTs held in the stash for sale — all without going through the factory owner
+- CREATE2 addresses are locked to the specific factory address + implementation contract — if either changes, a new factory must be deployed and users deploy fresh stashes under it
+
+```solidity
+// Predict a user's stash address off-chain (pure CREATE2 derivation)
+function getStashAddress(address user) public view returns (address)
+
+// Deploy a stash for the caller
+function deployStash() external returns (address stash)
+
+// Deploy a stash for any user (permissionless, owner is always `user`)
+function deployStashFor(address user) external returns (address stash)
+
+// Verify a stash was deployed by this factory for its claimed owner
+function verifyStash(address stash) external view returns (bool)
+```
+
+## Bid System
+
+Bids are resting buy orders for specific NFT collections (optionally targeting specific serials).
+
+### Creating a Bid
+
+```solidity
+// Called on the user's stash — validates funds, then registers with the factory
+function createBid(
+    address token,          // NFT collection address
+    uint256[] memory serials, // specific serials (empty = any serial in collection)
+    uint256 hbarAmount,     // HBAR bid amount in tinybars
+    uint256 lazyAmount,     // $LAZY bid amount
+    uint256 expiry,         // expiry timestamp (0 = no expiry)
+    uint256 minAcceptablePrice // floor for arbitrage matching (0 = accept any)
+) external returns (bytes32 bidId)
+```
+
+- The stash must hold sufficient HBAR and/or $LAZY at bid creation time
+- `minAcceptablePrice` guards against surprise-cheap arbitrage matches (e.g., a junk NFT listed at 1 tinybar under the same collection). Cannot exceed `hbarAmount`
+- Token association for NFT reception is handled automatically during bid creation
+
+### Bid Lifecycle
+
+Bids follow an explicit state machine via the `BidStatus` enum:
+
+| Status | Value | Meaning |
+|--------|-------|---------|
+| `None` | 0 | Bid ID has never existed |
+| `Active` | 1 | Live — eligible for execution and arbitrage |
+| `Cancelled` | 2 | Explicitly cancelled by the bidder |
+| `Executed` | 3 | Matched via `executeAgainstBid` or `executeArbitrage` |
+| `Expired` | 4 | Swept by `cleanupExpiredBids` or marked expired on an execute attempt |
+
+Transitions are one-way: Active → Cancelled, Active → Executed, Active → Expired. Closed bids are soft-deleted (retained in the registry for post-mortem queries) and removed from active discovery indexes via O(1) swap-pop.
+
+### Bid Validation
+
+```solidity
+// Returns (valid, reasonCode) — no string allocations
+function isBidValid(bytes32 bidId) public view returns (bool valid, BidValidityCode code)
+```
+
+`BidValidityCode` enum: `Valid` (0), `NotFound` (1), `NotActive` (2), `Expired` (3), `InsufficientHbar` (4), `InsufficientLazy` (5).
+
+## Trade Execution
+
+### Seller-Initiated: executeAgainstBid
+
+A seller who sees a resting bid can match it directly — no intermediary needed:
+
+```solidity
+function executeAgainstBid(
+    bytes32 bidId,
+    address nftToken,
+    uint256 serial
+) external returns (bytes32 tradeId)
+```
+
+Execution flow:
+1. Factory validates the bid is Active, unexpired, and funded
+2. Factory calls `LazySecureTrade.createTradeOnBehalf()` listing the NFT with the stash as buyer
+3. Factory calls `stash.executeTrade()` which sends HBAR/$LAZY to LST and receives the NFT via the standard 2-step internal custody hop (seller → LST → stash)
+4. Bid transitions to `Executed`, removed from discovery indexes
+5. Platform fees apply normally (HBAR trades subject to LSH tier discounts; $LAZY trades remain fee-free)
+
+### Stash-Initiated: createTrade
+
+Users can list NFTs held in their stash for sale without withdrawing first:
+
+```solidity
+// Called on the stash — routes through Factory → LST.createTradeOnBehalf()
+function createTrade(
+    address token, address buyer, uint256 serial,
+    uint256 tinybarPrice, uint256 lazyPrice, uint256 expiryTime
+) external returns (bytes32 tradeId)
+```
+
+## Arbitrage
+
+Third parties can capture spread between a resting bid and an existing LST ask (open-market trade):
+
+```solidity
+function executeArbitrage(
+    bytes32 bidId,         // the resting bid (higher price)
+    bytes32 existingTradeId, // the LST ask (lower price)
+    uint256 minProfit      // minimum acceptable HBAR spread
+) external returns (uint256 spread)
+```
+
+**Self-arbitrage is blocked** at three points: the caller cannot be the bidder, the caller cannot be the seller, and the bidder cannot equal the seller. This closes the wash-trading loophole.
+
+**Price floor**: the trade's tinybar price must be at or above the bid's `minAcceptablePrice`, protecting bidders from surprise-cheap matches.
+
+**Profit split**: the spread (bid price minus trade price) is split between the arbitrageur and the protocol based on `arbitragePayoutBps` (default: 50/50). Changes to the split are subject to a **48-hour timelock** via `setArbitragePayoutBps` + `executeArbPayoutBpsChange`.
+
+**Claim ledger**: arbitrage profits accrue to `pendingArbProfit[arbitrageur]` and are pulled via `claimArbProfit()` in a separate transaction. Protocol profits accrue to `pendingProtocolProfit` and are withdrawn by the factory owner via `withdrawProtocolProfit()`.
+
+## Sovereignty & Escape Hatches
+
+Every stash owner retains unconditional control over their assets:
+
+| Function | Purpose |
+|----------|---------|
+| `rescueHbar(to, amount)` | Emergency HBAR withdrawal to any address — bypasses the normal 1 HBAR minimum balance guard |
+| `rescueLazy(to, amount)` | Emergency $LAZY withdrawal to any address |
+| `rescueNFT(token, serial, to, hbarValue)` | Emergency single-NFT withdrawal via TokenStakerV2 (handles Hedera royalties) |
+| `detachFromFactory()` | **Irreversible** one-way severance — sets factory to `address(0)`, converting the stash into a pure vault. All withdrawal/rescue functions continue to work; only factory-mediated flows (bidding, arbitrage settlement) stop. |
+
+For full sovereignty framing and migration procedures, see `SECURITY.md`.
+
+## Query Methods (v0.3)
+
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `getStashAddress(user)` | `address` | Pure CREATE2 derivation — works before deployment |
+| `getStashOf(user)` | `address` | O(1) mapping read — returns `address(0)` if not deployed |
+| `getStashSnapshot(user)` | `(address, bool, uint256, uint256, bytes32[])` | Aggregated stash state: address, deployed flag, HBAR balance, $LAZY balance, active bid IDs (capped at 200) |
+| `getBidsForTokenPaginated(token, offset, limit)` | `bytes32[]` | Paginated bid discovery by collection (limit <= 200) |
+| `getBidsForTokenSerialPaginated(token, serial, offset, limit)` | `(bytes32[], uint256)` | Paginated bid discovery by (token, serial), returns matches + nextOffset for cursor paging |
+| `isBidValid(bidId)` | `(bool, BidValidityCode)` | Structured validation with enum reason code |
+| `validateBids(bidIds)` | `(bool[], BidValidityCode[])` | Batch validation for multiple bids |
+| `getUserBids(user)` | `bytes32[]` | All bid IDs for a user |
+
+## v0.3 Scripts
+
+| Script | Location | Purpose |
+|--------|----------|---------|
+| `deployBidderContractFactory.js` | `scripts/deployments/` | Deploy the BidderContractFactory + BidderContract implementation. Environment-aware (`ENVIRONMENT` env var). |
+| `create2Probe.js` | `scripts/testing/` | CREATE2 test harness — validates that deterministic clone deployment, address prediction, and mirror-node indexing work correctly on Hedera. Used to validate the stash architecture before committing to it. |
 
 # Gas Management & UX Best Practices
 

@@ -17,8 +17,9 @@ yarn test                         # run full hardhat test suite
 yarn run test-trade               # run test/LazySecureTrade.test.js only
 yarn run test-lazy                # run test/LAZYTokenCreator.test.js
 yarn run test-delegate            # run test/LazyDelegateRegistry.test.js
-yarn hardhat test test/BidderContractFactory.test.js   # run a specific suite
+yarn hardhat test test/BidderContractFactory.test.js   # run v0.3 stash/bid/arbitrage tests
 npx solhint 'contracts/**/*.sol'  # lint Solidity
+node scripts/testing/create2Probe.js                  # validate CREATE2 on Hedera (testnet only)
 ```
 
 Tests talk to **live Hedera testnet/previewnet** via `@hashgraph/sdk` — they are not local-only unit tests. `.env` must define `ENVIRONMENT` (`test|main|preview|local`), `ACCOUNT_ID`, and `PRIVATE_KEY` (ED25519) before running. Mocha timeouts are set to ~100s in `hardhat.config.js` because each test performs real on-chain calls. Do not assume fast iteration.
@@ -55,12 +56,26 @@ BidderContractFactory          (central router / CLOB)
 - **Batch trades** (`createBatchTrade`) are atomic and capped at 22 items. **Multiple trade execution** (`executeTrades`) is also atomic and capped at ~20 trades for subcall-limit safety. These are two *different* APIs — don't conflate them.
 - **Authorized factories** (`authorizedFactories[factory] = true`, owner-gated) can call `createTradeOnBehalf()` to list trades on behalf of a seller, bypassing the $LAZY listing cost. This is the v0.3 integration hook for `BidderContractFactory`.
 
-### v0.3 Bidder architecture (work in progress on `v0.3` branch)
+### v0.3 Bidder architecture — stash per user, CLOB-style bidding, arbitrage
 
-- **`BidderContractFactory`** is the central router: deploys one `BidderContract` per user via OpenZeppelin `Clones` (minimal proxy, ~23K gas), maintains `tokenToBids[]` / `userToBids[]` / `bidRegistry`, and mediates trade execution against bids by calling `LazySecureTrade.createTradeOnBehalf()` + `BidderContract.executeTrade()`.
-- **`BidderContract`** is a per-user honeypot that holds HBAR + $LAZY + received NFTs. `owner` (the user) has full sovereignty; `factory` has admin rights *only* for arbitrage. Uses a proxy init pattern — `initialized` guards `initialize()`. NFT withdrawals go through `TokenStakerV2` to preserve Hedera royalty handling.
-- **Event model**: `BidderContract` does not emit user-level bid events — only the router (`BidderContractFactory`) does. Users monitor their BidderContract address for `LazySecureTrade` events instead. Don't add redundant events.
+Per-user contracts are called **stashes**. Factory code still uses `BidderContract` as the class name; all external surface uses "stash" terminology.
+
+- **CREATE2 deterministic stash addresses**: `BidderContractFactory` deploys one stash per user via `Clones.cloneDeterministic` with salt `keccak256("LST_STASH_v1", user)`. Off-chain clients compute the stash address without RPC calls, then query the mirror node directly for balances/NFTs. `getStashAddress(user)` is the on-chain prediction view; `getStashOf(user)` is the O(1) mapping confirming deployment.
+- **Stash implementation locked**: the implementation contract's constructor sets `initialized = true` so it cannot be hijacked. Only clones (with fresh storage) can be initialized, atomically inside the factory's deploy path.
+- **Stash sovereignty**: every stash exposes `rescueHbar`, `rescueLazy`, `rescueNFT` (emergency escape hatches) and `detachFromFactory()` (one-way factory severance). After detach, the stash becomes a pure vault — withdrawals work, factory-mediated flows don't.
+- **Arbitrage flow**: `executeArbitrage(bidId, tradeId, minProfit)` matches a resting bid against an open-market LST ask. Self-arbitrage is blocked (`msg.sender ∉ {bid.user, trade.seller}`, `bid.user != trade.seller`). Profit accrues to `pendingArbProfit[arbitrageur]` + `pendingProtocolProfit`, claimable via separate functions. The arb/protocol split (`arbitragePayoutBps`, default 50/50) is adjustable with a 48h inline timelock.
+- **No MEV defense needed**: Hedera consensus orders by timestamp — no mempool, no front-running, no sandwich attacks.
+- **Scoped factory→stash fund path**: `factoryWithdrawHbar/Lazy` (the old blanket-drain paths) are removed. The only path for the factory to touch stash funds is `arbitrageSettle(bidId, tradeId, amount)`, bounded by `ARB_SETTLE_MAX_BPS = 7500` (75% per-tx cap).
+- **Bid state machine**: `BidStatus` enum (`None/Active/Cancelled/Executed/Expired`) with `_closeBid` transition helper. Soft-delete: closed bids retain their struct + status for post-mortem queries. Active bids are removed from discovery arrays via O(1) swap-pop (stored indexes).
+- **BidDetails.minAcceptablePrice**: bidder-set floor for arbitrage — protects against surprise-cheap trade matches (e.g., junk NFT at 1 tinybar under the same collection).
+- **`isBidValid` returns `(bool, BidValidityCode)` enum** — not strings. Stable programmatic API, no heap allocations.
+- **View pagination**: `getBidsForTokenPaginated` enforces `limit <= 200`; `getBidsForTokenSerialPaginated` is the cursor-based replacement for the unbounded O(n²) serial scan.
+- **`getStashSnapshot(user)`**: aggregator view returning stash address, deployment status, HBAR+LAZY balances, and active bid IDs in one call.
+- **`HTSCallFailed(int256 code, bytes4 op)`**: unified HTS error replacing four separate errors in `TokenStakerV2`. Surfaces the actual precompile response code + a 4-byte operation identifier (`"INIT"`, `"XFER"`, `"ASSC"`, `"BASC"`).
+- **Event model**: bid lifecycle events (BidCreated/Cancelled/Executed/Expired, ArbitrageExecuted) are emitted by the factory. The stash emits `StashArbSettled` on arbitrage settlement + `FactoryDetached` on sovereignty detach. Users can subscribe to their deterministic stash address on mirror node for direct balance/transfer monitoring.
 - **Lazy cleanup**: expired bids are not auto-pruned; callers use `cleanupExpiredBids()`. Don't add gas-heavy automatic sweeps.
+- **Royalty handling (not "royalty defeat")**: the 1-tinybar value in `TokenStakerV2.moveNFTs` is `CUSTODY_HOP_TINYBAR` — an internal custody-hop marker, not royalty evasion. See `SECURITY.md` "Royalty Handling" section. The platform enforces creator royalties at the real sale leg.
+- **LazyDelegateRegistry is immutable and buggy**: LDR calls in `getLSHTokenTier` are wrapped in try/catch via `_safeGetDelegatedLength` so an LDR revert doesn't brick trade execution. The degraded fallback is "no delegation" (user gets base fee tier).
 
 ### Hedera gas model — non-obvious constraints
 
@@ -86,6 +101,9 @@ v0.2 migrated to custom errors (see `Custom-Errors-Migration.md`). Several were 
 - `scripts/deployments/` — deployment scripts (`deployLazySecureTrade.js` is interactive and reuses pre-existing component addresses from `.env` when set).
 - `scripts/interactions/` — one-off CLI helpers for every user-facing contract call (create/cancel/execute trades, LSH benefit checks, mirror log scanning, etc.). These are the canonical reference for "how do I call X" — check here before writing a new interaction.
 - `abi/`, `artifacts/`, `cache/` — build output; `extractABI.js` in `scripts/deployments` emits cleaned ABIs after compile.
+- `docs/v0.3-integration-guide.md` — human-readable integration guide for v0.3 stash/bid/arbitrage flows.
+- `docs/CLAUDE-FRONTEND-CONTEXT.md` — context file for Claude Code sessions building the DApp frontend.
+- `contracts/test/` — CREATE2 probe contracts for empirical Hedera EVM validation (not production code).
 
 ## Conventions
 
