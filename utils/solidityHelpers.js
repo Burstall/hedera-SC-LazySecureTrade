@@ -34,6 +34,13 @@ async function useSetter(contractId, iface, client, fcnName, gasLim, ...values) 
  * @returns {String} the error message
  */
 function parseError(iface, errorData) {
+	// Empty / missing revert data: the call reverted but produced no payload
+	// (e.g. sending HBAR to a non-payable function, OOG, low-level revert()
+	// with no reason). Skip the ethers parse — it would BUFFER_OVERRUN trying
+	// to slice a 4-byte selector from zero bytes.
+	if (!errorData || errorData === '0x' || errorData.length < 10) {
+		return `REVERT: no reason (errorData=${errorData ?? 'null'})`;
+	}
 
 	if (errorData.startsWith('0x08c379a0')) {
 		// decode Error(string)
@@ -89,12 +96,57 @@ function parseError(iface, errorData) {
 
 	try {
 		const errDescription = iface.parseError(errorData);
-		return errDescription;
+		if (errDescription) {
+			// Ethers v6 ErrorDescription has no toString() override, so
+			// `String(errDescription)` returns "[object Object]" — useless
+			// in test diagnostics. Attach a friendly toString that prints
+			// the error name + selector + args so callers can `console.log`
+			// or `${status}` and get something readable. We don't replace
+			// any existing methods, just augment with a toString.
+			//
+			// We also expose `name` and `raw` on a synthetic-shaped surface
+			// so `expectRevertNamed` can use the same fields for either the
+			// real ErrorDescription or a fallback synthetic object.
+			try {
+				Object.defineProperty(errDescription, 'raw', {
+					value: errorData, enumerable: false, configurable: true,
+				});
+				Object.defineProperty(errDescription, 'toString', {
+					value: function () {
+						const argList = (this.args || []).map(a => {
+							try { return typeof a === 'bigint' ? a.toString() : JSON.stringify(a); }
+							catch { return String(a); }
+						}).join(', ');
+						return `${this.name}(${argList}) [selector=${this.selector ?? errorData.slice(0, 10)}]`;
+					},
+					enumerable: false, configurable: true,
+				});
+			}
+			catch (_) {
+				// best-effort; if it's frozen, fall through and return as-is
+			}
+			return errDescription;
+		}
 	}
 	catch (e) {
 		console.error(errorData, e);
-		return `UNKNOWN ERROR: ${errorData}`;
 	}
+
+	// ethers v6 returns null from parseError when the 4-byte selector isn't in
+	// the supplied iface — common when the error is defined on a different
+	// contract that reverted via an internal call (e.g., a stash forwarding to
+	// the factory). Return a synthetic object that still carries the selector
+	// so callers can match by selector when name decode fails.
+	const selector = errorData && errorData.length >= 10 ? errorData.slice(0, 10) : null;
+	return {
+		name: undefined,
+		selector,
+		args: [],
+		raw: errorData,
+		toString() {
+			return `UNKNOWN ERROR (selector=${selector ?? 'n/a'}): ${errorData}`;
+		},
+	};
 }
 
 /**
@@ -150,7 +202,7 @@ async function parseErrorTransactionId(envOrClient, transactionId, iface) {
  * @param {Number} gas gas limit
  * @returns {String} encoded result
  */
-async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 300_000) {
+async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 300_000, value = 0) {
 	const baseUrl = getBaseURL(env);
 
 	const body = {
@@ -161,7 +213,7 @@ async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate =
 		'gas': gas,
 		'gasPrice': 100000000,
 		'to': contractId.toSolidityAddress(),
-		'value': 0,
+		'value': value,
 	};
 
 	const url = `${baseUrl}/api/v1/contracts/call`;
@@ -240,10 +292,13 @@ async function contractExecuteQuery(contractId, iface, client, gasLim, fcnName, 
  * @returns {[TransactionReceipt, any, TransactionRecord]} the transaction receipt and any decoded results
  */
 async function contractExecuteFunction(contractId, iface, client, gasLim, fcnName, params = [], amountHbar = 0, flagError = false) {
-	// check the gas lim is a numeric value else 100_000
-	if (!gasLim || isNaN(gasLim)) {
-		gasLim = 200_000;
-	}
+	// Treat the caller-supplied gas as the fallback. We try the mirror node for a
+	// real estimate first; if that fails for any reason, we use this number.
+	const fallbackGas = (gasLim && !isNaN(gasLim)) ? Number(gasLim) : 200_000;
+
+	const resolvedGas = await _resolveExecutionGas(
+		client, contractId, iface, fcnName, params, fallbackGas, amountHbar,
+	);
 
 	const encodedCommand = iface.encodeFunctionData(fcnName, params);
 	// convert to UINT8ARRAY after stripping the '0x'
@@ -251,7 +306,7 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 	try {
 		contractExecuteTx = await new ContractExecuteTransaction()
 			.setContractId(contractId)
-			.setGas(gasLim)
+			.setGas(resolvedGas)
 			.setFunctionParameters(Buffer.from(encodedCommand.slice(2), 'hex'))
 			.setPayableAmount(amountHbar)
 			.execute(client);
@@ -360,6 +415,60 @@ async function contractDeployFunction(client, bytecode, gasLim = 800_000, params
 // sleep function
 function sleep(ms) {
 	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Resolve the gas limit for a state-changing call. Tries the mirror node
+ * estimate first; on any failure (no env/operator, mirror error, non-numeric
+ * response, or SKIP_GAS_ESTIMATE=1) falls back to the caller-supplied gas.
+ * Lazy-requires gasHelpers to avoid the circular dep with this file.
+ */
+async function _resolveExecutionGas(client, contractId, iface, fcnName, params, fallbackGas, amountHbar) {
+	const skip = process.env.SKIP_GAS_ESTIMATE;
+	if (skip === '1' || skip === 'true') return fallbackGas;
+
+	try {
+		const env = process.env.ENVIRONMENT
+			|| (client?.ledgerId ? client.ledgerId.toString() : null);
+		const operatorId = client?.operatorAccountId;
+		if (!env || !operatorId) return fallbackGas;
+
+		const valueTinybars = _toTinybars(amountHbar);
+		// Lazy require: gasHelpers depends on this file, so a top-level require
+		// would trigger a partially-initialized module cycle.
+		const { estimateGas } = require('./gasHelpers');
+		const info = await estimateGas(
+			env, contractId, iface, operatorId, fcnName, params, fallbackGas, valueTinybars,
+		);
+		return info?.gasLimit ?? fallbackGas;
+	}
+	catch (_e) {
+		return fallbackGas;
+	}
+}
+
+/**
+ * Best-effort conversion of contractExecuteFunction's amountHbar arg to
+ * tinybar (uint) for the mirror-node `value` field. Mirrors the SDK's
+ * setPayableAmount semantics: number/string → HBAR units, Hbar/BigNumber →
+ * their canonical tinybar value.
+ */
+function _toTinybars(amount) {
+	if (!amount) return 0;
+	if (typeof amount === 'number') return Math.floor(amount * 100_000_000);
+	if (typeof amount === 'string') {
+		const n = Number(amount);
+		return isNaN(n) ? 0 : Math.floor(n * 100_000_000);
+	}
+	if (typeof amount.toTinybars === 'function') {
+		try { return Number(amount.toTinybars()); }
+		catch { return 0; }
+	}
+	if (typeof amount.toNumber === 'function') {
+		try { return amount.toNumber(); }
+		catch { return 0; }
+	}
+	return 0;
 }
 
 module.exports = {

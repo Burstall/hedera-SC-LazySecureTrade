@@ -48,7 +48,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         computes an incorrect settlement amount, this cap
     ///         limits the per-tx blast radius. Hardcoded so no admin
     ///         key can weaken it.
-    uint256 private constant ARB_SETTLE_MAX_BPS = 7500; // 75%
+    uint256 public constant ARB_SETTLE_MAX_BPS = 7500; // 75%
 
     // ============================================
     // Events

@@ -15,9 +15,22 @@ const {
 	TokenAssociateTransaction,
 	// eslint-disable-next-line no-unused-vars
 	Client,
-	// eslint-disable-next-line no-unused-vars
 	AccountId,
 } = require('@hashgraph/sdk');
+
+/**
+ * Coerce a sender/receiver identifier to an AccountId. The SDK's transfer APIs
+ * only accept `AccountId | string`; passing a ContractId/TokenId object falls
+ * into the internal `AccountId.fromString(obj)` path which then crashes on
+ * `text.startsWith(...)`. Hedera shares the entity-ID namespace across
+ * account/contract/token, so the string form round-trips cleanly.
+ */
+function _toAccountId(id) {
+	if (id instanceof AccountId) return id;
+	if (typeof id === 'string') return AccountId.fromString(id);
+	if (id && typeof id.toString === 'function') return AccountId.fromString(id.toString());
+	throw new TypeError(`Cannot coerce ${typeof id} to AccountId`);
+}
 
 /**
  * Helper function to create new accounts
@@ -104,8 +117,12 @@ async function sendFT(client, FTTokenId, amount, sender, receiver, memo) {
  * @returns {String} status of the transaction
  */
 async function sendNFT(client, sender, reciever, NFTTokenId, serials) {
-	// use inner/outer loop to maxSupply but in batches of 10
+	// Coerce ContractId/TokenId/string → AccountId — same shape as sendHbar.
+	// addNftTransfer's internal AccountId.fromString blows up on raw ContractId.
+	const senderAcc = _toAccountId(sender);
+	const receiverAcc = _toAccountId(reciever);
 
+	// use inner/outer loop to maxSupply but in batches of 10
 	let batch = 0;
 
 	for (let outer = 0; outer < serials.length; outer += 10) {
@@ -114,7 +131,7 @@ async function sendNFT(client, sender, reciever, NFTTokenId, serials) {
 		);
 		for (let i = 0; i < 10 && outer + i < serials.length; i++) {
 			const nft = new NftId(NFTTokenId, serials[outer + i]);
-			transferTx.addNftTransfer(nft, sender, reciever);
+			transferTx.addNftTransfer(nft, senderAcc, receiverAcc);
 		}
 
 		const txResp = await transferTx.freezeWith(client).execute(client);
@@ -237,12 +254,21 @@ async function setNFTAllowanceAll(client, _tokenIdList, _ownerId, _spenderId) {
 }
 
 /**
- * Remove NFT allowances that have been set
+ * Remove NFT allowances that have been set.
+ *
+ * AccountAllowanceApproveTransaction requires the OWNER's signature to
+ * modify the owner's own allowances. If the client's operator is not the
+ * owner (e.g. cleanup is being driven by a payer that's funding gas), pass
+ * the owner's PrivateKey(s) via `signerKeys` so we can sign explicitly
+ * before execution. Backward-compatible: existing callers that switch the
+ * client operator to the owner can leave signerKeys empty.
+ *
  * @param {*} client
  * @param {*} _allowanceList an object of type {tokenId, owner, spender}
+ * @param {PrivateKey[]} [signerKeys=[]] additional signers for the tx
  * @returns {String} status of the transaction
  */
-async function clearNFTAllowances(client, _allowanceList) {
+async function clearNFTAllowances(client, _allowanceList, signerKeys = []) {
 	// use an inner/outer loop to maxSupply but in batches of 20
 	let batch = 0;
 	const _tokenIdList = [];
@@ -274,7 +300,11 @@ async function clearNFTAllowances(client, _allowanceList) {
 			`NFT  (all serials) allowance deletion (batch ${batch++})`,
 		);
 		approvalTx.freezeWith(client);
-		const exResp = await approvalTx.execute(client);
+		let toExecute = approvalTx;
+		for (const key of signerKeys) {
+			toExecute = await toExecute.sign(key);
+		}
+		const exResp = await toExecute.execute(client);
 		const receipt = await exResp.getReceipt(client).catch((e) => {
 			console.log(e);
 			console.log('Allowance set **FAILED*');
@@ -295,11 +325,13 @@ async function clearNFTAllowances(client, _allowanceList) {
 }
 
 /**
- * Remove FT allowances that have been set
+ * Remove FT allowances that have been set. See clearNFTAllowances for
+ * the rationale on `signerKeys`.
  * @param {*} client
  * @param {*} _allowanceList an object of type {tokenId, owner, spender}
+ * @param {PrivateKey[]} [signerKeys=[]] additional signers for the tx
  */
-async function clearFTAllowances(client, _allowanceList) {
+async function clearFTAllowances(client, _allowanceList, signerKeys = []) {
 	// use an inner/outer loop to maxSupply but in batches of 20
 	let batch = 0;
 	const _tokenIdList = [];
@@ -348,7 +380,11 @@ async function clearFTAllowances(client, _allowanceList) {
 		}
 		approvalTx.setTransactionMemo(`FT allowance reset (batch ${batch++})`);
 		approvalTx.freezeWith(client);
-		const exResp = await approvalTx.execute(client);
+		let toExecute = approvalTx;
+		for (const key of signerKeys) {
+			toExecute = await toExecute.sign(key);
+		}
+		const exResp = await toExecute.execute(client);
 		const receipt = await exResp.getReceipt(client).catch((e) => {
 			console.log(e);
 			console.log('Allowance set **FAILED*');
@@ -538,9 +574,11 @@ async function sendHbar(
 	_amt,
 	hbarUnit = HbarUnit.Tinybar,
 ) {
+	const sender = _toAccountId(_sender);
+	const receiver = _toAccountId(_receiver);
 	const transferTx = await new TransferTransaction()
-		.addHbarTransfer(_receiver, new Hbar(_amt, hbarUnit))
-		.addHbarTransfer(_sender, new Hbar(_amt, hbarUnit).negated())
+		.addHbarTransfer(receiver, new Hbar(_amt, hbarUnit))
+		.addHbarTransfer(sender, new Hbar(_amt, hbarUnit).negated())
 		.freezeWith(client)
 		.execute(client);
 
@@ -615,7 +653,12 @@ async function mintNFT(
 	fee = null,
 	noFallback = false,
 	skipFee = false,
+	// Number of serials to pre-mint at creation. Defaults to maxSupply so
+	// existing callers (LST tests etc.) keep their current behaviour. Pass
+	// a smaller value to leave headroom for runtime mintAdditionalSerial.
+	initialMintCount = null,
 ) {
+	if (initialMintCount === null) initialMintCount = maxSupply;
 	if (!supplyKey) supplyKey = PrivateKey.generateED25519();
 
 	if (!fee) {
@@ -658,13 +701,17 @@ async function mintNFT(
 	/* Get the token ID from the receipt */
 	const NFTTokenId = createTokenRx.tokenId;
 
-	// outer loop to maxSupply but in batches of 10
+	// Pre-mint `initialMintCount` serials in batches of 10. Callers can
+	// leave headroom under maxSupply for runtime mintAdditionalSerial.
+	if (initialMintCount === 0) {
+		return ['SUCCESS', NFTTokenId];
+	}
 	let mintRx;
-	for (let outer = 0; outer < maxSupply; outer += 10) {
+	for (let outer = 0; outer < initialMintCount; outer += 10) {
 		const tokenMintTx = new TokenMintTransaction()
 			.setTokenId(NFTTokenId)
 			.setMaxTransactionFee(new Hbar(maxTxFee, HbarUnit.Hbar));
-		for (let i = 0; i < 10 && outer + i < maxSupply; i++) {
+		for (let i = 0; i < 10 && outer + i < initialMintCount; i++) {
 			tokenMintTx.addMetadata(
 				Buffer.from(
 					'ipfs://bafybeihbyr6ldwpowrejyzq623lv374kggemmvebdyanrayuviufdhi6xu/metadata.json',
@@ -711,6 +758,35 @@ async function sendFTWithAllowance(
 }
 
 /**
+ * Mint one additional serial to an existing NFT collection. The treasury
+ * must be `client.operator` (or the supply key must be a multisig that
+ * the operator can sign on behalf of). Uses the existing supply key from
+ * the original mint so reused-collection tests can append serials.
+ * @param {Client} client
+ * @param {TokenId} tokenId
+ * @param {PrivateKey} supplyKey the supply key from the original mint
+ * @param {string} metadataURI optional IPFS pointer (default: project placeholder)
+ * @returns {number} the newly minted serial number
+ */
+async function mintAdditionalSerial(
+	client,
+	tokenId,
+	supplyKey,
+	metadataURI = 'ipfs://bafybeihbyr6ldwpowrejyzq623lv374kggemmvebdyanrayuviufdhi6xu/metadata.json',
+) {
+	const mintTx = new TokenMintTransaction()
+		.setTokenId(tokenId)
+		.addMetadata(Buffer.from(metadataURI))
+		.setMaxTransactionFee(new Hbar(10, HbarUnit.Hbar));
+
+	mintTx.freezeWith(client);
+	const signed = await mintTx.sign(supplyKey);
+	const resp = await signed.execute(client);
+	const receipt = await resp.getReceipt(client);
+	return receipt.serials[0].toNumber();
+}
+
+/**
  * Sweep back hbar from an account
  * @param {Client} client
  * @param {AccountId} sourceId
@@ -751,4 +827,5 @@ module.exports = {
 	clearFTAllowances,
 	clearHbarAllowances,
 	sweepHbar,
+	mintAdditionalSerial,
 };

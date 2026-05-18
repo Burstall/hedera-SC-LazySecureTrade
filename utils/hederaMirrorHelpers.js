@@ -229,6 +229,71 @@ async function checkLastMirrorEvent(env, contractId, iface, offset = 1, account 
 	return rtnVal;
 }
 
+/**
+ * Fetch and decode the most recent N events emitted by `contractId`. Unlike
+ * `getEventsFromMirror` (which returns formatted strings for logging), this
+ * returns structured records keyed by event name so tests can assert on both
+ * name and args. Use this for event-based test assertions.
+ * @param {string} env
+ * @param {ContractId} contractId
+ * @param {ethers.Interface} iface
+ * @param {number} limit max events to return (default 25)
+ * @returns {Promise<Array<{name: string, args: any[], block: number, transactionHash: string, timestamp: string}>>}
+ */
+async function getDecodedEventsFromMirror(env, contractId, iface, limit = 25) {
+	const baseUrl = getBaseURL(env);
+	const url = `${baseUrl}/api/v1/contracts/${contractId.toString()}/results/logs?order=desc&limit=${limit}`;
+
+	try {
+		const response = await axios.get(url);
+		const jsonResponse = response.data;
+		const out = [];
+		jsonResponse.logs.forEach(log => {
+			// Events with ALL parameters `indexed` produce empty `data` —
+			// every value lives in `topics`. Only skip if both are absent;
+			// otherwise let ethers parseLog decide.
+			const hasData = log.data && log.data !== '0x';
+			const hasTopics = Array.isArray(log.topics) && log.topics.length > 0;
+			if (!hasData && !hasTopics) return;
+			let parsed;
+			try {
+				parsed = iface.parseLog({ topics: log.topics, data: log.data ?? '0x' });
+			}
+			catch (e) {
+				return;
+			}
+			out.push({
+				name: parsed.name,
+				args: parsed.args,
+				block: log.block_number,
+				transactionHash: log.transaction_hash,
+				timestamp: log.timestamp,
+			});
+		});
+		return out;
+	}
+	catch (err) {
+		console.error('getDecodedEventsFromMirror error:', err?.message ?? err);
+		return [];
+	}
+}
+
+/**
+ * Find the most recent emission of a named event on `contractId`. Returns
+ * the decoded event record or null if not found within the last `searchDepth`
+ * events.
+ * @param {string} env
+ * @param {ContractId} contractId
+ * @param {ethers.Interface} iface
+ * @param {string} eventName
+ * @param {number} searchDepth max log entries to inspect (default 25)
+ * @returns {Promise<{name: string, args: any[], block: number, transactionHash: string, timestamp: string} | null>}
+ */
+async function findLastEventByName(env, contractId, iface, eventName, searchDepth = 25) {
+	const events = await getDecodedEventsFromMirror(env, contractId, iface, searchDepth);
+	return events.find(e => e.name === eventName) ?? null;
+}
+
 async function getEventsFromMirror(env, contractId, iface) {
 	const baseUrl = getBaseURL(env);
 
@@ -475,6 +540,8 @@ module.exports = {
 	checkMirrorBalance,
 	checkFTAllowances,
 	getEventsFromMirror,
+	getDecodedEventsFromMirror,
+	findLastEventByName,
 	getTokenDetails,
 	getContractResult,
 	translateTransactionForWebCall,
