@@ -1439,4 +1439,22 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         arbPayoutBpsChangeEta = 0;
         emit ArbPayoutBpsChanged(newBps);
     }
+
+    // ============================================
+    // HBAR receive — required for arbitrageSettle
+    // ============================================
+
+    /// @notice Accept HBAR transfers from registered stashes (arbitrage
+    ///         settlement) and to top up protocol HBAR if ever needed.
+    /// @dev `arbitrageSettle` on the stash side pulls the spread into
+    ///      the factory via `payable(factory).call{value: ...}("")` —
+    ///      that requires `receive()` here or the transfer reverts
+    ///      `TransferFailed` and arbitrage is broken end-to-end.
+    ///
+    ///      Stranger HBAR sends are accepted into the factory balance
+    ///      but cannot be retrieved beyond `pendingProtocolProfit` (which
+    ///      only increments via the explicit arbitrage path). Effectively
+    ///      donations — not exploitable, just stuck. Acceptable trade-off
+    ///      vs. the complexity of restricting `receive()` to stashes.
+    receive() external payable {}
 }

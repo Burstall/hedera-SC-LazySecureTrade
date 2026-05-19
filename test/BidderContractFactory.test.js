@@ -829,6 +829,12 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	// owner-sovereign surface in BidderContract — see
 	// docs/BCF-StashAllowances-DESIGN.md.
 	describe('Stash allowance plumbing', function () {
+		// HIP-906 hbarApprove on the precompile (0x16a) costs more gas than
+		// the trivial 200K we used initially — needs ~700K-1M typically.
+		// Use 1.5M so we're not in the OOG envelope; gas estimator will
+		// pick a lower number when it can.
+		const HIP906_GAS = 1_500_000;
+
 		it('approveHbarTo + hbarAllowanceTo round-trip via HIP-906', async function () {
 			// Bob grants Carol's EOA a 2 HBAR allowance on his stash.
 			// Carol isn't going to use this — we just need a non-LST spender
@@ -837,7 +843,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const amount = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 			client.setOperator(bobId, bobPK);
 			const [rx] = await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 200_000,
+				bobStashId, bidderContractIface, client, HIP906_GAS,
 				'approveHbarTo', [carolId.toSolidityAddress(), amount],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -854,7 +860,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 		it('approveHbarTo(spender, 0) revokes the allowance', async function () {
 			client.setOperator(bobId, bobPK);
 			const [rx] = await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 200_000,
+				bobStashId, bidderContractIface, client, HIP906_GAS,
 				'approveHbarTo', [carolId.toSolidityAddress(), 0],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -871,7 +877,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 		it('rejects non-owner approveHbarTo with OnlyOwner', async function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 200_000,
+				bobStashId, bidderContractIface, client, HIP906_GAS,
 				'approveHbarTo', [carolId.toSolidityAddress(), 100], 0, true,
 			);
 			expectRevertNamed(result, 'OnlyOwner');
@@ -1059,13 +1065,18 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Alice executes against Bob's bid with serial 1
 			client.setOperator(aliceId, alicePK);
 
-			const [rx, result] = await contractExecuteFunction(
+			// contractExecuteFunction returns [receipt, decodedResult, record].
+			// Destructure the record (3rd slot) directly — earlier code did
+			// `result?.[2]?.transactionId` against the SECOND slot (the
+			// decoded function result, a 1-element Result in this case) and
+			// threw RangeError once the call started actually succeeding.
+			const [rx, , record] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeAgainstBid',
 				[execBidId, nftTokenId.toSolidityAddress(), execSerial],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
-			console.log('Trade executed! tx:', result?.[2]?.transactionId?.toString());
+			console.log('Trade executed! tx:', record?.transactionId?.toString());
 
 			await sleep(MIRROR_DELAY);
 
@@ -2130,11 +2141,15 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const postAliceBal = await checkMirrorHbarBalance(env, aliceId);
 			const sellerDelta = Number(postAliceBal) - Number(preAliceBal);
 
-			// Bob is mocked-Gen1 → 100% off platform fee → seller receives full bid (minus royalty + tinybar custody hop)
-			// We assert seller received ≥ 98% of the bid (royalty is 2%)
+			// Bob is mocked-Gen1 → since the NFT is itself an LSH-Gen1 token,
+			// LST exempts the platform fee → seller receives full bid minus
+			// 2% royalty.
 			const royaltyAdjusted = Math.floor(bidHbar * 98 / 100);
-			// 5% gas tolerance
-			expect(sellerDelta).to.be.greaterThanOrEqual(Math.floor(royaltyAdjusted * 0.95));
+			// Wider tolerance — Alice pays gas for the executeAgainstBid
+			// call (~17-25M tinybars on a 2.5M-gas budget), which comes out
+			// of her HBAR balance and shows up as reduced sellerDelta.
+			// 80% threshold gives ~58M tinybars headroom on a 3 HBAR bid.
+			expect(sellerDelta).to.be.greaterThanOrEqual(Math.floor(royaltyAdjusted * 0.80));
 			console.log(`P5.10: LSH-discounted trade — seller received ${sellerDelta}, bid ${bidHbar}, royalty-adjusted floor ${royaltyAdjusted}`);
 		});
 	});

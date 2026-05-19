@@ -442,10 +442,13 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
                 amount
             )
         );
-        if (!ok) revert HbarAllowanceFailed(0);
-        // Defensive: a successful call with malformed return would panic
-        // inside `abi.decode`. Surface our custom error instead.
-        if (ret.length < 32) revert HbarAllowanceFailed(0);
+        // Diagnostic distinct codes per failure mode so we can see
+        // which branch fires in test output:
+        //   -1  → low-level call returned ok=false (precompile rejected)
+        //   -2  → ok=true but empty/short return (precompile not at 0x16a)
+        //   rc  → actual non-success HederaResponseCode from precompile
+        if (!ok) revert HbarAllowanceFailed(-1);
+        if (ret.length < 32) revert HbarAllowanceFailed(-2);
         int32 rc = abi.decode(ret, (int32));
         if (rc != HederaResponseCodes.SUCCESS)
             revert HbarAllowanceFailed(int64(rc));
