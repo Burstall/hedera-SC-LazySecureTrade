@@ -68,6 +68,13 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         are rare in steady state.
     uint256 public constant CUSTODY_HOP_ALLOWANCE_FLOOR = 100_000_000; // 1 HBAR
 
+    /// @notice Hedera Account Service system contract address (HIP-906).
+    ///         Symmetric with the HTS precompile at 0x167. The HASC
+    ///         exposes `hbarApprove(owner, spender, amount)` and
+    ///         `hbarAllowance(owner, spender)` callable from any
+    ///         contract with the owner identity passed explicitly.
+    address internal constant HEDERA_ACCOUNT_SERVICE = address(0x16a);
+
     // ============================================
     // Events
     // ============================================
@@ -409,10 +416,15 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     }
 
     /**
-     * @dev Low-level HIP-906 `hbarApprove` invocation. The system contract
-     *      intercepts calls to the contract's own address with this
-     *      selector and applies an HBAR allowance from this contract to
-     *      `spender`. Reverts `HbarAllowanceFailed` on:
+     * @dev HIP-906 `hbarApprove` invocation via the Hedera Account
+     *      Service system contract at 0x16a. Symmetric with the HTS
+     *      pattern used by `HederaTokenService.approveNFT` against
+     *      0x167. The HASC signature takes the OWNER explicitly:
+     *      `hbarApprove(address owner, address spender, int256 amount)`.
+     *      Response is encoded as int32 (promoted to int64 in our
+     *      error type for forward compatibility).
+     *
+     *      Reverts `HbarAllowanceFailed` on:
      *        - low-level call failure (system contract missing on this
      *          Hedera version)
      *        - malformed return (length < 32 bytes)
@@ -422,9 +434,10 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      *      user code and does not reenter.
      */
     function _hbarApprove(address spender, int256 amount) internal {
-        (bool ok, bytes memory ret) = address(this).call(
+        (bool ok, bytes memory ret) = HEDERA_ACCOUNT_SERVICE.call(
             abi.encodeWithSignature(
-                "hbarApprove(address,int256)",
+                "hbarApprove(address,address,int256)",
+                address(this),
                 spender,
                 amount
             )
@@ -433,21 +446,21 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         // Defensive: a successful call with malformed return would panic
         // inside `abi.decode`. Surface our custom error instead.
         if (ret.length < 32) revert HbarAllowanceFailed(0);
-        int64 rc = abi.decode(ret, (int64));
-        if (rc != int64(HederaResponseCodes.SUCCESS))
-            revert HbarAllowanceFailed(rc);
+        int32 rc = abi.decode(ret, (int32));
+        if (rc != HederaResponseCodes.SUCCESS)
+            revert HbarAllowanceFailed(int64(rc));
     }
 
     /**
-     * @dev View-side of HIP-906. Returns 0 on any failure so the caller
-     *      (the lazy refill check) treats the unknown state as "no
-     *      allowance" and re-grants — safer than reverting in a view
-     *      function on the hot path.
+     * @dev View-side of HIP-906 via 0x16a. Returns 0 on any failure so
+     *      the caller (the lazy refill check) treats the unknown state
+     *      as "no allowance" and re-grants — safer than reverting in a
+     *      view function on the hot path.
      */
     function _hbarAllowanceTo(
         address spender
     ) internal view returns (int256) {
-        (bool ok, bytes memory ret) = address(this).staticcall(
+        (bool ok, bytes memory ret) = HEDERA_ACCOUNT_SERVICE.staticcall(
             abi.encodeWithSignature(
                 "hbarAllowance(address,address)",
                 address(this),
@@ -455,8 +468,8 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             )
         );
         if (!ok || ret.length < 64) return 0;
-        (int64 rc, int256 amount) = abi.decode(ret, (int64, int256));
-        return rc == int64(HederaResponseCodes.SUCCESS) ? amount : int256(0);
+        (int32 rc, int256 amount) = abi.decode(ret, (int32, int256));
+        return rc == HederaResponseCodes.SUCCESS ? amount : int256(0);
     }
 
     // ============================================

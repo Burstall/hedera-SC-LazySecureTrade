@@ -2185,7 +2185,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Args (in order): token, buyer=0 (open market), serial,
 			// tinybarPrice, lazyPrice=0, expiry=0, agentKey=ZeroHash (owner-initiated).
 			const [rx] = await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 2_000_000,
+				bobStashId, bidderContractIface, client, 3_000_000,
 				'createTrade',
 				[
 					nftTokenId.toSolidityAddress(),
@@ -2271,7 +2271,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 
 			client.setOperator(bobId, bobPK);
 			const [rxList] = await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 2_000_000,
+				bobStashId, bidderContractIface, client, 3_000_000,
 				'createTrade',
 				[
 					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
@@ -2338,7 +2338,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 
 			client.setOperator(bobId, bobPK);
 			await contractExecuteFunction(
-				bobStashId, bidderContractIface, client, 2_000_000,
+				bobStashId, bidderContractIface, client, 3_000_000,
 				'createTrade',
 				[
 					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
