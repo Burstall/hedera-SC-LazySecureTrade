@@ -53,6 +53,16 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///         doubles as a "has been deployed" check.
     mapping(address => address) public userToStash;
 
+    /// @notice Reverse of `userToStash`: stash address → human owner.
+    ///         Populated at deploy, never re-written. Used by:
+    ///           - `TradeCreatedFromStash` / `TradeCancelledFromStash` events
+    ///             for off-chain consumers that want to index by owner
+    ///             without a second lookup.
+    ///           - `cancelTradeFromStash` authorization: confirms the EOA
+    ///             calling cancel actually owns the stash that listed
+    ///             the trade.
+    mapping(address => address) public stashOwnerOf;
+
     /// @notice Token-based bid discovery (CLOB efficiency)
     mapping(address => bytes32[]) public tokenToBids;
 
@@ -175,7 +185,19 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         address indexed stash,
         address indexed seller,
         address token,
-        uint256 serial
+        uint256 serial,
+        bytes32 agentKey
+    );
+
+    /// @notice Emitted when a stash-listed LST trade is cancelled via
+    ///         `cancelTradeFromStash`. Pairs with LST's own
+    ///         `TradeCancelled` (seller=stash) — this event additionally
+    ///         carries the human canceller identity so off-chain
+    ///         consumers don't need a separate `stashOwnerOf` lookup.
+    event TradeCancelledFromStash(
+        bytes32 indexed tradeId,
+        address indexed stash,
+        address indexed canceller
     );
 
     // ===== Arbitrage events =====
@@ -221,6 +243,14 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     error TradeExecutionFailed();
     error EmptyBidArray();
     error InvalidAddress();
+
+    /// @notice The trade looked up on LST does not exist (seller == 0).
+    error TradeNotFoundOrInvalid();
+
+    /// @notice The trade's seller is not a registered stash. Used by
+    ///         `cancelTradeFromStash` to reject cancellation routing for
+    ///         EOA-listed trades (which should go directly to LST).
+    error NotStashListed();
 
     // ===== Arbitrage errors =====
 
@@ -476,6 +506,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         );
 
         userToStash[user] = stash;
+        stashOwnerOf[stash] = user;
         isValidStash[stash] = true;
         allStashes.push(stash);
 
@@ -1041,41 +1072,48 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     // ============================================
 
     /**
-     * @notice Create a trade in LazySecureTrade on behalf of a stash owner.
-     * @dev Allows users to list NFTs held inside their stash without first
-     *      withdrawing them. The stash itself (msg.sender, validated via
-     *      `isValidStash`) is the actual HTS holder of the NFT; `seller` is
-     *      recorded in the trade as the human owner (the stash's `owner`)
-     *      so fee tiers, listing-fee exemption, and event attribution all
-     *      resolve to the real user, not the stash contract.
-     * @param seller Address of the seller (owner of the calling stash)
-     * @param token NFT token address
-     * @param buyer Address of the buyer
-     * @param serial NFT serial number
-     * @param tinybarPrice HBAR price in tinybars
-     * @param lazyPrice $LAZY price
-     * @param expiryTime Expiry timestamp (0 = no expiry)
-     * @return tradeId Created trade identifier
+     * @notice Create a trade in LazySecureTrade on behalf of the calling stash.
+     * @dev The stash itself (`msg.sender`, validated via `isValidStash`) is
+     *      recorded as the LST trade's `seller`. This is the address that
+     *      LST will pull the NFT from at execution time — the stash IS the
+     *      NFT custodian, so it must be the recorded seller. The human
+     *      owner is resolved via `stashOwnerOf[msg.sender]` and emitted in
+     *      the event for off-chain indexing.
+     *
+     *      No `seller` parameter — the function hard-codes `msg.sender`,
+     *      so callers cannot spoof seller identity. See Bug 2 in
+     *      `docs/BCF-StashAllowances-DESIGN.md`.
+     * @param token NFT token address.
+     * @param serial NFT serial number.
+     * @param buyer Address of the buyer (or address(0) for open market).
+     * @param tinybarPrice HBAR price in tinybars.
+     * @param lazyPrice $LAZY price.
+     * @param expiryTime Expiry timestamp (0 = no expiry).
+     * @param agentKey Optional agent-flow identifier; `bytes32(0)` for
+     *                 owner-initiated listings. Currently carried in the
+     *                 event only — envelope work will gate on this later.
+     * @return tradeId Created trade identifier.
      */
     function createTradeOnBehalfOfStash(
-        address seller,
         address token,
-        address buyer,
         uint256 serial,
+        address buyer,
         uint256 tinybarPrice,
         uint256 lazyPrice,
-        uint256 expiryTime
+        uint256 expiryTime,
+        bytes32 agentKey
     ) external nonReentrant returns (bytes32 tradeId) {
         // Validate caller is a factory-deployed stash
         if (!isValidStash[msg.sender]) {
             revert InvalidStash();
         }
 
-        // Create trade in LazySecureTrade.
-        // The stash (msg.sender) is the actual NFT holder;
-        // `seller` is the human owner recorded on the trade.
+        // The stash (msg.sender) is recorded as both NFT holder AND
+        // seller on the LST side. LST pulls the NFT from the stash at
+        // execution; the stash receives payment; owner withdraws from
+        // the stash via withdrawHbar / withdrawLazy.
         tradeId = LAZY_SECURE_TRADE.createTradeOnBehalf(
-            seller,
+            msg.sender,
             token,
             buyer,
             serial,
@@ -1087,10 +1125,42 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         emit TradeCreatedFromStash(
             tradeId,
             msg.sender,
-            seller,
+            stashOwnerOf[msg.sender],
             token,
-            serial
+            serial,
+            agentKey
         );
+    }
+
+    /**
+     * @notice Cancel a stash-listed LST trade from the human owner's EOA.
+     * @dev Resolves the trade from LST, verifies (a) the seller is a
+     *      registered stash (b) the caller owns that stash, then instructs
+     *      the stash to perform the cancellation. The stash atomically
+     *      revokes its per-serial NFT approval to LST and calls
+     *      `LST.cancelTrade` — see `BidderContract.cancelLstTrade`.
+     *
+     *      Frontend routing: read `trade.seller`, check `isValidStash`;
+     *      route here for stash-listed trades, route directly to
+     *      `LST.cancelTrade` for EOA-listed trades. User signs from their
+     *      EOA in both cases. See Bug 4 in `docs/BCF-StashAllowances-DESIGN.md`.
+     */
+    function cancelTradeFromStash(bytes32 tradeId) external nonReentrant {
+        ILazySecureTrade.Trade memory trade = LAZY_SECURE_TRADE.getTrade(
+            tradeId
+        );
+        if (trade.seller == address(0)) revert TradeNotFoundOrInvalid();
+        if (!isValidStash[trade.seller]) revert NotStashListed();
+        if (stashOwnerOf[trade.seller] != msg.sender)
+            revert UnauthorizedCaller();
+
+        // Instruct the stash to cancel. The stash re-derives (token, serial)
+        // from LST itself — no spoofable params forwarded. The stash
+        // revokes its per-serial NFT approval to LST and then calls
+        // LST.cancelTrade, which passes because the stash IS trade.seller.
+        BidderContract(payable(trade.seller)).cancelLstTrade(tradeId);
+
+        emit TradeCancelledFromStash(tradeId, trade.seller, msg.sender);
     }
 
     // ============================================

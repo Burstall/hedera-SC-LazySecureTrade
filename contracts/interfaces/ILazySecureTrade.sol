@@ -46,6 +46,15 @@ interface ILazySecureTrade {
     function executeTrade(bytes32 _tradeId) external payable;
 
     /**
+     * @notice Cancel a trade. Caller must be the trade's seller (or buyer,
+     *         for closed trades). Used by stash-listed-trade cancellation
+     *         flows where the stash itself is `trade.seller` — see
+     *         BidderContract.cancelLstTrade.
+     * @param _tradeId The ID of the trade.
+     */
+    function cancelTrade(bytes32 _tradeId) external;
+
+    /**
      * @notice Get trade details (needed for arbitrage validation)
      * @param _tradeId The ID of the trade
      * @return Trade struct with all trade details

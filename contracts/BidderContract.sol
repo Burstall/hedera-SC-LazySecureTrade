@@ -5,6 +5,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {TokenStakerV2} from "./TokenStakerV2.sol";
+import {HederaTokenService} from "./HederaTokenService.sol";
+import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
 
@@ -49,6 +51,22 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         limits the per-tx blast radius. Hardcoded so no admin
     ///         key can weaken it.
     uint256 public constant ARB_SETTLE_MAX_BPS = 7500; // 75%
+
+    /// @notice Lazy-refill ceiling for the stash → LST HBAR allowance
+    ///         that covers the custody-hop tinybar on `executeTrade`.
+    ///         Re-granted automatically inside `executeTrade` when the
+    ///         current allowance drops below `CUSTODY_HOP_ALLOWANCE_FLOOR`.
+    ///         Bounded (not max(int256)) so a compromised LST drains
+    ///         at most this much before the owner can intervene.
+    ///         10 HBAR ≈ 10 billion custody hops — effectively "set
+    ///         once per stash, ever" in practice.
+    uint256 public constant CUSTODY_HOP_ALLOWANCE_REFILL = 1_000_000_000; // 10 HBAR
+
+    /// @notice Allowance refill is triggered when current allowance
+    ///         drops below this floor. 1 HBAR gives ample headroom
+    ///         (1 billion custody hops at 1 tinybar each) so refills
+    ///         are rare in steady state.
+    uint256 public constant CUSTODY_HOP_ALLOWANCE_FLOOR = 100_000_000; // 1 HBAR
 
     // ============================================
     // Events
@@ -98,6 +116,19 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     /// @notice Thrown when detachFromFactory is called on a stash whose
     ///         factory link has already been severed.
     error AlreadyDetached();
+    /// @notice HIP-906 hbarApprove system contract call did not return
+    ///         SUCCESS. Code 0 means the call itself failed (system
+    ///         contract missing or returned malformed data); any other
+    ///         value is the HederaResponseCode the system contract
+    ///         surfaced.
+    error HbarAllowanceFailed(int64 responseCode);
+    /// @notice HTS `approveNFT` precompile returned a non-success
+    ///         response code (see HederaResponseCodes.sol).
+    error NFTAllowanceFailed(int256 responseCode);
+    /// @notice The trade looked up on LST does not exist (seller == 0).
+    ///         Mirrors LST's own error for the cancel path so callers
+    ///         see a uniform shape.
+    error TradeNotFoundOrInvalid();
 
     // ============================================
     // Modifiers
@@ -281,6 +312,151 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         }
 
         emit StashArbSettled(bidId, tradeId, hbarAmount, lazyAmount);
+    }
+
+    // ============================================
+    // Allowance Management (HBAR + NFT)
+    // ============================================
+    //
+    // Stash custody flows in v0.3 require allowances in three directions:
+    //
+    //   (1) Stash → LST (HBAR) — covers the 1-tinybar custody hop on
+    //       executeTrade when this stash is the buyer. Set lazily inside
+    //       executeTrade via `_ensureHbarAllowanceForCustodyHop`.
+    //   (2) Stash → LST (NFT, per-serial) — granted at listing time so
+    //       LST can pull the listed NFT at execution. Revoked atomically
+    //       on cancel.
+    //   (3) EOA → stash (HBAR) — symmetric to (1) but on the reverse
+    //       direction (stash sending NFT to EOA). Set by the EOA via the
+    //       Hedera SDK; not exposed here.
+    //
+    // The HBAR allowances rely on HIP-906's `hbarApprove` / `hbarAllowance`
+    // system contract intercept at the contract's own address.
+    //
+    // See docs/BCF-StashAllowances-DESIGN.md for the full rationale,
+    // security analysis, and rejected alternatives.
+
+    /**
+     * @notice Set this stash's HBAR allowance to `spender` to `amount`.
+     * @dev Owner-only. Pass `amount = 0` to revoke. Owner is sovereign —
+     *      no on-chain cap on `amount`. Frontend must validate user input;
+     *      a max-allowance mistake is recoverable via a subsequent
+     *      `approveHbarTo(spender, 0)` call.
+     * @param spender Address authorized to spend.
+     * @param amount Tinybar allowance amount (use 0 to revoke).
+     */
+    function approveHbarTo(
+        address spender,
+        int256 amount
+    ) external onlyOwner {
+        if (spender == address(0)) revert InvalidAddress();
+        _hbarApprove(spender, amount);
+    }
+
+    /**
+     * @notice Read this stash's current HBAR allowance to `spender`.
+     * @dev View call to the HIP-906 system contract. Returns 0 on any
+     *      failure (call reverted, system contract missing, malformed
+     *      return) — safer than reverting in a view path that the lazy
+     *      refill check depends on.
+     */
+    function hbarAllowanceTo(
+        address spender
+    ) external view returns (int256) {
+        return _hbarAllowanceTo(spender);
+    }
+
+    /**
+     * @notice Set a per-serial NFT approval from this stash to `spender`.
+     * @dev `public` (not `external`) so `createTrade` can call it as an
+     *      internal jump without paying for a self-external call.
+     *      Owner-only — when invoked from inside `createTrade`, the
+     *      modifier passes because msg.sender carries through internal
+     *      calls.
+     *
+     *      Per-serial granularity is deliberate. We do NOT expose
+     *      `setApprovalForAll` because:
+     *        - Per-serial approvals are auto-consumed on transfer, so
+     *          the blast radius on a healthy stash is "currently listed
+     *          serials" not "every serial of that collection."
+     *        - Per-serial grants are revocable individually — required
+     *          for the atomic revoke-on-cancel path in `cancelLstTrade`.
+     *      See docs/BCF-StashAllowances-DESIGN.md §Security #1.
+     *
+     *      To revoke, pass `spender = address(0)` (HIP-336 idiom).
+     */
+    function approveNFTTo(
+        address token,
+        address spender,
+        uint256 serial
+    ) public onlyOwner {
+        if (token == address(0)) revert InvalidAddress();
+        int256 rc = HederaTokenService.approveNFT(token, spender, serial);
+        if (rc != HederaResponseCodes.SUCCESS) revert NFTAllowanceFailed(rc);
+    }
+
+    /**
+     * @dev Lazy-refill the stash → LST HBAR allowance if it has dropped
+     *      below the floor. Called from `executeTrade` so steady-state
+     *      execution doesn't require the owner to think about allowances.
+     *      Spender is the immutable LST address — cannot be steered by
+     *      any caller. See attack surface table in design doc.
+     */
+    function _ensureHbarAllowanceForCustodyHop(address spender) internal {
+        int256 current = _hbarAllowanceTo(spender);
+        if (current >= int256(CUSTODY_HOP_ALLOWANCE_FLOOR)) return;
+        _hbarApprove(spender, int256(CUSTODY_HOP_ALLOWANCE_REFILL));
+    }
+
+    /**
+     * @dev Low-level HIP-906 `hbarApprove` invocation. The system contract
+     *      intercepts calls to the contract's own address with this
+     *      selector and applies an HBAR allowance from this contract to
+     *      `spender`. Reverts `HbarAllowanceFailed` on:
+     *        - low-level call failure (system contract missing on this
+     *          Hedera version)
+     *        - malformed return (length < 32 bytes)
+     *        - response code != SUCCESS
+     *
+     *      Safe under `nonReentrant` because the system contract is not
+     *      user code and does not reenter.
+     */
+    function _hbarApprove(address spender, int256 amount) internal {
+        (bool ok, bytes memory ret) = address(this).call(
+            abi.encodeWithSignature(
+                "hbarApprove(address,int256)",
+                spender,
+                amount
+            )
+        );
+        if (!ok) revert HbarAllowanceFailed(0);
+        // Defensive: a successful call with malformed return would panic
+        // inside `abi.decode`. Surface our custom error instead.
+        if (ret.length < 32) revert HbarAllowanceFailed(0);
+        int64 rc = abi.decode(ret, (int64));
+        if (rc != int64(HederaResponseCodes.SUCCESS))
+            revert HbarAllowanceFailed(rc);
+    }
+
+    /**
+     * @dev View-side of HIP-906. Returns 0 on any failure so the caller
+     *      (the lazy refill check) treats the unknown state as "no
+     *      allowance" and re-grants — safer than reverting in a view
+     *      function on the hot path.
+     */
+    function _hbarAllowanceTo(
+        address spender
+    ) internal view returns (int256) {
+        (bool ok, bytes memory ret) = address(this).staticcall(
+            abi.encodeWithSignature(
+                "hbarAllowance(address,address)",
+                address(this),
+                spender
+            )
+        );
+        if (!ok || ret.length < 64) return 0;
+        (int64 rc, int256 amount) = abi.decode(ret, (int64, int256));
+        return rc == int64(HederaResponseCodes.SUCCESS) ? amount : int256(0);
     }
 
     // ============================================
@@ -573,6 +749,14 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 hbarAmount,
         uint256 lazyAmount
     ) external payable onlyFactory nonReentrant {
+        // Ensure LST has at least CUSTODY_HOP_ALLOWANCE_FLOOR worth of
+        // HBAR allowance from this stash. Required for the 1-tinybar
+        // custody hop in moveNFTs WITHDRAWAL leg — without it, HTS
+        // reverts with SPENDER_DOES_NOT_HAVE_ALLOWANCE (code 292).
+        // Hardcoded spender (immutable lazySecureTradeAddress) — no
+        // surface for caller manipulation.
+        _ensureHbarAllowanceForCustodyHop(lazySecureTradeAddress);
+
         // Approve $LAZY directly to LazyGasStation (LGS is the actual spender
         // that LST delegates LAZY pulls to — see _processLazyPayment in LST).
         if (lazyAmount > 0) {
@@ -649,15 +833,26 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     // ============================================
 
     /**
-     * @notice Create a trade in LazySecureTrade for NFTs held in this BidderContract
-     * @param token NFT token address
-     * @param buyer Buyer address
-     * @param serial NFT serial number
-     * @param tinybarPrice HBAR price in tinybars
-     * @param lazyPrice $LAZY price
-     * @param expiryTime Expiry timestamp (0 = no expiry)
-     * @return tradeId Created trade identifier
-     * @dev Allows users to list NFTs they've acquired via bids without withdrawing first
+     * @notice Create a trade in LazySecureTrade for NFTs held in this stash.
+     * @dev Allows users to list NFTs sitting in their stash without first
+     *      withdrawing them. The LST trade records THIS STASH (address(this))
+     *      as the seller — not the human owner — because the stash is the
+     *      actual NFT custodian and is the address LST must pull from at
+     *      execution time. Payment from the buyer goes to the stash; the
+     *      human owner withdraws via `withdrawHbar` / `withdrawLazy`.
+     *
+     *      Granting LST a per-serial NFT approval is a hard prerequisite
+     *      for trade execution — done atomically here. Revoked atomically
+     *      on cancel via `cancelLstTrade`. See docs/BCF-StashAllowances-DESIGN.md.
+     * @param token NFT token address.
+     * @param buyer Buyer address (or address(0) for open market).
+     * @param serial NFT serial number — must be held by this stash.
+     * @param tinybarPrice HBAR price in tinybars.
+     * @param lazyPrice $LAZY price.
+     * @param expiryTime Expiry timestamp (0 = no expiry).
+     * @param agentKey Optional agent identifier for envelope tracking +
+     *                 event tagging. Pass `bytes32(0)` for owner-initiated.
+     * @return tradeId Created trade identifier.
      */
     function createTrade(
         address token,
@@ -665,18 +860,70 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 serial,
         uint256 tinybarPrice,
         uint256 lazyPrice,
-        uint256 expiryTime
+        uint256 expiryTime,
+        bytes32 agentKey
     ) external onlyOwner nonReentrant returns (bytes32 tradeId) {
-        // Call factory to create trade on behalf of this stash
+        // Grant LST per-serial NFT approval so it can pull this serial at
+        // execution. Per-serial (not setApprovalForAll) bounds the blast
+        // radius if LST is ever compromised AND lets `cancelLstTrade`
+        // revoke atomically. Internal call inherits msg.sender (the owner),
+        // so the `onlyOwner` modifier on `approveNFTTo` passes.
+        approveNFTTo(token, lazySecureTradeAddress, serial);
+
+        // BCF hard-codes msg.sender (this stash, validated against
+        // isValidStash) as the LST trade.seller — no spoofable `seller`
+        // param. See docs/BCF-StashAllowances-DESIGN.md Bug 2.
         tradeId = IBidderContractFactory(factory).createTradeOnBehalfOfStash(
-            owner, // seller (the stash's human owner)
             token,
-            buyer,
             serial,
+            buyer,
             tinybarPrice,
             lazyPrice,
-            expiryTime
+            expiryTime,
+            agentKey
         );
+    }
+
+    /**
+     * @notice Cancel a stash-listed LST trade and atomically revoke the
+     *         per-serial NFT approval granted at listing time.
+     * @dev Normally invoked via `BCF.cancelTradeFromStash` (which gates
+     *      on `stashOwnerOf[stash] == msg.sender` before forwarding here).
+     *      Also callable by the owner directly — primary use case is
+     *      post-`detachFromFactory` when the BCF orchestrator path is dead.
+     *
+     *      Takes ONLY `tradeId`. `(token, serial)` are re-derived from
+     *      `LST.getTrade(tradeId)` rather than trusted from the caller —
+     *      a compromised factory could otherwise pass spoofed params to
+     *      revoke approval on an unrelated NFT before LST rejects the
+     *      mismatched cancellation. Costs 1 extra view subcall; closes
+     *      the spoof vector cleanly. See design doc §Security #1.
+     *
+     *      Approval revoke runs FIRST. If `LST.cancelTrade` reverts (e.g.,
+     *      the trade was executed in a racing tx), the whole tx reverts
+     *      and the approval state is restored — atomicity preserved.
+     */
+    function cancelLstTrade(
+        bytes32 tradeId
+    ) external onlyOwnerOrFactory nonReentrant {
+        ILazySecureTrade.Trade memory trade = ILazySecureTrade(
+            lazySecureTradeAddress
+        ).getTrade(tradeId);
+        if (trade.seller == address(0)) revert TradeNotFoundOrInvalid();
+
+        // Revoke the per-serial approval to LST. HIP-336 idiom: spender
+        // = address(0) revokes.
+        int256 rc = HederaTokenService.approveNFT(
+            trade.token,
+            address(0),
+            trade.serial
+        );
+        if (rc != HederaResponseCodes.SUCCESS) revert NFTAllowanceFailed(rc);
+
+        // LST's `msg.sender == seller` check rejects if this stash isn't
+        // the seller — the whole tx (including the approveNFT above)
+        // reverts. So we don't need an explicit sanity check here.
+        ILazySecureTrade(lazySecureTradeAddress).cancelTrade(tradeId);
     }
 
     // ============================================

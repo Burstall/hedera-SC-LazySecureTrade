@@ -63,26 +63,52 @@ interface IBidderContractFactory {
     function cancelBid(bytes32 bidId) external;
 
     /**
-     * @notice Create a trade in LazySecureTrade on behalf of a stash owner.
-     * @dev Lets a user list NFTs held inside their stash without first
-     *      withdrawing them. The calling stash (msg.sender) is the actual
-     *      HTS holder; `seller` is the recorded human owner.
-     * @param seller Address of the seller (the stash's human owner).
+     * @notice Create a trade in LazySecureTrade on behalf of the calling stash.
+     * @dev The calling stash (`msg.sender`, validated against `isValidStash`)
+     *      is recorded as the LST trade's `seller`. The human owner is
+     *      resolved by the factory via its `stashOwnerOf` reverse mapping
+     *      and emitted in the `TradeCreatedFromStash` event for off-chain
+     *      indexers — but the on-chain `trade.seller` is always the stash,
+     *      because the stash is the actual NFT custodian and must be the
+     *      address LST pulls the NFT from at execution time.
+     *
+     *      See `docs/BCF-StashAllowances-DESIGN.md` for the full rationale
+     *      on why `seller` is not a parameter (Bug 2 fix).
      * @param token NFT token address.
      * @param buyer Address of the buyer (or address(0) for open market).
      * @param serial NFT serial number.
      * @param tinybarPrice HBAR price in tinybars.
      * @param lazyPrice $LAZY price.
      * @param expiryTime Expiry timestamp (0 = no expiry).
+     * @param agentKey Optional agent identifier for envelope tracking + event
+     *                 tagging. Pass `bytes32(0)` for owner-initiated listings;
+     *                 non-zero values are reserved for the per-agent envelope
+     *                 flow (not enforced on-chain in v0.3 — carried in events
+     *                 only for off-chain correlation).
      * @return tradeId Created trade identifier.
      */
     function createTradeOnBehalfOfStash(
-        address seller,
         address token,
-        address buyer,
         uint256 serial,
+        address buyer,
         uint256 tinybarPrice,
         uint256 lazyPrice,
-        uint256 expiryTime
+        uint256 expiryTime,
+        bytes32 agentKey
     ) external returns (bytes32 tradeId);
+
+    /**
+     * @notice Cancel a stash-listed trade from the human owner's EOA.
+     * @dev Resolves the trade on LST, verifies (a) the seller is a registered
+     *      stash and (b) the caller is that stash's owner via `stashOwnerOf`,
+     *      then instructs the stash to perform the cancellation. The stash
+     *      revokes its per-serial NFT approval to LST atomically with the
+     *      cancellation — closing the dangling-approval leak surfaced as
+     *      Bug 5 in `docs/BCF-StashAllowances-DESIGN.md`.
+     *
+     *      LST is not modified — symmetric with the existing
+     *      `createTradeOnBehalf` authorized-factory pattern.
+     * @param tradeId Trade identifier on LST.
+     */
+    function cancelTradeFromStash(bytes32 tradeId) external;
 }
