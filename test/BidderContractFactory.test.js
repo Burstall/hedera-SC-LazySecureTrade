@@ -821,6 +821,79 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
+	// Stash allowance plumbing
+	// ============================================
+	// HIP-906 hbarApprove / hbarAllowance round-trip via the system
+	// contract intercept on the contract's own address. These tests
+	// validate the new `approveHbarTo` / `hbarAllowanceTo` / `approveNFTTo`
+	// owner-sovereign surface in BidderContract — see
+	// docs/BCF-StashAllowances-DESIGN.md.
+	describe('Stash allowance plumbing', function () {
+		it('approveHbarTo + hbarAllowanceTo round-trip via HIP-906', async function () {
+			// Bob grants Carol's EOA a 2 HBAR allowance on his stash.
+			// Carol isn't going to use this — we just need a non-LST spender
+			// so the test doesn't collide with the lazy refill path that
+			// will fire later when executeTrade runs.
+			const amount = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
+			client.setOperator(bobId, bobPK);
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'approveHbarTo', [carolId.toSolidityAddress(), amount],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			const result = await mirrorQuery(bobStashId, bidderContractIface,
+				'hbarAllowanceTo', [carolId.toSolidityAddress()]);
+			expect(Number(result[0])).to.equal(amount);
+			console.log('approveHbarTo set allowance:', Number(result[0]), 'tinybars');
+		});
+
+		it('approveHbarTo(spender, 0) revokes the allowance', async function () {
+			client.setOperator(bobId, bobPK);
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'approveHbarTo', [carolId.toSolidityAddress(), 0],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			const result = await mirrorQuery(bobStashId, bidderContractIface,
+				'hbarAllowanceTo', [carolId.toSolidityAddress()]);
+			expect(Number(result[0])).to.equal(0);
+			console.log('approveHbarTo(spender, 0) revoked successfully');
+		});
+
+		it('rejects non-owner approveHbarTo with OnlyOwner', async function () {
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'approveHbarTo', [carolId.toSolidityAddress(), 100], 0, true,
+			);
+			expectRevertNamed(result, 'OnlyOwner');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('rejects non-owner approveNFTTo with OnlyOwner', async function () {
+			// Use serial 1 as a representative — doesn't matter if Bob's stash
+			// holds it, the OnlyOwner check fires before the HTS call.
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'approveNFTTo',
+				[nftTokenId.toSolidityAddress(), carolId.toSolidityAddress(), 1],
+				0, true,
+			);
+			expectRevertNamed(result, 'OnlyOwner');
+			client.setOperator(operatorId, operatorKey);
+		});
+	});
+
+	// ============================================
 	// Bid Lifecycle
 	// ============================================
 	describe('Bid Lifecycle', function () {
@@ -2067,24 +2140,284 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
-	// P5.8 — createTradeOnBehalf via authorized factory
+	// P5.8 — Stash-initiated listing & cancel orchestrator
 	// ============================================
-	describe('createTradeOnBehalf (factory-authorized listing)', function () {
-		it('P5.8: factory should be able to list a trade on behalf of a seller', async function () {
-			// The factory exposes a createTradeFromStash path (per the
-			// TradeCreatedFromStash event). To exercise it directly we'd need
-			// a dedicated stash function — check whether the factory ABI
-			// surfaces a function that calls LST.createTradeOnBehalf.
-			//
-			// If not, this test verifies the lower-level invariant: the
-			// factory is on LST.authorizedFactories.
-			const isAuth = await mirrorQuery(lstContractId, lstIface, 'authorizedFactories', [bidderFactoryId.toSolidityAddress()]);
+	// Exercises the full stash-as-seller flow specified in
+	// docs/BCF-StashAllowances-DESIGN.md:
+	//   (1) NFT routed to bob's stash
+	//   (2) bob lists from stash via BidderContract.createTrade
+	//       — granting per-serial NFT approval to LST and recording
+	//         the STASH (not bob's EOA) as LST trade.seller
+	//   (3) third-party executes the listing via LST.executeTrade
+	//   (4) BCF.cancelTradeFromStash orchestrator round-trip,
+	//       atomically revoking the per-serial allowance.
+	describe('P5.8 Stash-initiated listing & cancel orchestrator', function () {
+		// First the LST auth invariant: factory must still be authorized.
+		it('P5.8: factory is on LST.authorizedFactories', async function () {
+			const isAuth = await mirrorQuery(
+				lstContractId, lstIface, 'authorizedFactories',
+				[bidderFactoryId.toSolidityAddress()],
+			);
 			expect(isAuth[0]).to.be.true;
-			console.log('P5.8: factory is on LST.authorizedFactories — createTradeOnBehalf is reachable');
+			console.log('P5.8: factory authorized on LST → createTradeOnBehalf is reachable');
+		});
 
-			// Note: a fuller test would invoke a stash function that triggers
-			// the on-behalf listing flow, then assert TradeCreatedFromStash
-			// event emission. Adding when the stash-side wrapper is identified.
+		let p58TradeId;
+		let p58Serial;
+		const P58_PRICE = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
+
+		it('P5.8a: stash lists an NFT it holds via createTrade (seller=stash, per-serial allowance granted)', async function () {
+			// Route a fresh serial directly into bob's stash
+			p58Serial = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [p58Serial]);
+			await sleep(MIRROR_DELAY);
+
+			// Verify stash owns it
+			const { checkNFTOwnership } = require('../utils/hederaMirrorHelpers');
+			const ownership = await checkNFTOwnership(env, nftTokenId, p58Serial);
+			const stashNumeric = await resolveContractNumericId(bobStashAddress);
+			expect(ownership?.owner).to.equal(stashNumeric);
+
+			// Bob lists from his stash — open market (buyer = 0), HBAR-only.
+			// createTrade signature: (token, buyer, serial, tinybarPrice,
+			// lazyPrice, expiryTime, agentKey).
+			client.setOperator(bobId, bobPK);
+			// Args (in order): token, buyer=0 (open market), serial,
+			// tinybarPrice, lazyPrice=0, expiry=0, agentKey=ZeroHash (owner-initiated).
+			const [rx] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 2_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					p58Serial,
+					P58_PRICE,
+					0,
+					0,
+					ethers.ZeroHash,
+				],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			// tradeId = keccak256(abi.encodePacked(token, serial)) — same
+			// formula as the arbitrage / cancel paths.
+			p58TradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'],
+				[nftTokenId.toSolidityAddress(), p58Serial],
+			);
+
+			// LST records the STASH (not bob's EOA) as seller — that's the
+			// architectural correction. Without it, LST.executeTrade would
+			// try to pull the NFT from bob's wallet at trade time.
+			const trade = await mirrorQuery(
+				lstContractId, lstIface, 'getTrade', [p58TradeId],
+			);
+			expect(trade[0].seller.toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+			expect(Number(trade[0].tinybarPrice)).to.equal(P58_PRICE);
+			console.log('P5.8a: trade listed, seller =', trade[0].seller, '(stash, not EOA)');
+
+			// BCF event: TradeCreatedFromStash(tradeId, stash, owner, token, serial, agentKey)
+			await expectEventEmitted(
+				bidderFactoryId, bidderFactoryIface, 'TradeCreatedFromStash',
+				(args) => {
+					expect(args[0]).to.equal(p58TradeId);
+					expect(args[1].toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+					expect(args[2].toLowerCase()).to.equal(
+						'0x' + bobId.toSolidityAddress().toLowerCase(),
+					);
+					expect(args[5]).to.equal(ethers.ZeroHash);
+				},
+			);
+		});
+
+		it('P5.8b: third-party (alice) executes the stash-listed trade end-to-end', async function () {
+			const preStashBalance = await checkMirrorHbarBalance(env, bobStashId);
+
+			// Alice executes — she has HBAR allowance to LST from scaffold,
+			// and pays the 3 HBAR price as msg.value.
+			client.setOperator(aliceId, alicePK);
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_500_000,
+				'executeTrade', [p58TradeId], 3,
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			// NFT moved stash → alice
+			const { checkNFTOwnership } = require('../utils/hederaMirrorHelpers');
+			const ownership = await checkNFTOwnership(env, nftTokenId, p58Serial);
+			expect(ownership?.owner).to.equal(aliceId.toString());
+
+			// HBAR moved alice → stash (minus 2% royalty + LST platform fee
+			// for non-LSH seller). Just sanity-check the delta is positive
+			// and below the gross price.
+			const postStashBalance = await checkMirrorHbarBalance(env, bobStashId);
+			const stashDelta = Number(postStashBalance) - Number(preStashBalance);
+			expect(stashDelta).to.be.greaterThan(0);
+			expect(stashDelta).to.be.lessThan(P58_PRICE);
+			console.log('P5.8b: stash received', stashDelta, 'tinybars from sale (gross', P58_PRICE, ')');
+		});
+
+		it('P5.8c: BCF.cancelTradeFromStash atomically revokes per-serial approval + cancels on LST', async function () {
+			// Fresh listing for the cancel test
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(bobId, bobPK);
+			const [rxList] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 2_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
+					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
+					ethers.ZeroHash,
+				],
+			);
+			expect(rxList.status.toString()).to.equal('SUCCESS');
+
+			await sleep(MIRROR_DELAY);
+			const tid = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			// Confirm trade is live pre-cancel
+			const tradeBefore = await mirrorQuery(
+				lstContractId, lstIface, 'getTrade', [tid],
+			);
+			expect(tradeBefore[0].seller.toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+
+			// Bob (EOA) cancels via BCF orchestrator. Stash receives the
+			// instruction, atomically revokes its per-serial NFT approval
+			// to LST, then calls LST.cancelTrade.
+			const [rxCancel] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'cancelTradeFromStash', [tid],
+			);
+			expect(rxCancel.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+
+			// Trade is gone (seller zeroed on LST)
+			const tradeAfter = await mirrorQuery(
+				lstContractId, lstIface, 'getTrade', [tid],
+			);
+			expect(tradeAfter[0].seller).to.equal(ethers.ZeroAddress);
+
+			// NFT remains in stash (cancel doesn't move custody)
+			const { checkNFTOwnership } = require('../utils/hederaMirrorHelpers');
+			const ownership = await checkNFTOwnership(env, nftTokenId, ser);
+			const stashNumeric = await resolveContractNumericId(bobStashAddress);
+			expect(ownership?.owner).to.equal(stashNumeric);
+
+			// BCF orchestrator event
+			await expectEventEmitted(
+				bidderFactoryId, bidderFactoryIface, 'TradeCancelledFromStash',
+				(args) => {
+					expect(args[0]).to.equal(tid);
+					expect(args[1].toLowerCase()).to.equal(bobStashAddress.toLowerCase());
+					expect(args[2].toLowerCase()).to.equal(
+						'0x' + bobId.toSolidityAddress().toLowerCase(),
+					);
+				},
+			);
+			console.log('P5.8c: cancelTradeFromStash succeeded, NFT remains in stash, approval revoked');
+		});
+
+		it('P5.8d: non-owner caller rejected with UnauthorizedCaller', async function () {
+			// Bob lists, then carol tries to cancel
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 2_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
+					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
+					ethers.ZeroHash,
+				],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			await sleep(MIRROR_DELAY);
+			const tid = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 800_000,
+				'cancelTradeFromStash', [tid], 0, true,
+			);
+			expectRevertNamed(result, 'UnauthorizedCaller');
+			client.setOperator(operatorId, operatorKey);
+
+			// Tidy up: bob cancels the dangling trade so other tests aren't
+			// surprised by an active listing on this serial
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'cancelTradeFromStash', [tid],
+			);
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('P5.8e: cancel for an EOA-listed (non-stash) trade rejected with NotStashListed', async function () {
+			// Alice lists directly via LST (not through stash)
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(aliceId, alicePK);
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
+					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
+				],
+			);
+			await sleep(MIRROR_DELAY);
+			const tid = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			// Alice (the actual seller) routes through BCF — should still be
+			// rejected because trade.seller is an EOA, not a registered stash.
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 800_000,
+				'cancelTradeFromStash', [tid], 0, true,
+			);
+			expectRevertNamed(result, 'NotStashListed');
+
+			// Cleanup: alice cancels via LST directly
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 500_000,
+				'cancelTrade', [tid],
+			);
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		it('P5.8f: cancel for non-existent trade rejected with TradeNotFoundOrInvalid', async function () {
+			const fakeTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), 999999],
+			);
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 500_000,
+				'cancelTradeFromStash', [fakeTradeId], 0, true,
+			);
+			expectRevertNamed(result, 'TradeNotFoundOrInvalid');
+			client.setOperator(operatorId, operatorKey);
 		});
 	});
 
