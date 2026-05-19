@@ -2181,6 +2181,63 @@ describe('BidderContractFactory v0.3 Tests', function () {
 		let p58Serial;
 		const P58_PRICE = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
 
+		// Diagnostic probe: split the createTrade flow into its three
+		// constituent on-chain operations so we can pinpoint which one
+		// reverts when stash.createTrade fails with no-data revert.
+		it('P5.8-probe: approveNFTTo + factory call in isolation', async function () {
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			// Step A: stash grants LST per-serial NFT approval
+			client.setOperator(bobId, bobPK);
+			const [rxApprove] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 1_500_000,
+				'approveNFTTo',
+				[nftTokenId.toSolidityAddress(), lstContractId.toSolidityAddress(), ser],
+				0, true,
+			);
+			console.log('Step A (approveNFTTo): status =', rxApprove?.status?.toString?.() ?? rxApprove?.status);
+
+			// Step B: stash invokes the FULL createTrade (which does approveNFTTo
+			// again — idempotent — and then forwards to BCF). If A passes but
+			// this fails, the bug is in BCF.createTradeOnBehalfOfStash or LST.
+			const [rxCreate] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 5_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					ser,
+					Number(new Hbar(2, HbarUnit.Hbar).toTinybars()),
+					0,
+					0,
+					ethers.ZeroHash,
+				],
+				0, true,
+			);
+			console.log('Step B (createTrade via stash): status =', rxCreate?.status?.toString?.() ?? rxCreate?.status);
+
+			client.setOperator(operatorId, operatorKey);
+
+			// Cleanup: cancel if listing succeeded so subsequent P5.8 tests
+			// don't trip over stale state. Skip silently on failure.
+			const tid = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+			try {
+				client.setOperator(bobId, bobPK);
+				await contractExecuteFunction(
+					bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+					'cancelTradeFromStash', [tid],
+				);
+				client.setOperator(operatorId, operatorKey);
+			}
+			catch (_) {
+				// probe — best-effort cleanup
+			}
+		});
+
 		it('P5.8a: stash lists an NFT it holds via createTrade (seller=stash, per-serial allowance granted)', async function () {
 			// Route a fresh serial directly into bob's stash
 			p58Serial = await mintFreshSerial();
