@@ -88,12 +88,44 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         are rare in steady state.
     uint256 public constant CUSTODY_HOP_ALLOWANCE_FLOOR = 100_000_000; // 1 HBAR
 
+    /// @notice Minimum HBAR balance the stash keeps when its owner
+    ///         calls `withdrawHbar`. Ensures the stash has enough HBAR
+    ///         to pay the 1-tinybar custody hops on future trade
+    ///         executions. Numerically equal to
+    ///         `CUSTODY_HOP_ALLOWANCE_FLOOR` (1 HBAR) but conceptually
+    ///         distinct — the floor here is on the *balance*, not on
+    ///         the *allowance to LST*. Owner can override this floor
+    ///         via `rescueHbar` (drains the stash completely; future
+    ///         trades will fail until refunded).
+    uint256 public constant WITHDRAW_MIN_BALANCE_FLOOR = 100_000_000; // 1 HBAR
+
+    /// @notice Basis-points denominator (100% = 10_000 bp).
+    ///         Co-located with `ARB_SETTLE_MAX_BPS` so the BPS math
+    ///         in `arbitrageSettle` reads in named units instead of
+    ///         the bare `/ 10_000` literal.
+    uint256 internal constant MAX_BPS = 10_000;
+
     /// @notice Hedera Account Service system contract address (HIP-906).
     ///         Symmetric with the HTS precompile at 0x167. The HASC
     ///         exposes `hbarApprove(owner, spender, amount)` and
     ///         `hbarAllowance(owner, spender)` callable from any
     ///         contract with the owner identity passed explicitly.
     address internal constant HEDERA_ACCOUNT_SERVICE = address(0x16a);
+
+    /// @notice Synthetic `HbarAllowanceFailed` code for "low-level
+    ///         call to HASC returned ok=false." Distinct from real
+    ///         Hedera response codes (which are positive). Carried
+    ///         in the error so ops can disambiguate from the
+    ///         "precompile responded but with a non-success code"
+    ///         path. Range-safe against HederaResponseCodes (positive).
+    int64 internal constant HBAR_APPROVE_CALL_FAILED = -1;
+
+    /// @notice Synthetic `HbarAllowanceFailed` code for "HASC call
+    ///         succeeded but returned empty or short data."
+    ///         Indicates either the precompile is not at 0x16a on
+    ///         this network OR the calldata shape has drifted from
+    ///         the HIP-906 spec.
+    int64 internal constant HBAR_APPROVE_MALFORMED_RETURN = -2;
 
     // ============================================
     // Events
@@ -149,9 +181,6 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         value is the HederaResponseCode the system contract
     ///         surfaced.
     error HbarAllowanceFailed(int64 responseCode);
-    /// @notice HTS `approveNFT` precompile returned a non-success
-    ///         response code (see HederaResponseCodes.sol).
-    error NFTAllowanceFailed(int256 responseCode);
     /// @notice The trade looked up on LST does not exist (seller == 0).
     ///         Mirrors LST's own error for the cancel path so callers
     ///         see a uniform shape.
@@ -262,16 +291,16 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     /**
      * @notice Withdraw HBAR (user sovereignty)
      * @param amount Amount to withdraw in tinybars
-     * @dev Keeps 1 HBAR (100_000_000 tinybars) in contract for gas/allowances
+     * @dev Keeps `WITHDRAW_MIN_BALANCE_FLOOR` (1 HBAR) in the stash so
+     *      future trade executions have enough HBAR for the custody-hop
+     *      tinybars. To override, use `rescueHbar` (sovereignty escape).
      */
     function withdrawHbar(uint256 amount) external onlyOwner nonReentrant {
         if (amount == 0) revert InvalidAmount();
 
-        uint256 minimumBalance = 100_000_000; // 1 HBAR in tinybars
         uint256 contractBalance = address(this).balance;
 
-        // Ensure we're keeping at least 1 HBAR behind
-        if (contractBalance < amount + minimumBalance)
+        if (contractBalance < amount + WITHDRAW_MIN_BALANCE_FLOOR)
             revert InsufficientBalance();
 
         (bool success, ) = payable(owner).call{value: amount}("");
@@ -330,7 +359,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             // against a 50 HBAR trade produces a 50 HBAR spread — at
             // most ~50% of the pre-trade balance. The 75% cap gives
             // headroom for edge cases while limiting blast radius.
-            uint256 cap = (address(this).balance * ARB_SETTLE_MAX_BPS) / 10_000;
+            uint256 cap = (address(this).balance * ARB_SETTLE_MAX_BPS) / MAX_BPS;
             if (hbarAmount > cap) revert InsufficientBalance();
             (bool ok, ) = payable(factory).call{value: hbarAmount}("");
             if (!ok) revert TransferFailed();
@@ -339,7 +368,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         if (lazyAmount > 0) {
             // Same BPS cap as HBAR — prevents full LAZY drain in a single
             // call if the factory ever routes LAZY through arbitrage.
-            uint256 lazyCap = (IERC20(lazyToken).balanceOf(address(this)) * ARB_SETTLE_MAX_BPS) / 10_000;
+            uint256 lazyCap = (IERC20(lazyToken).balanceOf(address(this)) * ARB_SETTLE_MAX_BPS) / MAX_BPS;
             if (lazyAmount > lazyCap) revert InsufficientBalance();
             bool ok = IERC20(lazyToken).transfer(factory, lazyAmount);
             if (!ok) revert TransferFailed();
@@ -474,13 +503,13 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
                 amount
             )
         );
-        // Diagnostic distinct codes per failure mode so we can see
-        // which branch fires in test output:
-        //   -1  → low-level call returned ok=false (precompile rejected)
-        //   -2  → ok=true but empty/short return (precompile not at 0x16a)
-        //   rc  → actual non-success HederaResponseCode from precompile
-        if (!ok) revert HbarAllowanceFailed(-1);
-        if (ret.length < 32) revert HbarAllowanceFailed(-2);
+        // Disambiguate three failure modes for ops:
+        //   HBAR_APPROVE_CALL_FAILED       (-1) — call returned ok=false
+        //   HBAR_APPROVE_MALFORMED_RETURN  (-2) — empty/short ret data
+        //   rc (positive)                       — HederaResponseCode
+        if (!ok) revert HbarAllowanceFailed(HBAR_APPROVE_CALL_FAILED);
+        if (ret.length < 32)
+            revert HbarAllowanceFailed(HBAR_APPROVE_MALFORMED_RETURN);
         int32 rc = abi.decode(ret, (int32));
         if (rc != HederaResponseCodes.SUCCESS)
             revert HbarAllowanceFailed(int64(rc));

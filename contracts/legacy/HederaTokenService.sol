@@ -2,6 +2,23 @@
 pragma solidity >=0.8.12 <0.9.0;
 pragma experimental ABIEncoderV2;
 
+// ⚠️  LEGACY (v0.2) shape — DO NOT IMPORT FROM PRODUCTION CONTRACTS.
+//
+// This file declares `contract HederaTokenService` with the same symbol
+// name as `contracts/HederaTokenService.sol` (the production v0.3
+// version) but with different `cryptoTransfer` and `defaultAutoRenewPeriod`
+// shapes. Only the legacy test-fixture stack
+// (LAZYTokenCreator / ExpiryHelper / KeyHelper inside `contracts/legacy/`)
+// should import this via the relative path `./HederaTokenService.sol`.
+// Any new file outside `contracts/legacy/` MUST import the production
+// version at `contracts/HederaTokenService.sol` — never reach into
+// `legacy/` from production code.
+//
+// A future cleanup pass will rename the contract symbol to
+// `LegacyHederaTokenService` to remove the name clash. ~120 in-file
+// references across 4 files; deferred to keep the v0.3 hardening pass
+// focused.
+
 import { HederaResponseCodes } from "../HederaResponseCodes.sol";
 import { IHederaTokenService } from "./IHederaTokenService.sol";
 
