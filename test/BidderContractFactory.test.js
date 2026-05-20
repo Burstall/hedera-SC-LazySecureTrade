@@ -941,7 +941,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			testBidId = bids[0][0];
 			console.log('Bid created:', testBidId);
 
-			// Event: BidCreated(bidId, user, token, details)
+			// Event: BidCreated(bidId, user, token, details, agentKey, agentReasoningTopicId)
 			await expectEventEmitted(bidderFactoryId, bidderFactoryIface, 'BidCreated', (args) => {
 				// bidId
 				expect(args[0]).to.equal(testBidId);
@@ -949,6 +949,9 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				expect(args[1].toLowerCase()).to.equal('0x' + bobId.toSolidityAddress().toLowerCase());
 				// token
 				expect(args[2].toLowerCase()).to.equal('0x' + nftTokenId.toSolidityAddress().toLowerCase());
+				// agentKey / agentReasoningTopicId reserved — must be ZeroHash in v0.3
+				expect(args[4]).to.equal(ethers.ZeroHash);
+				expect(args[5]).to.equal(ethers.ZeroHash);
 			});
 
 			client.setOperator(operatorId, operatorKey);
@@ -999,10 +1002,15 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			expect(Number(result[1])).to.equal(1);
 			console.log('Bid cancelled, validity code:', Number(result[1]), '(NotFound — hard-deleted)');
 
-			// Event: BidCancelled(bidId, user)
+			// Event: BidCancelled(bidId, user, token, agentKey, agentReasoningTopicId)
 			await expectEventEmitted(bidderFactoryId, bidderFactoryIface, 'BidCancelled', (args) => {
 				expect(args[0]).to.equal(cancelBidId);
 				expect(args[1].toLowerCase()).to.equal('0x' + bobId.toSolidityAddress().toLowerCase());
+				// token preserved for cold-start indexers (hard-delete removes registry)
+				expect(args[2].toLowerCase()).to.equal('0x' + nftTokenId.toSolidityAddress().toLowerCase());
+				// agentKey / agentReasoningTopicId reserved
+				expect(args[3]).to.equal(ethers.ZeroHash);
+				expect(args[4]).to.equal(ethers.ZeroHash);
 			});
 
 			// P5.7 (revised for v0.3 second-pass): bid is HARD-DELETED on close.
@@ -1032,6 +1040,8 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	describe('Trade Execution — executeAgainstBid', function () {
 		let execBidId;
 		let execSerial;
+		let execBidHbar; // hoisted so the event-shape assertion in the test
+		                 // body can compare args[6] against the bid amount
 
 		before(async function () {
 			// Mint a fresh serial for this test and route it to Alice. The
@@ -1045,11 +1055,11 @@ describe('BidderContractFactory v0.3 Tests', function () {
 
 			// Create a fresh bid (any-serial) for this test block
 			client.setOperator(bobId, bobPK);
-			const bidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			execBidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [], execBidHbar, 0, 0, 0],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1088,7 +1098,9 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			expect(Number(bidResult[1])).to.equal(1);
 			console.log('Bid status after execution: NotFound (hard-deleted), code:', Number(bidResult[1]));
 
-			// Event: BidExecuted(bidId, executor, tradeId, arbitrageProfit)
+			// Event: BidExecuted(bidId, executor, tradeId, arbitrageProfit,
+			//                    user, token, hbarAmount, lazyAmount,
+			//                    agentKey, agentReasoningTopicId)
 			// executor == Alice (seller-initiated), arbitrageProfit == 0 (no spread)
 			await expectEventEmitted(bidderFactoryId, bidderFactoryIface, 'BidExecuted', (args) => {
 				// bidId
@@ -1097,6 +1109,14 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				expect(args[1].toLowerCase()).to.equal('0x' + aliceId.toSolidityAddress().toLowerCase());
 				// arbitrageProfit (seller path = no spread)
 				expect(Number(args[3])).to.equal(0);
+				// Cold-start metadata: user, token, hbarAmount, lazyAmount
+				expect(args[4].toLowerCase()).to.equal('0x' + bobId.toSolidityAddress().toLowerCase());
+				expect(args[5].toLowerCase()).to.equal('0x' + nftTokenId.toSolidityAddress().toLowerCase());
+				expect(Number(args[6])).to.equal(execBidHbar);
+				expect(Number(args[7])).to.equal(0); // LAZY bid amount was 0
+				// agentKey / agentReasoningTopicId reserved
+				expect(args[8]).to.equal(ethers.ZeroHash);
+				expect(args[9]).to.equal(ethers.ZeroHash);
 			});
 
 			client.setOperator(operatorId, operatorKey);
@@ -1200,7 +1220,9 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			expect(totalProfit).to.equal(expectedSpread);
 			console.log('Total spread:', totalProfit, '=', expectedSpread, '(5 HBAR)');
 
-			// Event: ArbitrageExecuted(bidId, tradeId, arbitrageur, arbCut, protocolCut)
+			// Event: ArbitrageExecuted(bidId, tradeId, arbitrageur, arbCut,
+			//                          protocolCut, user, token, hbarAmount,
+			//                          lazyAmount, agentKey, agentReasoningTopicId)
 			await expectEventEmitted(bidderFactoryId, bidderFactoryIface, 'ArbitrageExecuted', (args) => {
 				// bidId
 				expect(args[0]).to.equal(arbBidId);
@@ -1212,6 +1234,17 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				expect(Number(args[3])).to.equal(profit);
 				// protocolCut matches mirror-read pendingProtocolProfit
 				expect(Number(args[4])).to.equal(protocolProfit);
+				// Cold-start metadata: bid.user = Bob (the bidder)
+				expect(args[5].toLowerCase()).to.equal('0x' + bobId.toSolidityAddress().toLowerCase());
+				// bid.token
+				expect(args[6].toLowerCase()).to.equal('0x' + nftTokenId.toSolidityAddress().toLowerCase());
+				// hbarAmount = 10 HBAR (the bid amount, not the trade price)
+				expect(Number(args[7])).to.equal(Number(new Hbar(10, HbarUnit.Hbar).toTinybars()));
+				// lazyAmount on the bid was 0
+				expect(Number(args[8])).to.equal(0);
+				// agentKey / agentReasoningTopicId reserved
+				expect(args[9]).to.equal(ethers.ZeroHash);
+				expect(args[10]).to.equal(ethers.ZeroHash);
 			});
 
 			// Companion event on the stash: StashArbSettled(bidId, tradeId, hbarAmount, lazyAmount)

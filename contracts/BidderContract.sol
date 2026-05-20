@@ -43,6 +43,26 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     /// @notice Initialization guard (for proxy pattern)
     bool private initialized;
 
+    /// @notice Reserved storage slots for forward compatibility.
+    /// @dev    BidderContract is deployed as deterministic CREATE2 clones
+    ///         from a single immutable implementation. Stash address is
+    ///         a function of (factory, impl, user) — changing the impl
+    ///         address invalidates every predicted stash address in the
+    ///         ecosystem, which is unacceptable. So new storage fields
+    ///         cannot be added to a deployed impl; they must come from
+    ///         this reserved gap.
+    ///
+    ///         Append new fields by decrementing `__gap` length and
+    ///         declaring the field BEFORE the gap. Never reorder existing
+    ///         fields and never delete from this gap — it's the only
+    ///         path to extending stash storage post-mainnet.
+    ///
+    ///         Sized at 20 slots — enough for agent envelope mappings
+    ///         (planned in docs/AGENT-MARKETPLACE-DELTA.md) plus a
+    ///         comfortable headroom for VIPSubscription / EnglishAuction
+    ///         integration without a redeploy.
+    uint256[20] private __gap;
+
     /// @notice Maximum percentage of stash HBAR balance that can be
     ///         pulled by the factory in a single `arbitrageSettle`
     ///         call, expressed in basis points (10_000 = 100%).

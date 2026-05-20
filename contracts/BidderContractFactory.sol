@@ -170,20 +170,65 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         address indexed stash,
         address indexed deployer
     );
+    /// @notice Emitted when a bid is created.
+    /// @dev    `agentKey` + `agentReasoningTopicId` are reserved for the
+    ///         agent marketplace flow (per docs/AGENT-MARKETPLACE-DELTA.md).
+    ///         In v0.3 they always emit as `bytes32(0)`; consumers should
+    ///         treat any non-zero value as agent-originated.
     event BidCreated(
         bytes32 indexed bidId,
         address indexed user,
         address indexed token,
-        BidDetails details
+        BidDetails details,
+        bytes32 agentKey,
+        bytes32 agentReasoningTopicId
     );
-    event BidCancelled(bytes32 indexed bidId, address indexed user);
+
+    /// @notice Emitted when a bid is cancelled.
+    /// @dev    Carries `token` for indexer cold-start (bids are
+    ///         hard-deleted from `bidRegistry`, so registry lookups
+    ///         post-cancel return zero). `agentKey`/`agentReasoningTopicId`
+    ///         are placeholders — see BidCreated.
+    event BidCancelled(
+        bytes32 indexed bidId,
+        address indexed user,
+        address indexed token,
+        bytes32 agentKey,
+        bytes32 agentReasoningTopicId
+    );
+
+    /// @notice Emitted when a bid is matched against a trade (seller-
+    ///         initiated `executeAgainstBid` flow; for arbitrage see
+    ///         `ArbitrageExecuted`).
+    /// @dev    Carries full bid metadata (user, token, hbarAmount,
+    ///         lazyAmount) so a cold-start indexer can reconstruct a
+    ///         closed bid without backfilling `BidCreated`. Bids are
+    ///         hard-deleted on close. `agentKey`/`agentReasoningTopicId`
+    ///         are placeholders.
     event BidExecuted(
         bytes32 indexed bidId,
         address indexed executor,
         bytes32 tradeId,
-        uint256 arbitrageProfit
+        uint256 arbitrageProfit,
+        address user,
+        address token,
+        uint256 hbarAmount,
+        uint256 lazyAmount,
+        bytes32 agentKey,
+        bytes32 agentReasoningTopicId
     );
-    event BidExpired(bytes32 indexed bidId, address indexed user);
+
+    /// @notice Emitted when a bid expires.
+    /// @dev    Fires from `cleanupExpiredBids` (explicit sweep) and from
+    ///         `_validateBidForExecution` (inline sweep on execute attempt).
+    ///         Carries `token` for indexer cold-start.
+    event BidExpired(
+        bytes32 indexed bidId,
+        address indexed user,
+        address indexed token,
+        bytes32 agentKey,
+        bytes32 agentReasoningTopicId
+    );
     event ExpiredBidsCleanup(address indexed cleaner, uint256 cleanedCount);
     event TradeCreatedFromStash(
         bytes32 indexed tradeId,
@@ -210,12 +255,23 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     /// @notice Emitted on a successful arbitrage. The arbitrageur's cut
     ///         accrues to `pendingArbProfit[arbitrageur]`; the protocol's
     ///         share accrues to `pendingProtocolProfit`.
+    /// @notice Emitted on a successful arbitrage match.
+    /// @dev    Carries full bid metadata for cold-start indexer recovery
+    ///         (bids are hard-deleted on close). `agentKey` +
+    ///         `agentReasoningTopicId` are reserved for the agent
+    ///         marketplace flow — always `bytes32(0)` in v0.3.
     event ArbitrageExecuted(
         bytes32 indexed bidId,
         bytes32 indexed tradeId,
         address indexed arbitrageur,
         uint256 arbCut,
-        uint256 protocolCut
+        uint256 protocolCut,
+        address user,
+        address token,
+        uint256 hbarAmount,
+        uint256 lazyAmount,
+        bytes32 agentKey,
+        bytes32 agentReasoningTopicId
     );
 
     /// @notice Emitted when an arbitrageur claims their accrued profit.
@@ -581,7 +637,14 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // Increment counter
         totalBidCount++;
 
-        emit BidCreated(bidId, bidDetails.user, bidDetails.token, bidDetails);
+        emit BidCreated(
+            bidId,
+            bidDetails.user,
+            bidDetails.token,
+            bidDetails,
+            bytes32(0), // agentKey reserved
+            bytes32(0)  // agentReasoningTopicId reserved
+        );
     }
 
     /**
@@ -609,8 +672,15 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
 
         // Save before _closeBid hard-deletes the storage struct
         address bidUser = bid.user;
+        address bidToken = bid.token;
         _closeBid(bidId);
-        emit BidCancelled(bidId, bidUser);
+        emit BidCancelled(
+            bidId,
+            bidUser,
+            bidToken,
+            bytes32(0), // agentKey reserved
+            bytes32(0)  // agentReasoningTopicId reserved
+        );
     }
 
     // ============================================
@@ -945,7 +1015,13 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
 
         // Expired? — sweep and revert
         if (bid.expiry != 0 && block.timestamp > bid.expiry) {
-            emit BidExpired(bidId, bid.user);
+            emit BidExpired(
+                bidId,
+                bid.user,
+                bid.token,
+                bytes32(0), // agentKey reserved
+                bytes32(0)  // agentReasoningTopicId reserved
+            );
             _closeBid(bidId);
             revert BidHasExpired();
         }
@@ -1057,8 +1133,15 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
                 block.timestamp > bid.expiry
             ) {
                 address bidUser = bid.user;
+                address bidToken = bid.token;
                 _closeBid(bidIds[i]);
-                emit BidExpired(bidIds[i], bidUser);
+                emit BidExpired(
+                    bidIds[i],
+                    bidUser,
+                    bidToken,
+                    bytes32(0), // agentKey reserved
+                    bytes32(0)  // agentReasoningTopicId reserved
+                );
                 unchecked {
                     ++cleanedCount;
                 }
@@ -1214,13 +1297,25 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             bid.lazyAmount
         );
 
-        // Transition the bid to Executed and remove from discovery
-        // indexes via O(1) swap-pop. The registry entry stays in place
-        // so post-mortem lookups return the historical details.
+        // Transition the bid to Executed: remove from discovery indexes
+        // via O(1) swap-pop AND hard-delete the registry entry. The bid
+        // is captured in `bid` (memory) above, so we can still read its
+        // fields for the event payload after deletion.
         _closeBid(bidId);
 
-        // Emit execution event
-        emit BidExecuted(bidId, msg.sender, tradeId, 0);
+        // Emit execution event with full metadata for cold-start indexers.
+        emit BidExecuted(
+            bidId,
+            msg.sender,
+            tradeId,
+            0, // no arbitrage profit on the seller-initiated path
+            bid.user,
+            bid.token,
+            bid.hbarAmount,
+            bid.lazyAmount,
+            bytes32(0), // agentKey reserved
+            bytes32(0)  // agentReasoningTopicId reserved
+        );
     }
 
     // ============================================
@@ -1365,7 +1460,13 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             existingTradeId,
             msg.sender,
             arbCut,
-            protocolCut
+            protocolCut,
+            bid.user,
+            bid.token,
+            bid.hbarAmount,
+            bid.lazyAmount,
+            bytes32(0), // agentKey reserved
+            bytes32(0)  // agentReasoningTopicId reserved
         );
     }
 
