@@ -269,12 +269,16 @@ struct Trade {
         |    (2)    |  |    (3)    |   |    (4)    |
         +-----------+  +-----------+   +-----------+
 
-  All terminal states are soft-deleted:
-  - Registry entry retained with updated status
+  All terminal states are HARD-DELETED:
+  - Registry entry removed via `delete bidRegistry[bidId]`
   - Removed from tokenToBids[] and userToBids[] (O(1) swap-pop)
-  - Post-mortem queries via bidRegistry[bidId] return historical data
+  - Post-close storage reads return a ZEROED struct (status == None)
+  - Lifecycle events (BidCancelled / BidExecuted / BidExpired /
+    ArbitrageExecuted) are the canonical history layer — frontend
+    indexers MUST consume events for closed-bid lookups
 
-  None (0) = bid ID has never been used
+  None (0) = bid ID has never been used OR bid was closed
+              (distinguish by presence/absence of BidCreated event)
 ```
 
 ---

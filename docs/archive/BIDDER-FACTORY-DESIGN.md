@@ -1,3 +1,19 @@
+> **[SUPERSEDED 2026-05-20]** — Pre-implementation design doc. Reflects the
+> first-pass v0.3 design (soft-delete bids, `factoryWithdrawHbar/Lazy` paths,
+> 5-arg `createBid` without `minAcceptablePrice`). The shipped v0.3 contract
+> differs from this doc in several material ways after the second-pass refactor.
+>
+> **Canonical references for the shipped v0.3 design:**
+> - `docs/v0.3-integration-guide.md`
+> - `docs/BCF-StashAllowances-DESIGN.md`
+> - `docs/BCF-StashInitiatedListing-DESIGN.md`
+> - `docs/CLAUDE-FRONTEND-CONTEXT.md`
+> - `CLAUDE.md`
+>
+> This file is kept for historical reference. Do not read it as current design.
+
+---
+
 # BidderContractFactory v0.3 - Complete Architecture Design
 
 **Date**: October 2, 2025  

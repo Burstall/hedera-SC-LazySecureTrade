@@ -66,13 +66,18 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     /// @notice Token-based bid discovery (CLOB efficiency)
     mapping(address => bytes32[]) public tokenToBids;
 
-    /// @notice User's active bids
+    /// @notice User's active bids. Hard-deleted on bid close (swap-pop).
+    ///         Use BidCreated / BidCancelled / BidExecuted / BidExpired
+    ///         event history for closed-bid lookups.
     mapping(address => bytes32[]) public userToBids;
 
-    /// @notice Core bid registry. Soft-deleted: closed bids stay in
-    ///         place with an updated `status` field rather than being
-    ///         removed, so post-mortem queries work for historical
-    ///         bids. See `BidStatus` for the state machine.
+    /// @notice Core bid registry. Hard-deleted on bid close
+    ///         (`delete bidRegistry[bidId]` inside `_closeBid`) — see
+    ///         `BidStatus` for the state machine. The bid lifecycle
+    ///         events (BidCreated / BidCancelled / BidExecuted /
+    ///         BidExpired / ArbitrageExecuted) are the canonical history
+    ///         layer; reading `bidRegistry[bidId]` after close returns
+    ///         a zeroed struct.
     mapping(bytes32 => BidDetails) public bidRegistry;
 
     /// @notice Index of a bid inside `tokenToBids[token]`. Enables
@@ -581,10 +586,10 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
 
     /**
      * @notice Cancel a bid.
-     * @dev Transitions the bid from Active to Cancelled and removes it
-     *      from the discovery indexes via O(1) swap-pop. The registry
-     *      entry itself is retained so post-mortem lookups succeed
-     *      (the entry's `status` field will read Cancelled).
+     * @dev Removes the bid from the discovery indexes via O(1) swap-pop
+     *      and hard-deletes the registry entry. A `BidCancelled` event
+     *      preserves the post-mortem record — reading `bidRegistry[bidId]`
+     *      after cancellation returns a zeroed struct.
      * @param bidId Bid identifier to cancel.
      */
     function cancelBid(bytes32 bidId) external nonReentrant {

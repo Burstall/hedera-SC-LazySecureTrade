@@ -204,7 +204,7 @@ Bids follow an explicit state machine via the `BidStatus` enum:
 | `Executed` | 3 | Matched via `executeAgainstBid` or `executeArbitrage` |
 | `Expired` | 4 | Swept by `cleanupExpiredBids` or marked expired on an execute attempt |
 
-Transitions are one-way: Active → Cancelled, Active → Executed, Active → Expired. Closed bids are soft-deleted (retained in the registry for post-mortem queries) and removed from active discovery indexes via O(1) swap-pop.
+Transitions are one-way: Active → Cancelled, Active → Executed, Active → Expired. Closed bids are **hard-deleted** from `bidRegistry` via `delete bidRegistry[bidId]` inside `_closeBid` — reading the registry after close returns a zeroed struct. The bid lifecycle events (`BidCreated`/`BidCancelled`/`BidExecuted`/`BidExpired`/`ArbitrageExecuted`) are the canonical history layer for off-chain consumers. Active bids are removed from discovery indexes via O(1) swap-pop.
 
 ### Bid Validation
 
