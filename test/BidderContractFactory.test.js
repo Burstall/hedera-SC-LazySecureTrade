@@ -501,7 +501,10 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				.addAddress(nftTokenId.toSolidityAddress())
 				.addUint256(LAZY_COST_FOR_TRADE * 10 ** LAZY_DECIMAL)
 				.addUint256(LAZY_BURN_PERCENT);
-			[lstContractId] = await contractDeployFunction(client, lstJson.bytecode, 6_000_000, lstParams);
+			// LST deploy gas: bumped from 6M to 8M after the Phase 1
+			// beneficial-owner resolver added ~360 bytes — the original
+			// 6M margin no longer covers initcode at the new size.
+			[lstContractId] = await contractDeployFunction(client, lstJson.bytecode, 8_000_000, lstParams);
 			console.log('LST deployed:', lstContractId.toString());
 
 			// Fund LST with HBAR for gas
@@ -551,6 +554,12 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Authorize factory on LST (only needed on first deploy)
 			await contractExecuteFunction(lstContractId, lstIface, client, 200_000, 'authorizeFactory', [bidderFactoryId.toSolidityAddress(), true]);
 			console.log('Factory authorized on LST');
+
+			// Pin BCF on LST for beneficial-owner resolution (Phase 1).
+			// Without this, stash-listed trades fall back to charging the
+			// stash's (zero) LSH tier, which silently breaks Bug 3.
+			await contractExecuteFunction(lstContractId, lstIface, client, 200_000, 'setBcf', [bidderFactoryId.toSolidityAddress()]);
+			console.log('BCF registered on LST for beneficial-owner resolution');
 
 			// Register factory as contract user on LGS (so stash clones can refill)
 			await contractExecuteFunction(lazyGasStationId, lazyGasStationIface, client, 200_000, 'addContractUser', [bidderFactoryId.toSolidityAddress()]);
@@ -1280,7 +1289,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Alice lists cheaply. Assert SUCCESS — when this silently fails
 			// (e.g., reused allowances revoked, depleted LAZY for listing fee),
 			// the trade never exists and executeArbitrage reverts with
-			// ArbitrageTradeInvalid rather than the SelfArbitrageBlocked we're
+			// ArbitrageTradeInvalid rather than the SelfTradeBlocked we're
 			// actually testing for.
 			client.setOperator(aliceId, alicePK);
 			const [rxTrade] = await contractExecuteFunction(lstContractId, lstIface, client, 1_000_000,
@@ -1297,7 +1306,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				['address', 'uint256'], [nftTokenId.toSolidityAddress(), selfArbSerial],
 			);
 
-			// Bob tries to arb his own bid — must revert SelfArbitrageBlocked
+			// Bob tries to arb his own bid — must revert SelfTradeBlocked
 			client.setOperator(bobId, bobPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
@@ -1305,8 +1314,8 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				[selfBidId, selfTradeId, 0],
 				0, true,
 			);
-			expectRevertNamed(result, 'SelfArbitrageBlocked');
-			console.log('Self-arbitrage blocked with SelfArbitrageBlocked');
+			expectRevertNamed(result, 'SelfTradeBlocked');
+			console.log('Self-arbitrage blocked with SelfTradeBlocked');
 			client.setOperator(operatorId, operatorKey);
 		});
 
@@ -1579,7 +1588,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 
 		it('P5.16: arbitrage should be blocked when msg.sender == trade.seller', async function () {
 			// Setup: third party (Carol — needs a stash) bids, Alice lists, Alice
-			// herself tries to arbitrage her own listing → SelfArbitrageBlocked
+			// herself tries to arbitrage her own listing → SelfTradeBlocked
 			// because msg.sender == trade.seller. This is the OTHER self-arb
 			// branch (T7 covered bid.user == trade.seller; here it's the
 			// msg.sender == trade.seller guard).
@@ -1626,13 +1635,13 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
 			);
 
-			// Alice (the seller) tries to arb — SelfArbitrageBlocked
+			// Alice (the seller) tries to arb — SelfTradeBlocked
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeArbitrage', [carolBidId, tradeId, 0], 0, true,
 			);
-			expectRevertNamed(result, 'SelfArbitrageBlocked');
-			console.log('P5.16: SelfArbitrageBlocked fired when msg.sender == trade.seller');
+			expectRevertNamed(result, 'SelfTradeBlocked');
+			console.log('P5.16: SelfTradeBlocked fired when msg.sender == trade.seller');
 			client.setOperator(operatorId, operatorKey);
 		});
 	});
@@ -2358,14 +2367,27 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const ownership = await checkNFTOwnership(env, nftTokenId, p58Serial);
 			expect(ownership?.owner).to.equal(aliceId.toString());
 
-			// HBAR moved alice → stash (minus 2% royalty + LST platform fee
-			// for non-LSH seller). Just sanity-check the delta is positive
-			// and below the gross price.
+			// HBAR moved alice → stash (minus 2% royalty; NO platform fee
+			// because Phase 1 resolves trade.seller (=stash) to its
+			// beneficial owner (=Bob), and Bob holds LSH-mock serials
+			// from P5.10 → Gen1 tier → 0% platform fee).
 			const postStashBalance = await checkMirrorHbarBalance(env, bobStashId);
 			const stashDelta = Number(postStashBalance) - Number(preStashBalance);
 			expect(stashDelta).to.be.greaterThan(0);
 			expect(stashDelta).to.be.lessThan(P58_PRICE);
-			console.log('P5.8b: stash received', stashDelta, 'tinybars from sale (gross', P58_PRICE, ')');
+
+			// Bug 3 (BCF-StashAllowances-DESIGN §"Bug 3") regression:
+			// pre-Phase-1, stash had zero LSH and was charged 1% platform
+			// fee on top of the 2% royalty (~97% net). Post-Phase-1, the
+			// beneficial-owner resolution maps the stash back to Bob
+			// (who holds LSH-mock serials) → Gen1 tier → 0% platform
+			// fee → ~98% net. A 97.5% threshold distinguishes the two.
+			const bug3FeeFreeFloor = Math.floor(P58_PRICE * 0.975);
+			expect(stashDelta).to.be.greaterThanOrEqual(bug3FeeFreeFloor);
+			console.log(
+				'P5.8b: stash received', stashDelta, 'tinybars from sale (gross', P58_PRICE,
+				') — Bug 3 fee-free floor', bug3FeeFreeFloor,
+			);
 		});
 
 		it('P5.8c: BCF.cancelTradeFromStash atomically revokes per-serial approval + cancels on LST', async function () {
@@ -2686,15 +2708,15 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				['address', 'uint256'], [nftTokenId.toSolidityAddress(), freshSerial],
 			);
 
-			// Carol (third party) tries to arb — must revert SelfArbitrageBlocked
+			// Carol (third party) tries to arb — must revert SelfTradeBlocked
 			// because bid.user == trade.seller (Bob bidding on his own listing)
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeArbitrage', [washBidId, washTradeId, 0], 0, true,
 			);
-			expectRevertNamed(result, 'SelfArbitrageBlocked');
-			console.log('T7: Self-arb blocked with SelfArbitrageBlocked (bid.user == trade.seller)');
+			expectRevertNamed(result, 'SelfTradeBlocked');
+			console.log('T7: Self-arb blocked with SelfTradeBlocked (bid.user == trade.seller)');
 			client.setOperator(operatorId, operatorKey);
 		});
 

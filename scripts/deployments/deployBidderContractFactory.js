@@ -23,14 +23,32 @@ async function main() {
 		process.exit(1);
 	}
 
-	// Get required contract addresses from .env
-	const lstContractId = process.env.LST_CONTRACT_ID ? ContractId.fromString(process.env.LST_CONTRACT_ID) : null;
+	// Get required contract addresses from .env.
+	// Canonical names match the rest of the repo (LAZY_*_CONTRACT_ID).
+	// Legacy short-form names (LST_CONTRACT_ID / LGS_CONTRACT_ID / LDR_CONTRACT_ID)
+	// are still accepted as fallbacks with a deprecation notice.
+	function readEnvWithFallback(canonical, legacy, label) {
+		if (process.env[canonical]) {
+			return process.env[canonical];
+		}
+		if (process.env[legacy]) {
+			console.log(`WARN: ${legacy} is deprecated — please rename to ${canonical} in your .env (used for ${label})`);
+			return process.env[legacy];
+		}
+		return null;
+	}
+
+	const lstRaw = readEnvWithFallback('LAZY_SECURE_TRADE_CONTRACT_ID', 'LST_CONTRACT_ID', 'LazySecureTrade');
+	const lgsRaw = readEnvWithFallback('LAZY_GAS_STATION_CONTRACT_ID', 'LGS_CONTRACT_ID', 'LazyGasStation');
+	const ldrRaw = readEnvWithFallback('LAZY_DELEGATE_REGISTRY_CONTRACT_ID', 'LDR_CONTRACT_ID', 'LazyDelegateRegistry');
+
+	const lstContractId = lstRaw ? ContractId.fromString(lstRaw) : null;
 	const lazyTokenId = process.env.LAZY_TOKEN_ID ? TokenId.fromString(process.env.LAZY_TOKEN_ID) : null;
-	const lazyGasStationId = process.env.LGS_CONTRACT_ID ? ContractId.fromString(process.env.LGS_CONTRACT_ID) : null;
-	const lazyDelegateRegistryId = process.env.LDR_CONTRACT_ID ? ContractId.fromString(process.env.LDR_CONTRACT_ID) : null;
+	const lazyGasStationId = lgsRaw ? ContractId.fromString(lgsRaw) : null;
+	const lazyDelegateRegistryId = ldrRaw ? ContractId.fromString(ldrRaw) : null;
 
 	if (!lstContractId || !lazyTokenId || !lazyGasStationId) {
-		console.log('ERROR: Must specify LST_CONTRACT_ID, LAZY_TOKEN_ID, and LGS_CONTRACT_ID in .env file');
+		console.log('ERROR: Must specify LAZY_SECURE_TRADE_CONTRACT_ID, LAZY_TOKEN_ID, and LAZY_GAS_STATION_CONTRACT_ID in .env file');
 		process.exit(1);
 	}
 
@@ -120,6 +138,16 @@ async function main() {
 	console.log('\n📝 Add to your .env file:');
 	console.log(`BIDDER_CONTRACT_IMPL_ID=${bidderContractImplId.toString()}`);
 	console.log(`BIDDER_FACTORY_CONTRACT_ID=${factoryContractId.toString()}`);
+
+	// Post-deploy wiring reminder. These calls must be made by the LST
+	// owner — this script can't make them blindly because LST ownership
+	// may live on a multisig.
+	console.log('\n📝 Post-deploy wiring (LST owner must execute):');
+	console.log(`  LST.authorizeFactory(${factoryContractId.toString()}, true)`);
+	console.log(`  LST.setBcf(${factoryContractId.toString()})  // Phase 1: enables beneficial-owner resolution`);
+	console.log(`  LazyGasStation.addContractUser(${factoryContractId.toString()})`);
+	console.log('\nWithout setBcf, stash-listed trades silently fall back to');
+	console.log('charging the stash\'s zero LSH tier (Bug 3). Don\'t skip it.');
 
 	await client.close();
 	process.exit(0);

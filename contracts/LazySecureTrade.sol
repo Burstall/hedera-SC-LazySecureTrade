@@ -19,6 +19,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 
 import {TokenStakerV2} from "./TokenStakerV2.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
+import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
 
 contract LazySecureTrade is
     Ownable,
@@ -134,6 +135,17 @@ contract LazySecureTrade is
     // v0.3 Factory Authorization Events
     event FactoryAuthorized(address indexed factory, bool authorized);
 
+    /// @notice Emitted when the canonical BidderContractFactory pointer
+    ///         used for beneficial-owner resolution is updated.
+    /// @dev    LST queries `bcf.stashOwnerOf(seller)` in
+    ///         `_resolveBeneficialOwner` to map a stash address back to
+    ///         its human owner for fee tier, self-trade gating, and
+    ///         volume accounting. Owner-settable so the LST can migrate
+    ///         to a BCF v2 without redeploying LST. Set to address(0)
+    ///         to opt out of beneficial-owner resolution (LST behaves
+    ///         as if every seller is its own beneficial owner).
+    event BcfRegistered(address indexed oldBcf, address indexed newBcf);
+
     error TradeNotFoundOrInvalid();
     error TradeExpired();
     error UserDoesNotOwnOrHasNotApprovedNFT(address token, uint256 serial);
@@ -167,6 +179,16 @@ contract LazySecureTrade is
 
     // v0.3 BidderContractFactory Integration
     mapping(address => bool) public authorizedFactories;
+
+    /// @notice Canonical BidderContractFactory used for beneficial-owner
+    ///         resolution (stash → human). Owner-settable; `address(0)`
+    ///         disables resolution. See `_resolveBeneficialOwner` and
+    ///         `setBcf`.
+    /// @dev    Only ONE BCF is canonical at a time even though
+    ///         `authorizedFactories` allows multiple. The pin-to-one
+    ///         design avoids ambiguous resolution if a stash address
+    ///         ever collides across factory generations.
+    IBidderContractFactory public bcf;
 
     EnumerableSet.AddressSet private tokens;
 
@@ -1103,11 +1125,15 @@ contract LazySecureTrade is
         // not batch validation due to sub call constraints
         // leave the network to revert if something is wrong
 
-        // Calculate seller fee rate once for batch efficiency
+        // Calculate seller fee rate once for batch efficiency.
+        // Resolve beneficial owner first so stash-listed batch trades
+        // (future surface) get the human's LSH tier, not the stash's
+        // zero tier. See _resolveBeneficialOwner / Bug 3.
         uint256 sellerFeeRate;
         if (batchTrade.buyer == address(0)) {
-            // Open market trade - calculate fee rate based on seller's LSH ownership
-            sellerFeeRate = calculateSellerFeeRate(batchTrade.seller);
+            sellerFeeRate = calculateSellerFeeRate(
+                _resolveBeneficialOwner(batchTrade.seller)
+            );
         } else {
             // Private trade - no fees apply
             sellerFeeRate = 0;
@@ -1352,6 +1378,62 @@ contract LazySecureTrade is
         emit FactoryAuthorized(_factory, _authorized);
     }
 
+    /**
+     * @notice Pin the canonical BidderContractFactory used for
+     *         beneficial-owner resolution (stash → human).
+     * @dev    `authorizedFactories` allows multiple factories to create
+     *         trades on behalf of users; this setter pins exactly ONE
+     *         of them as the resolution source so a stash address is
+     *         never resolved against an outdated factory. Pass
+     *         `address(0)` to opt out (LST behaves as if every seller
+     *         is its own beneficial owner — useful for emergencies or
+     *         pre-BCF deploys).
+     *
+     *         Owner-settable rather than immutable so the LST can
+     *         migrate to a BCF v2 (or fall back) without redeploy.
+     *         Does NOT cascade to `authorizedFactories` — call
+     *         `authorizeFactory` separately if access also changes.
+     * @param _bcf Address of the canonical BidderContractFactory.
+     */
+    function setBcf(address _bcf) external onlyOwner {
+        address old = address(bcf);
+        bcf = IBidderContractFactory(_bcf);
+        emit BcfRegistered(old, _bcf);
+    }
+
+    /**
+     * @notice Resolve a seller/buyer address to its beneficial owner.
+     * @dev    The canonical "is this a registered stash?" lookup. If
+     *         `addr` is a registered stash (per `bcf.stashOwnerOf`),
+     *         returns the human owner. Otherwise returns `addr`
+     *         unchanged. Used to make stash-listed trades
+     *         indistinguishable from EOA-listed trades at the
+     *         beneficial-owner layer:
+     *           - LSH fee tier resolution (Bug 3 fix — see
+     *             docs/BCF-StashAllowances-DESIGN.md)
+     *           - Self-trade gating in `_executeTrade`
+     *           - Future: per-user analytics outside the global
+     *             volume counters
+     *
+     *         Wrapped in try/catch so an LDR-style buggy/replaced BCF
+     *         doesn't brick trade execution — degraded fallback is
+     *         "no stash registered" (no resolution applied), which is
+     *         the safest default.
+     * @param addr Address to resolve.
+     * @return The beneficial owner (a human EOA), or `addr` if it is
+     *          not a registered stash.
+     */
+    function _resolveBeneficialOwner(
+        address addr
+    ) internal view returns (address) {
+        if (address(bcf) == address(0)) return addr;
+        try bcf.stashOwnerOf(addr) returns (address owner) {
+            return owner == address(0) ? addr : owner;
+        } catch {
+            return addr;
+        }
+    }
+
     /***
      * @notice Calculate the cost in $LAZY for creating a batch trade based on item count
      * @param _itemCount Number of items in the batch
@@ -1516,8 +1598,13 @@ contract LazySecureTrade is
             revert TradeNotFoundOrInvalid();
         }
 
-        // Ensure msg.sender is not the seller
-        if (msg.sender == trade.seller) {
+        // Ensure msg.sender is not the seller (or the seller's beneficial
+        // owner — blocks the cross-vector self-trade where Alice lists
+        // via EOA then "buys" via her stash, or vice versa).
+        if (
+            _resolveBeneficialOwner(msg.sender) ==
+            _resolveBeneficialOwner(trade.seller)
+        ) {
             revert SellerCannotBeBuyer();
         }
 
@@ -1530,13 +1617,19 @@ contract LazySecureTrade is
             revert InsufficientPayment();
         }
 
-        // Calculate platform fee rate for seller
+        // Calculate platform fee rate for seller. Resolve beneficial
+        // owner first so stash-listed trades get the human's LSH tier
+        // (Bug 3 fix from docs/BCF-StashAllowances-DESIGN.md — without
+        // this, a Gen1 holder using their stash silently gets charged
+        // the 1% base rate instead of 0%).
         uint256 sellerFeeRate;
         if (trade.buyer != address(0)) {
             // Private trade - no fees apply
             sellerFeeRate = 0;
         } else {
-            sellerFeeRate = calculateSellerFeeRate(trade.seller);
+            sellerFeeRate = calculateSellerFeeRate(
+                _resolveBeneficialOwner(trade.seller)
+            );
         }
 
         // Setup return value as original price as HBAR used for refund calculation

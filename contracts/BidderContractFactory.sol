@@ -326,10 +326,18 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///         is less than the caller's minProfit parameter.
     error ArbitrageProfitInsufficient();
 
-    /// @notice The arbitrage call would trigger a wash trade or
-    ///         self-arbitrage — the caller is either the bidder or the
-    ///         seller, or the bidder and seller are the same address.
-    error SelfArbitrageBlocked();
+    /// @notice The execution call would trigger a wash trade — the
+    ///         caller (resolved to beneficial owner) is either the
+    ///         bidder or the trade seller, OR the bidder and trade
+    ///         seller are the same beneficial owner.
+    /// @dev    Renamed from `SelfArbitrageBlocked` in the Phase 1
+    ///         beneficial-owner unification — the gate now covers
+    ///         `executeAgainstBid` (seller-initiated) as well as
+    ///         `executeArbitrage`, and resolves both sides via
+    ///         `_resolveBeneficialOwner` so cross-vector self-trade
+    ///         (Alice via EOA matching Alice via stash) is blocked
+    ///         identically to direct self-trade.
+    error SelfTradeBlocked();
 
     /// @notice The bid registry snapshot for `bidId` drifted between
     ///         the pre-call and post-call checks — likely a
@@ -996,6 +1004,24 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     // ============================================
 
     /**
+     * @notice Resolve an address to its beneficial owner — if it's a
+     *         registered stash, return the human owner; otherwise
+     *         return the address unchanged.
+     * @dev    BCF-internal version of LST's `_resolveBeneficialOwner`.
+     *         Reads `stashOwnerOf` directly (no cross-contract call)
+     *         so the cost is one SLOAD. Used to gate self-trade /
+     *         self-arbitrage attempts across the EOA-vs-stash boundary.
+     * @param addr Address to resolve.
+     * @return The beneficial owner, or `addr` if not a registered stash.
+     */
+    function _resolveBeneficialOwner(
+        address addr
+    ) internal view returns (address) {
+        address owner = stashOwnerOf[addr];
+        return owner != address(0) ? owner : addr;
+    }
+
+    /**
      * @notice Shared validation for bid execution paths. Checks that the
      *         bid exists, is Active, has not expired, and that the stash
      *         holds sufficient HBAR. Expired bids are swept (hard-deleted
@@ -1278,6 +1304,28 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert InvalidBidDetails();
         }
 
+        // Self-trade gate: caller (resolved to beneficial owner) must
+        // not match the bidder's beneficial owner. Without this, a user
+        // could create a bid in their stash, then call executeAgainstBid
+        // with their own NFT to wash-trade volume. Mirrors the
+        // three-way guard in `executeArbitrage`.
+        if (
+            _resolveBeneficialOwner(msg.sender) ==
+            _resolveBeneficialOwner(bid.user)
+        ) {
+            revert SelfTradeBlocked();
+        }
+
+        // Honor the bidder's price floor. The bid amount IS the trade
+        // price on this path (no spread), so `minAcceptablePrice` is
+        // satisfied only when `hbarAmount >= minAcceptablePrice` —
+        // which `createBid` already enforces. Re-check defensively so
+        // a future relaxation of `createBid` validation can't slip a
+        // sub-floor bid through this entry point. See Bug 5 / Phase 1.
+        if (bid.hbarAmount < bid.minAcceptablePrice) {
+            revert ArbitrageProfitInsufficient();
+        }
+
         // Create trade in LazySecureTrade on behalf of seller
         // Buyer is the BidderContract address
         tradeId = LAZY_SECURE_TRADE.createTradeOnBehalf(
@@ -1386,13 +1434,20 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert ArbitrageTradeInvalid();
         }
 
-        // Self-arb / wash-trade guard
+        // Self-arb / wash-trade guard. Resolve all three legs to their
+        // beneficial owners so the EOA-vs-stash boundary doesn't open
+        // a backdoor (e.g., Alice bids via her stash, lists via her
+        // EOA, then "arbs" via a second EOA she controls — but the
+        // chain only sees three distinct addresses for the same human).
+        address arbOwner = _resolveBeneficialOwner(msg.sender);
+        address bidOwner = _resolveBeneficialOwner(bid.user);
+        address sellerOwner = _resolveBeneficialOwner(trade.seller);
         if (
-            msg.sender == bid.user ||
-            msg.sender == trade.seller ||
-            bid.user == trade.seller
+            arbOwner == bidOwner ||
+            arbOwner == sellerOwner ||
+            bidOwner == sellerOwner
         ) {
-            revert SelfArbitrageBlocked();
+            revert SelfTradeBlocked();
         }
 
         // Bid must fully cover the trade price AND respect the bidder's

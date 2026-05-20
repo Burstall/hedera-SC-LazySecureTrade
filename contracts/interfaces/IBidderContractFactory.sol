@@ -111,4 +111,25 @@ interface IBidderContractFactory {
      * @param tradeId Trade identifier on LST.
      */
     function cancelTradeFromStash(bytes32 tradeId) external;
+
+    /**
+     * @notice Reverse lookup: stash address → human owner address.
+     * @dev    Populated atomically inside `_deployStashFor` and never
+     *         re-written, so this mapping is the canonical source of
+     *         truth for "which human controls this stash." Returns
+     *         `address(0)` for any address that is not a registered
+     *         stash — callers should treat that as "not a stash, the
+     *         input address IS the beneficial owner."
+     *
+     *         Consumed by `LazySecureTrade._resolveBeneficialOwner` so
+     *         stash-listed trades resolve to the human owner for fee
+     *         tier, self-trade gating, volume accounting, and listing
+     *         cost — making stash-listed and EOA-listed trades
+     *         indistinguishable at the beneficial-owner layer.
+     *         See docs/BCF-StashAllowances-DESIGN.md §"Bug 3".
+     * @param stash Candidate stash address to resolve.
+     * @return owner Human owner, or `address(0)` if `stash` is not a
+     *               registered stash.
+     */
+    function stashOwnerOf(address stash) external view returns (address owner);
 }
