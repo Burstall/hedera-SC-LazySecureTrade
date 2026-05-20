@@ -52,10 +52,15 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         cannot be added to a deployed impl; they must come from
     ///         this reserved gap.
     ///
-    ///         Append new fields by decrementing `__gap` length and
-    ///         declaring the field BEFORE the gap. Never reorder existing
-    ///         fields and never delete from this gap — it's the only
-    ///         path to extending stash storage post-mainnet.
+    ///         To add a new field: (1) declare it IMMEDIATELY BEFORE the
+    ///         `__gap` line below, AND (2) decrement the gap length by
+    ///         the number of slots the new field consumes (1 for a value
+    ///         type / mapping pointer; longer for static arrays). The
+    ///         new field thus occupies the slot the gap used to start
+    ///         from, preserving every existing slot index. Never reorder
+    ///         existing fields, never delete from the gap, and never
+    ///         insert above an existing field — only the slot range
+    ///         currently inside `__gap` is safe to consume.
     ///
     ///         Sized at 20 slots — enough for agent envelope mappings
     ///         (planned in docs/AGENT-MARKETPLACE-DELTA.md) plus a

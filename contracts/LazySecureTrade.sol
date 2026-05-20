@@ -220,6 +220,11 @@ contract LazySecureTrade is
     /// @notice Total HBAR fees collected by the platform (LAZY trades are fee-free)
     uint256 public totalHbarFeesCollected;
 
+    /// @notice Basis-points denominator (100% = 10_000 bp). Mirrors the
+    ///         constant declared in BidderContractFactory + BidderContract
+    ///         so all fee math in the system reads in named units.
+    uint256 internal constant MAX_BPS = 10_000;
+
     // Lifetime volume tracking for analytics
     /// @notice Total HBAR volume processed through all trades
     uint256 public lifetimeHbarVolume; // Total HBAR volume processed
@@ -1502,7 +1507,7 @@ contract LazySecureTrade is
                 // No fees for LSH Gen1/Gen2/Mutant trades - full amount goes to seller
                 netAmountToSeller = tinybarPrice;
             } else if (sellerFeeRate > 0) {
-                uint256 hbarFee = (tinybarPrice * sellerFeeRate) / 10000;
+                uint256 hbarFee = (tinybarPrice * sellerFeeRate) / MAX_BPS;
                 netAmountToSeller = tinybarPrice - hbarFee;
 
                 // Track collected fees (fees stay in contract)

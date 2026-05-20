@@ -252,10 +252,9 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
 
     // ===== Arbitrage events =====
 
-    /// @notice Emitted on a successful arbitrage. The arbitrageur's cut
-    ///         accrues to `pendingArbProfit[arbitrageur]`; the protocol's
-    ///         share accrues to `pendingProtocolProfit`.
-    /// @notice Emitted on a successful arbitrage match.
+    /// @notice Emitted on a successful arbitrage match. The arbitrageur's
+    ///         cut accrues to `pendingArbProfit[arbitrageur]`; the
+    ///         protocol's share accrues to `pendingProtocolProfit`.
     /// @dev    Carries full bid metadata for cold-start indexer recovery
     ///         (bids are hard-deleted on close). `agentKey` +
     ///         `agentReasoningTopicId` are reserved for the agent

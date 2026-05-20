@@ -2318,26 +2318,23 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const ownership = await checkNFTOwnership(env, nftTokenId, p58Serial);
 			expect(ownership?.owner).to.equal(aliceId.toString());
 
-			// HBAR moved alice → stash (minus 2% royalty; NO platform fee
-			// because Phase 1 resolves trade.seller (=stash) to its
-			// beneficial owner (=Bob), and Bob holds LSH-mock serials
-			// from P5.10 → Gen1 tier → 0% platform fee).
+			// HBAR moved alice → stash (minus 2% royalty; platform fee
+			// also skipped because in THIS test environment the NFT
+			// collection is mocked as `LSH_GEN1` — LST.sol:1497-1503
+			// skips platform fees on item-is-LSH trades BEFORE the
+			// seller-tier resolution even runs. So this assertion only
+			// proves end-to-end flow, NOT the Phase 1 Bug 3 fix.
+			//
+			// The genuine Bug 3 regression test (non-LSH collection,
+			// stash-listed, beneficial owner has Gen1 → fee tier 0%
+			// applied via _resolveBeneficialOwner) is P5.8h (Phase 5).
 			const postStashBalance = await checkMirrorHbarBalance(env, bobStashId);
 			const stashDelta = Number(postStashBalance) - Number(preStashBalance);
 			expect(stashDelta).to.be.greaterThan(0);
 			expect(stashDelta).to.be.lessThan(P58_PRICE);
-
-			// Bug 3 (BCF-StashAllowances-DESIGN §"Bug 3") regression:
-			// pre-Phase-1, stash had zero LSH and was charged 1% platform
-			// fee on top of the 2% royalty (~97% net). Post-Phase-1, the
-			// beneficial-owner resolution maps the stash back to Bob
-			// (who holds LSH-mock serials) → Gen1 tier → 0% platform
-			// fee → ~98% net. A 97.5% threshold distinguishes the two.
-			const bug3FeeFreeFloor = Math.floor(P58_PRICE * 0.975);
-			expect(stashDelta).to.be.greaterThanOrEqual(bug3FeeFreeFloor);
 			console.log(
-				'P5.8b: stash received', stashDelta, 'tinybars from sale (gross', P58_PRICE,
-				') — Bug 3 fee-free floor', bug3FeeFreeFloor,
+				'P5.8b: stash received', stashDelta, 'tinybars (gross',
+				P58_PRICE, ') — end-to-end stash listing flow OK',
 			);
 		});
 

@@ -502,7 +502,7 @@ The 1-tinybar value in NFT transfers is `CUSTODY_HOP_TINYBAR` -- an internal cus
 | `InvalidAddress()` | `0x...` | Zero address passed to deploy/withdraw functions |
 | `ArbitrageTradeInvalid()` | `0x...` | Trade does not exist, is not open-market, wrong token, or serial mismatch |
 | `ArbitrageProfitInsufficient()` | `0x...` | Spread < minProfit, bid < trade price, or trade price < minAcceptablePrice |
-| `SelfArbitrageBlocked()` | `0x...` | Caller is bidder/seller or bidder == seller |
+| `SelfTradeBlocked()` | `0x...` | Caller, bidder, or seller resolve to the same beneficial owner (covers both same-vector and cross-vector EOA-vs-stash) |
 | `RegistryDriftDetected()` | `0x...` | Bid registry entry changed during execution (reentrancy) |
 | `InvalidBps()` | `0x...` | newBps > 10000 |
 | `NoPendingBpsChange()` | `0x...` | executeArbPayoutBpsChange with no pending change |
