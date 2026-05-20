@@ -2,10 +2,10 @@
 pragma solidity >=0.8.12 <0.9.0;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {TokenStakerV2} from "./TokenStakerV2.sol";
-import {HederaTokenService} from "./HederaTokenService.sol";
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
@@ -390,7 +390,13 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      *          for the atomic revoke-on-cancel path in `cancelLstTrade`.
      *      See docs/BCF-StashAllowances-DESIGN.md §Security #1.
      *
-     *      To revoke, pass `spender = address(0)` (HIP-336 idiom).
+     *      To revoke, pass `spender = address(0)` (ERC-721 / HIP-336 idiom).
+     *
+     *      Routed through the IERC721 facade at the token's own address
+     *      rather than the HTS precompile at 0x167 — Hedera testnet's
+     *      precompile path reverts with no data when a contract is the
+     *      NFT owner (empirically confirmed in P5.8-probe), while the
+     *      ERC-721 facade works for both EOA and contract owners.
      */
     function approveNFTTo(
         address token,
@@ -398,8 +404,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 serial
     ) public onlyOwner {
         if (token == address(0)) revert InvalidAddress();
-        int256 rc = HederaTokenService.approveNFT(token, spender, serial);
-        if (rc != HederaResponseCodes.SUCCESS) revert NFTAllowanceFailed(rc);
+        IERC721(token).approve(spender, serial);
     }
 
     /**
@@ -927,17 +932,14 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         ).getTrade(tradeId);
         if (trade.seller == address(0)) revert TradeNotFoundOrInvalid();
 
-        // Revoke the per-serial approval to LST. HIP-336 idiom: spender
-        // = address(0) revokes.
-        int256 rc = HederaTokenService.approveNFT(
-            trade.token,
-            address(0),
-            trade.serial
-        );
-        if (rc != HederaResponseCodes.SUCCESS) revert NFTAllowanceFailed(rc);
+        // Revoke the per-serial approval to LST via the IERC721 facade
+        // (same reasoning as approveNFTTo — HTS precompile reverts for
+        // contract owners on testnet). spender = address(0) is the
+        // standard ERC-721 revocation idiom.
+        IERC721(trade.token).approve(address(0), trade.serial);
 
         // LST's `msg.sender == seller` check rejects if this stash isn't
-        // the seller — the whole tx (including the approveNFT above)
+        // the seller — the whole tx (including the approve above)
         // reverts. So we don't need an explicit sanity check here.
         ILazySecureTrade(lazySecureTradeAddress).cancelTrade(tradeId);
     }
