@@ -157,6 +157,13 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         see a uniform shape.
     error TradeNotFoundOrInvalid();
 
+    /// @notice The trade resolved from `LST.getTrade(tradeId)` has a
+    ///         seller other than this stash. Closes the spoof vector
+    ///         where a compromised factory could pass a foreign
+    ///         `tradeId` to revoke this stash's approval for an
+    ///         unrelated serial. See `cancelLstTrade`.
+    error NotMyTrade();
+
     // ============================================
     // Modifiers
     // ============================================
@@ -940,9 +947,12 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      *      mismatched cancellation. Costs 1 extra view subcall; closes
      *      the spoof vector cleanly. See design doc §Security #1.
      *
-     *      Approval revoke runs FIRST. If `LST.cancelTrade` reverts (e.g.,
-     *      the trade was executed in a racing tx), the whole tx reverts
-     *      and the approval state is restored — atomicity preserved.
+     *      Order: explicit `seller == address(this)` guard first, then
+     *      LST.cancelTrade, then approval revoke. EVM atomicity makes
+     *      this ordering academic (any revert rolls back the whole tx),
+     *      but it removes the dependence on LST's seller-check for
+     *      correctness — the guard here closes the foreign-tradeId
+     *      spoof vector even if LST is ever compromised. Phase 2.
      */
     function cancelLstTrade(
         bytes32 tradeId
@@ -952,16 +962,26 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         ).getTrade(tradeId);
         if (trade.seller == address(0)) revert TradeNotFoundOrInvalid();
 
-        // Revoke the per-serial approval to LST via the IERC721 facade
-        // (same reasoning as approveNFTTo — HTS precompile reverts for
-        // contract owners on testnet). spender = address(0) is the
-        // standard ERC-721 revocation idiom.
-        IERC721(trade.token).approve(address(0), trade.serial);
+        // Spoof-vector guard: a compromised factory could otherwise
+        // pass a foreign tradeId (where trade.seller is a *different*
+        // stash's address) to make this stash revoke approval for a
+        // serial it still has listed elsewhere. Reject before doing
+        // anything else.
+        if (trade.seller != address(this)) revert NotMyTrade();
 
-        // LST's `msg.sender == seller` check rejects if this stash isn't
-        // the seller — the whole tx (including the approve above)
-        // reverts. So we don't need an explicit sanity check here.
+        // Cancel on LST first. If LST reverts for any other reason
+        // (e.g., the trade was executed in a racing tx), the whole
+        // tx unwinds before we touch the approval. Defensive ordering
+        // — atomicity would unwind anyway, but cancel-first matches
+        // the mental model "revoke approval AFTER the listing is
+        // gone, not before."
         ILazySecureTrade(lazySecureTradeAddress).cancelTrade(tradeId);
+
+        // Revoke the per-serial approval via the IERC721 facade (HTS
+        // precompile reverts for contract owners on testnet — see
+        // approveNFTTo). spender = address(0) is the standard ERC-721
+        // revocation idiom.
+        IERC721(trade.token).approve(address(0), trade.serial);
     }
 
     // ============================================

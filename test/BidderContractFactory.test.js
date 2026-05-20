@@ -2546,6 +2546,56 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			expectRevertNamed(result, 'TradeNotFoundOrInvalid');
 			client.setOperator(operatorId, operatorKey);
 		});
+
+		it('P5.8g: stash.cancelLstTrade with a foreign tradeId rejected with NotMyTrade', async function () {
+			// Phase 2 spoof-vector guard: a compromised factory could
+			// otherwise pass a tradeId whose `trade.seller` is a
+			// different stash, causing this stash to revoke approval
+			// for a serial it has listed elsewhere. The owner-direct
+			// path is tested here (no BCF involvement) — Bob owns his
+			// stash and calls `cancelLstTrade` directly with Alice's
+			// EOA-listed tradeId. Must revert NotMyTrade because
+			// trade.seller == Alice ≠ Bob's stash.
+
+			// Alice lists directly via LST (her tradeId has seller=Alice)
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, aliceId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(aliceId, alicePK);
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
+					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
+				],
+			);
+			await sleep(MIRROR_DELAY);
+
+			const aliceTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			// Bob calls his OWN stash with Alice's tradeId. The stash
+			// is `onlyOwnerOrFactory` so Bob (owner) gets past the
+			// modifier — the NotMyTrade guard inside is what must fire.
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'cancelLstTrade', [aliceTradeId], 0, true,
+			);
+			expectRevertNamed(result, 'NotMyTrade');
+			client.setOperator(operatorId, operatorKey);
+
+			// Cleanup: alice cancels via LST directly
+			client.setOperator(aliceId, alicePK);
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 500_000,
+				'cancelTrade', [aliceTradeId],
+			);
+			client.setOperator(operatorId, operatorKey);
+		});
 	});
 
 	// ============================================
