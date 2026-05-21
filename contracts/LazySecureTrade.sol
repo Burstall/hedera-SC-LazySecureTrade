@@ -146,6 +146,14 @@ contract LazySecureTrade is
     ///         as if every seller is its own beneficial owner).
     event BcfRegistered(address indexed oldBcf, address indexed newBcf);
 
+    /// @notice Emitted when the owner proposes a BCF change. The
+    ///         change applies after `eta` via `executeBcfChange`.
+    event BcfChangePending(address indexed newBcf, uint256 eta);
+
+    /// @notice Emitted when the owner cancels a pending BCF change
+    ///         (e.g., legitimate response to a compromised proposal).
+    event BcfChangeCancelled(address indexed cancelledBcf);
+
     error TradeNotFoundOrInvalid();
     error TradeExpired();
     error UserDoesNotOwnOrHasNotApprovedNFT(address token, uint256 serial);
@@ -164,6 +172,10 @@ contract LazySecureTrade is
 
     // v0.3 Factory Authorization Errors
     error UnauthorizedFactory();
+
+    // v0.3 BCF rotation timelock errors
+    error NoPendingBcfChange();
+    error TimelockNotElapsed();
 
     // General Batch Errors
     error InvalidBatchParameters(); // Consolidated: ArrayLengthMismatch, EmptyBatchNotAllowed
@@ -189,6 +201,24 @@ contract LazySecureTrade is
     ///         design avoids ambiguous resolution if a stash address
     ///         ever collides across factory generations.
     IBidderContractFactory public bcf;
+
+    /// @notice Proposed BCF address awaiting timelock expiry. Zero
+    ///         when no change is pending. Use `setBcf` to propose,
+    ///         `executeBcfChange` after the ETA to apply, or
+    ///         `cancelBcfChange` (owner-only) to abandon.
+    address public pendingBcf;
+
+    /// @notice Unix timestamp after which a pending BCF change becomes
+    ///         applicable. Zero when no change is pending.
+    uint256 public pendingBcfEta;
+
+    /// @notice Timelock window for BCF rotation. Mirrors the BCF's own
+    ///         `ARB_PAYOUT_TIMELOCK = 48h` pattern. Long enough that a
+    ///         briefly-compromised owner key can't silently re-point
+    ///         beneficial-owner resolution to a malicious BCF —
+    ///         legitimate owners have 48 hours to call
+    ///         `cancelBcfChange` or escalate.
+    uint256 internal constant BCF_CHANGE_TIMELOCK = 48 hours;
 
     EnumerableSet.AddressSet private tokens;
 
@@ -1384,26 +1414,76 @@ contract LazySecureTrade is
     }
 
     /**
-     * @notice Pin the canonical BidderContractFactory used for
+     * @notice Set or propose-rotation of the canonical BCF used for
      *         beneficial-owner resolution (stash → human).
-     * @dev    `authorizedFactories` allows multiple factories to create
-     *         trades on behalf of users; this setter pins exactly ONE
-     *         of them as the resolution source so a stash address is
-     *         never resolved against an outdated factory. Pass
-     *         `address(0)` to opt out (LST behaves as if every seller
-     *         is its own beneficial owner — useful for emergencies or
-     *         pre-BCF deploys).
+     * @dev    Two-mode setter:
+     *           - **Initial wire-up** (`bcf == address(0)`): applies
+     *             immediately. No stashes can yet depend on the
+     *             resolver, and the deploy scaffold needs an
+     *             un-timelocked path to plug BCF into a freshly-
+     *             deployed LST. Emits `BcfRegistered(0, _bcf)`.
+     *           - **Rotation** (`bcf != address(0)`): queues the
+     *             change with a 48h timelock; apply via
+     *             `executeBcfChange` once the ETA is reached. Emits
+     *             `BcfChangePending(_bcf, eta)`. A briefly-compromised
+     *             owner cannot silently re-point the resolver to a
+     *             malicious BCF — legitimate owners can call
+     *             `cancelBcfChange` within the window.
      *
-     *         Owner-settable rather than immutable so the LST can
-     *         migrate to a BCF v2 (or fall back) without redeploy.
-     *         Does NOT cascade to `authorizedFactories` — call
-     *         `authorizeFactory` separately if access also changes.
-     * @param _bcf Address of the canonical BidderContractFactory.
+     *         Calling again during a pending change overwrites the
+     *         pending value and resets the ETA (mirrors the BCF's own
+     *         `setArbitragePayoutBps` behavior).
+     *
+     *         `authorizedFactories` is separate; call `authorizeFactory`
+     *         to grant/revoke trade-creation access independently.
+     * @param _bcf Proposed BCF address. Pass `address(0)` to disable
+     *              resolution (during rotation, this still queues —
+     *              there is no instant-wipe path).
      */
     function setBcf(address _bcf) external onlyOwner {
+        if (address(bcf) == address(0)) {
+            // Initial wire-up: no timelock needed (no stashes rely on
+            // resolution yet, and deploy needs to plug this in).
+            bcf = IBidderContractFactory(_bcf);
+            emit BcfRegistered(address(0), _bcf);
+        } else {
+            // Rotation: timelocked. Overwrites any previously pending
+            // change and resets ETA.
+            pendingBcf = _bcf;
+            pendingBcfEta = block.timestamp + BCF_CHANGE_TIMELOCK;
+            emit BcfChangePending(_bcf, pendingBcfEta);
+        }
+    }
+
+    /**
+     * @notice Apply a pending BCF change once the timelock has elapsed.
+     * @dev    Permissionless after ETA — avoids requiring the owner to
+     *         be live at the exact moment of expiry. Same shape as
+     *         `BidderContractFactory.executeArbPayoutBpsChange`.
+     */
+    function executeBcfChange() external {
+        if (pendingBcfEta == 0) revert NoPendingBcfChange();
+        if (block.timestamp < pendingBcfEta) revert TimelockNotElapsed();
         address old = address(bcf);
-        bcf = IBidderContractFactory(_bcf);
-        emit BcfRegistered(old, _bcf);
+        address newBcf = pendingBcf;
+        bcf = IBidderContractFactory(newBcf);
+        pendingBcf = address(0);
+        pendingBcfEta = 0;
+        emit BcfRegistered(old, newBcf);
+    }
+
+    /**
+     * @notice Abandon a pending BCF change without queuing a counter-
+     *         change. Owner-only — used when a legitimate owner regains
+     *         control after a compromised proposal and wants to clear
+     *         it immediately rather than wait for the timelock.
+     */
+    function cancelBcfChange() external onlyOwner {
+        if (pendingBcfEta == 0) revert NoPendingBcfChange();
+        address cancelled = pendingBcf;
+        pendingBcf = address(0);
+        pendingBcfEta = 0;
+        emit BcfChangeCancelled(cancelled);
     }
 
     /**

@@ -2786,6 +2786,238 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
+	// Phase 5 — Beneficial-owner resolver + governance + cross-vector
+	// ============================================
+	// Validates the Phase 1 gates and the Phase 5 setBcf timelock.
+	// Note on test ordering: these run LAST (before Clean-up) because
+	// several depend on Bob already holding LSH-mock serials (set up
+	// in P5.10) and on the BCF having stash registrations (set up by
+	// earlier P5 tests).
+	describe('Phase 5 — resolver + governance + cross-vector', function () {
+
+		// --- Bug 3 direct: calculateSellerFeeRate(stash) resolves
+		// to the human owner's tier, not the stash's zero tier.
+		it('P5.19: calculateSellerFeeRate(stashAddress) returns human owner\'s tier (Bug 3 direct)', async function () {
+			// Bob holds LSH-mock serials from P5.10 → Gen1 tier → fee = 0.
+			// Pre-Phase-1: calculateSellerFeeRate(bobStash) returns base
+			// rate (100 = 1%, because stash holds zero LSH). Post-Phase-1:
+			// resolver maps bobStash → Bob → Gen1 tier → returns 0.
+			const result = await mirrorQuery(
+				lstContractId, lstIface, 'calculateSellerFeeRate',
+				[bobStashAddress],
+			);
+			expect(Number(result[0])).to.equal(0);
+			console.log('P5.19: calculateSellerFeeRate(bobStash) =', Number(result[0]), '(0 = Gen1 discount, resolver hit)');
+		});
+
+		// --- Cross-vector SellerCannotBeBuyer on LST.
+		// Bob lists via stash → trade.seller = stash. Bob (EOA) tries
+		// executeTrade → msg.sender = Bob EOA. Without Phase 1
+		// resolution, stash != Bob and the trade would succeed (Bob
+		// "buys" his own NFT, washing volume + collecting protocol fees
+		// from his own pocket). Phase 1 resolves both sides to Bob.
+		it('P5.20: cross-vector SellerCannotBeBuyer (Bob stash lists, Bob EOA executes) blocked', async function () {
+			// Fresh serial → stash → list at 1 HBAR via stash
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 5_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					ser,
+					Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
+					0, 0,
+					ethers.ZeroHash,
+				],
+			);
+			await sleep(MIRROR_DELAY);
+
+			const xvecTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			// Bob (EOA) tries to executeTrade against own stash's listing.
+			// Must revert SellerCannotBeBuyer because resolved beneficial
+			// owners match.
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 1_500_000,
+				'executeTrade', [xvecTradeId], 1, true,
+			);
+			expectRevertNamed(result, 'SellerCannotBeBuyer', [lstIface]);
+			console.log('P5.20: cross-vector wash-buy blocked with SellerCannotBeBuyer');
+
+			// Cleanup: Bob (via stash) cancels the listing so other tests
+			// don't see a stale trade on this serial.
+			await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'cancelTradeFromStash', [xvecTradeId],
+			);
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		// --- Cross-vector SelfTradeBlocked on BCF.executeArbitrage.
+		// Bob bids via stash AND lists via stash. Carol arbs the spread.
+		// bid.user = Bob, trade.seller = Bob's stash. Resolves to Bob
+		// on both sides → SelfTradeBlocked. (Pre-Phase-1: bid.user ≠
+		// trade.seller, would have passed the 3-way self-arb gate.)
+		it('P5.21: cross-vector SelfTradeBlocked on executeArbitrage (Bob both bidder + stash-seller)', async function () {
+			// Bob bids 5 HBAR via stash
+			client.setOperator(bobId, bobPK);
+			const bidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 500_000,
+				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+			);
+			await sleep(MIRROR_DELAY);
+			const bobBids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
+			const xvecBidId = bobBids[0][bobBids[0].length - 1];
+
+			// Bob lists 1 HBAR ask via stash (spread of 4 HBAR).
+			// mintFreshSerial + sendNFT require operator credentials, so
+			// swap the client back before provisioning the NFT.
+			client.setOperator(operatorId, operatorKey);
+			const ser = await mintFreshSerial();
+			await sendNFT(client, operatorId, bobStashId, nftTokenId, [ser]);
+			await sleep(MIRROR_DELAY);
+
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 5_000_000,
+				'createTrade',
+				[
+					nftTokenId.toSolidityAddress(),
+					ethers.ZeroAddress,
+					ser,
+					Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
+					0, 0,
+					ethers.ZeroHash,
+				],
+			);
+			await sleep(MIRROR_DELAY);
+
+			const xvecTradeId = ethers.solidityPackedKeccak256(
+				['address', 'uint256'], [nftTokenId.toSolidityAddress(), ser],
+			);
+
+			// Carol tries to arb. bidOwner=Bob, sellerOwner=Bob (resolved
+			// from stash), arbOwner=Carol. The bidOwner == sellerOwner
+			// check fires → SelfTradeBlocked.
+			client.setOperator(carolId, carolPK);
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				'executeArbitrage', [xvecBidId, xvecTradeId, 0], 0, true,
+			);
+			expectRevertNamed(result, 'SelfTradeBlocked');
+			console.log('P5.21: cross-vector self-arb blocked (bid.user=Bob, trade.seller=Bob\'s stash, both resolve)');
+
+			// Cleanup: Bob cancels both the bid and the listing
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'cancelBid', [xvecBidId],
+			);
+			await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
+				'cancelTradeFromStash', [xvecTradeId],
+			);
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		// --- setBcf governance: non-owner reverts.
+		it('P5.22: setBcf from non-owner reverts with Ownable', async function () {
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'setBcf', [bidderFactoryId.toSolidityAddress()], 0, true,
+			);
+			// OZ Ownable revert — no custom selector in this LST version;
+			// just confirm the tx failed (status != SUCCESS).
+			expect(result?.[0]?.status?.toString?.()).to.not.equal('SUCCESS');
+			console.log('P5.22: non-owner setBcf rejected');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		// --- setBcf rotation: queues pending change with 48h ETA + event.
+		it('P5.23: setBcf during rotation queues BcfChangePending with 48h ETA', async function () {
+			// bcf is currently the live factory (set in scaffold). Calling
+			// setBcf again should queue, not apply.
+			// Use the BCF address itself as the proposed value (no-op
+			// rotation — but proves the queue path fires).
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'setBcf', [bidderFactoryId.toSolidityAddress()],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			// Read pending storage via mirror
+			const pendingBcf = await mirrorQuery(lstContractId, lstIface, 'pendingBcf', []);
+			const pendingEta = await mirrorQuery(lstContractId, lstIface, 'pendingBcfEta', []);
+			expect(pendingBcf[0].toLowerCase()).to.equal('0x' + bidderFactoryId.toSolidityAddress().toLowerCase());
+
+			const nowSec = Math.floor(Date.now() / 1000);
+			const expectedEta = nowSec + 48 * 60 * 60;
+			expect(Math.abs(Number(pendingEta[0]) - expectedEta)).to.be.lessThan(600);
+			console.log(
+				'P5.23: pendingBcf =', pendingBcf[0], 'pendingEta = ~48h from now',
+			);
+
+			// Live `bcf` is unchanged (rotation only QUEUES — no apply).
+			const liveBcf = await mirrorQuery(lstContractId, lstIface, 'bcf', []);
+			expect(liveBcf[0].toLowerCase()).to.equal('0x' + bidderFactoryId.toSolidityAddress().toLowerCase());
+		});
+
+		// --- cancelBcfChange clears pending + emits BcfChangeCancelled.
+		it('P5.24: cancelBcfChange clears pending state', async function () {
+			// Cancel the pending change queued in P5.23.
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'cancelBcfChange', [],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const pendingBcf = await mirrorQuery(lstContractId, lstIface, 'pendingBcf', []);
+			const pendingEta = await mirrorQuery(lstContractId, lstIface, 'pendingBcfEta', []);
+			expect(pendingBcf[0]).to.equal(ethers.ZeroAddress);
+			expect(Number(pendingEta[0])).to.equal(0);
+			console.log('P5.24: pending BCF change cleared');
+		});
+
+		// --- executeBcfChange before ETA reverts.
+		it('P5.25: executeBcfChange before ETA reverts TimelockNotElapsed', async function () {
+			// Queue a fresh change so executeBcfChange has something to act
+			// on; the ETA will be 48h in the future, so an immediate call
+			// to executeBcfChange must revert.
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'setBcf', [bidderFactoryId.toSolidityAddress()],
+			);
+			await sleep(MIRROR_DELAY);
+
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'executeBcfChange', [], 0, true,
+			);
+			expectRevertNamed(result, 'TimelockNotElapsed', [lstIface]);
+			console.log('P5.25: executeBcfChange before ETA → TimelockNotElapsed');
+
+			// Cleanup: cancel the pending change so it doesn't bleed into
+			// future test runs (the ETA persists across runs since LST is
+			// reused via .env).
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'cancelBcfChange', [],
+			);
+		});
+	});
+
+	// ============================================
 	// Summary (always runs, regardless of clean-up describe)
 	// ============================================
 	after(function () {
