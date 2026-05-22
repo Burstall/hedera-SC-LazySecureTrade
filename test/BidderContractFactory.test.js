@@ -500,7 +500,12 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				// LSH_GEN1_MUTANT (mock)
 				.addAddress(nftTokenId.toSolidityAddress())
 				.addUint256(LAZY_COST_FOR_TRADE * 10 ** LAZY_DECIMAL)
-				.addUint256(LAZY_BURN_PERCENT);
+				.addUint256(LAZY_BURN_PERCENT)
+				// LAZY_NFT_STAKING — opt-out (address(0)) for the BCF test
+				// scaffold. Staking-as-holdings is exercised in
+				// test/LSHTierLib.test.js against the MockLazyNFTStaking;
+				// the BCF integration tests don't need it.
+				.addAddress('0x0000000000000000000000000000000000000000');
 			// LST deploy gas: bumped from 6M to 8M after the Phase 1
 			// beneficial-owner resolver added ~360 bytes — the original
 			// 6M margin no longer covers initcode at the new size.

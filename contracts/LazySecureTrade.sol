@@ -20,6 +20,7 @@ import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {TokenStakerV2} from "./TokenStakerV2.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
+import {LSHTierLib} from "./libraries/LSHTierLib.sol";
 
 contract LazySecureTrade is
     Ownable,
@@ -228,6 +229,12 @@ contract LazySecureTrade is
     address public immutable LSH_GEN2;
     /// @notice Address of LSH Generation 1 Mutant NFT contract (high tier - 75% discount)
     address public immutable LSH_GEN1_MUTANT;
+    /// @notice LazyNFTStaking address. Stakes on this contract count
+    ///         as direct holdings for LSH-tier purposes via the
+    ///         `LSHTierLib` resolution — honoring the design intent
+    ///         "stakers get free trades for their agents." Pass
+    ///         `address(0)` at deploy to opt out of the staking branch.
+    address public immutable LAZY_NFT_STAKING;
 
     /// @notice Global counter ensuring each trade has a unique nonce
     uint256 public tradeNonce;
@@ -270,6 +277,9 @@ contract LazySecureTrade is
     /// @param _lshGen1Mutant Address of the LSH Generation 1 Mutant NFT contract (high tier benefits)
     /// @param _lazyCostForTrade Cost in LAZY tokens for creating open market trades
     /// @param _lazyBurnPercentage Percentage of LAZY tokens to burn when creating trades (basis points)
+    /// @param _lazyNFTStaking Address of LazyNFTStaking (stakes count as
+    ///         holdings for LSH-tier resolution). Pass `address(0)` to
+    ///         opt out of the staking branch.
     constructor(
         address _lazyToken,
         address _lazyGasStation,
@@ -278,7 +288,8 @@ contract LazySecureTrade is
         address _lshGen2,
         address _lshGen1Mutant,
         uint256 _lazyCostForTrade,
-        uint256 _lazyBurnPercentage
+        uint256 _lazyBurnPercentage,
+        address _lazyNFTStaking
     ) {
         // initialize the TokenStaker contract
         initContracts(_lazyToken, _lazyGasStation, _lazyDelegateRegistry);
@@ -286,6 +297,7 @@ contract LazySecureTrade is
         LSH_GEN1 = _lshGen1;
         LSH_GEN2 = _lshGen2;
         LSH_GEN1_MUTANT = _lshGen1Mutant;
+        LAZY_NFT_STAKING = _lazyNFTStaking;
 
         lazyCostForTrade = _lazyCostForTrade;
         lazyBurnPercentage = _lazyBurnPercentage;
@@ -474,29 +486,17 @@ contract LazySecureTrade is
     }
 
     /***
-     * @notice Pull multiple trade details from the contract - convenience method
-     * @param _tradeIdList the list of trade IDs to pull
-     */
-    function getTrades(
-        bytes32[] memory _tradeIdList
-    ) external view returns (Trade[] memory) {
-        uint256 length = _tradeIdList.length;
-        Trade[] memory trades = new Trade[](length);
-
-        for (uint256 i = 0; i < length; ) {
-            trades[i] = allTradesMap[_tradeIdList[i]];
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return trades;
-    }
-
-    /***
      * @notice Pull all trades for a user
      * @param _user the address of the user
+     * @dev Retained on-chain as the primary user-dashboard read path.
+     *      Batched/multi-trade and token-indexed reads (formerly
+     *      `getTrades(bytes32[])` and `getTokenTrades(address)`) were
+     *      removed in the LSHTierLib integration to free LST bytecode
+     *      back below the 24 KiB ceiling. Consumers that need either
+     *      should loop `getTrade(bytes32)` (single) or read the
+     *      `TradeCreated` / `TradeCompleted` / `TradeCancelled` event
+     *      stream via mirror node — that's already the canonical
+     *      indexing path for trade history.
      */
     function getUserTrades(
         address _user
@@ -506,27 +506,6 @@ contract LazySecureTrade is
 
         for (uint256 i = 0; i < length; ) {
             trades[i] = userTradesMap[_user].at(i);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return trades;
-    }
-
-    /***
-     * @notice Pull all trades for a token
-     * @param _token the address of the token
-     */
-    function getTokenTrades(
-        address _token
-    ) external view returns (bytes32[] memory) {
-        uint256 length = tokenTradesMap[_token].length();
-        bytes32[] memory trades = new bytes32[](length);
-
-        for (uint256 i = 0; i < length; ) {
-            trades[i] = tokenTradesMap[_token].at(i);
 
             unchecked {
                 ++i;
@@ -849,48 +828,23 @@ contract LazySecureTrade is
      *      they lose their delegated-tier benefit for that trade).
      */
     function getLSHTokenTier(address _user) public view returns (uint256 tier) {
-        // Check Gen1 first (highest tier) - includes delegated tokens
-        if (
-            IERC721(LSH_GEN1).balanceOf(_user) > 0 ||
-            _safeGetDelegatedLength(_user, LSH_GEN1) > 0
-        ) {
-            return 3; // Gen1 tier
-        }
-
-        // Check Mutant (second tier) - includes delegated tokens
-        if (
-            IERC721(LSH_GEN1_MUTANT).balanceOf(_user) > 0 ||
-            _safeGetDelegatedLength(_user, LSH_GEN1_MUTANT) > 0
-        ) {
-            return 2; // Mutant tier
-        }
-
-        // Check Gen2 (third tier) - includes delegated tokens
-        if (
-            IERC721(LSH_GEN2).balanceOf(_user) > 0 ||
-            _safeGetDelegatedLength(_user, LSH_GEN2) > 0
-        ) {
-            return 1; // Gen2 tier
-        }
-
-        return 0; // No LSH tokens
-    }
-
-    /// @dev Defensive wrapper around LazyDelegateRegistry.getSerialsDelegatedTo.
-    ///      LDR is an immutable deployed contract with known issues; if a call
-    ///      reverts, we return 0 (treated as "no delegation") rather than
-    ///      bricking every trade execution that touches the LSH tier path.
-    function _safeGetDelegatedLength(
-        address _user,
-        address _token
-    ) private view returns (uint256) {
-        try lazyDelegateRegistry.getSerialsDelegatedTo(_user, _token) returns (
-            uint256[] memory delegatedSerials
-        ) {
-            return delegatedSerials.length;
-        } catch {
-            return 0;
-        }
+        // Delegates the multi-source check to `LSHTierLib` (statically
+        // linked). The library returns an enum (Free/Silver/Gold/Platinum)
+        // whose integer values match the historical tier numbering exactly:
+        //   Free=0, Silver=1 (Gen2), Gold=2 (Mutant), Platinum=3 (Gen1).
+        // Public ABI of getLSHTokenTier is preserved — callers still see
+        // a uint256.
+        //
+        // The library also includes staking-as-holdings semantics when
+        // LAZY_NFT_STAKING is non-zero, plus LDR try/catch resilience
+        // (replaces the previously-private `_safeGetDelegatedLength`).
+        return uint256(LSHTierLib.getTierFor(_user, LSHTierLib.TierSources({
+            lshGen1: LSH_GEN1,
+            lshMutant: LSH_GEN1_MUTANT,
+            lshGen2: LSH_GEN2,
+            lazyDelegateRegistry: address(lazyDelegateRegistry),
+            lazyNFTStaking: LAZY_NFT_STAKING
+        })));
     }
 
     /***

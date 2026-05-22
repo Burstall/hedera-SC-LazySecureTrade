@@ -31,7 +31,7 @@ function parseScoopKey(rawKey) {
 	const scoopAccountId = AccountId.fromString(scoopId);
 	const client = env === 'main' ? Client.forMainnet()
 		: env === 'preview' ? Client.forPreviewnet()
-		: Client.forTestnet();
+			: Client.forTestnet();
 	client.setOperator(scoopAccountId, scoopKey);
 	const tx = await new TransferTransaction()
 		.addHbarTransfer(scoopAccountId, new Hbar(-amount))

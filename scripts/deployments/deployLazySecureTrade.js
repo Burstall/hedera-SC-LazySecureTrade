@@ -31,6 +31,10 @@ const lazyDelegateRegistryName = 'LazyDelegateRegistry';
 const env = process.env.ENVIRONMENT ?? null;
 const LAZY_BURN_PERCENT = process.env.LAZY_BURN_PERCENT ?? 25;
 const LAZY_COST_FOR_TRADE = process.env.LAZY_COST_FOR_TRADE ?? 400;
+// Optional LazyNFTStaking address — stakes count as LSH holdings for
+// tier resolution via LSHTierLib. Leave unset to opt out (LST will
+// skip the staking branch).
+const LAZY_NFT_STAKING_CONTRACT_ID = process.env.LAZY_NFT_STAKING_CONTRACT_ID ?? null;
 const LAZY_DECIMAL = process.env.LAZY_DECIMALS ?? 1;
 const LAZY_MAX_SUPPLY = process.env.LAZY_MAX_SUPPLY ?? 250_000_000;
 
@@ -290,6 +294,17 @@ const main = async () => {
 		gasLimit,
 	);
 
+	// LazyNFTStaking address: resolves to the env var if set, else
+	// passes address(0) so LST opts out of the staking branch in
+	// LSHTierLib (holdings + delegations still work normally).
+	const lazyNFTStakingAddress = LAZY_NFT_STAKING_CONTRACT_ID
+		? ContractId.fromString(LAZY_NFT_STAKING_CONTRACT_ID).toSolidityAddress()
+		: '0000000000000000000000000000000000000000';
+	console.log(
+		'LAZY_NFT_STAKING:',
+		LAZY_NFT_STAKING_CONTRACT_ID || '(opt-out via address(0))',
+	);
+
 	const constructorParams = new ContractFunctionParameters()
 		.addAddress(lazyTokenId.toSolidityAddress())
 		.addAddress(lazyGasStationId.toSolidityAddress())
@@ -298,7 +313,8 @@ const main = async () => {
 		.addAddress(LSH_GEN2.toSolidityAddress())
 		.addAddress(LSH_GEN1_MUTANT.toSolidityAddress())
 		.addUint256(LAZY_COST_FOR_TRADE)
-		.addUint256(LAZY_BURN_PERCENT);
+		.addUint256(LAZY_BURN_PERCENT)
+		.addAddress(lazyNFTStakingAddress);
 
 	const [lstContractId, lstContractAddress] = await contractDeployFunction(
 		client,
