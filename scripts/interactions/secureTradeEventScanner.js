@@ -43,15 +43,29 @@ const main = async () => {
 	const args = process.argv.slice(2);
 	if ((args.length > 1) || getArgFlag('h')) {
 		console.log('Usage: secureTradeEventScanner.js [0.0.STC]');
-		console.log('       STC is the secure trade contract if not supplied will use LAZY_SECURE_TRADE_CONTRACT_ID from the .env file');
+		console.log('       STC is the secure trade contract if not supplied will use SECURE_TRADE_CONTRACT_ID from the .env file');
+		console.log('       (legacy LAZY_SECURE_TRADE_CONTRACT_ID is still accepted as a fallback)');
 		return;
 	}
 
 	let secureTradeContract;
 
-	// if an argument is passed use that as the contract id
+	// if an argument is passed use that as the contract id, else fall through to env
 	if (args.length == 0) {
-		secureTradeContract = process.env.LAZY_SECURE_TRADE_CONTRACT_ID ?? null;
+		// Canonical: SECURE_TRADE_CONTRACT_ID (matches the SECURE_TRADE_* env family).
+		// Legacy: LAZY_SECURE_TRADE_CONTRACT_ID — same variable used by tests to
+		// reuse a deployed LST. Sharing one name across two purposes was a footgun
+		// when scanner ENV != test ENVIRONMENT, so the scanner now reads its own var.
+		if (process.env.SECURE_TRADE_CONTRACT_ID) {
+			secureTradeContract = process.env.SECURE_TRADE_CONTRACT_ID;
+		}
+		else if (process.env.LAZY_SECURE_TRADE_CONTRACT_ID) {
+			console.log('WARN: LAZY_SECURE_TRADE_CONTRACT_ID is deprecated for the scanner — please rename to SECURE_TRADE_CONTRACT_ID in your .env');
+			secureTradeContract = process.env.LAZY_SECURE_TRADE_CONTRACT_ID;
+		}
+		else {
+			secureTradeContract = null;
+		}
 	}
 	else {
 		secureTradeContract = args[0];

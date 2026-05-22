@@ -716,7 +716,9 @@ CREATE TABLE secure_trade_events (
 // Environment setup (from .env file)
 const config = {
   SECURE_TRADE_ENV: process.env.SECURE_TRADE_ENV, // mainnet/testnet/previewnet
-  LAZY_SECURE_TRADE_CONTRACT_ID: process.env.LAZY_SECURE_TRADE_CONTRACT_ID,
+  // Canonical scanner var (matches SECURE_TRADE_* family).
+  // Legacy LAZY_SECURE_TRADE_CONTRACT_ID is still accepted as a fallback.
+  SECURE_TRADE_CONTRACT_ID: process.env.SECURE_TRADE_CONTRACT_ID ?? process.env.LAZY_SECURE_TRADE_CONTRACT_ID,
   DIRECTUS_DB_URL: process.env.DIRECTUS_DB_URL,
   DIRECTUS_TOKEN: process.env.DIRECTUS_TOKEN,
   SECURE_TRADE_EVENTS_TABLE: process.env.SECURE_TRADE_EVENTS_TABLE || 'secureTradeEvents',
