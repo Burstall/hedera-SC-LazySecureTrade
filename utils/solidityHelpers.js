@@ -309,6 +309,12 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 			.setGas(resolvedGas)
 			.setFunctionParameters(Buffer.from(encodedCommand.slice(2), 'hex'))
 			.setPayableAmount(amountHbar)
+			// Cover the worst-case gas-price × gas-limit + msg.value.
+			// Hedera testnet's precheck rejects with INSUFFICIENT_PAYER_BALANCE
+			// when the declared maxTransactionFee can't cover the worst-case
+			// fee — even if the account has plenty of HBAR. 50 HBAR is well
+			// above any plausible single-tx fee.
+			.setMaxTransactionFee(new (require('@hashgraph/sdk').Hbar)(50))
 			.execute(client);
 	}
 	catch (err) {
