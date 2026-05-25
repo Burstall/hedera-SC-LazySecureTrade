@@ -425,8 +425,15 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     }
 
     // ============================================
-    // Admin
+    // Admin — instant (operational-multisig expected)
     // ============================================
+    //
+    // Setters here are deliberately instant on-chain. Per the owner
+    // administration model (see SECURITY.md), the owner is expected
+    // to be a multisig wallet with an operational-layer timelock —
+    // that is the user-facing notice window. Price/discount/parameter
+    // changes affect only future purchases; `extendSubscription` is a
+    // one-way grant (only adds time, never reduces).
 
     /// @notice Configure the discount for a (token, tier) pair.
     function setDiscount(

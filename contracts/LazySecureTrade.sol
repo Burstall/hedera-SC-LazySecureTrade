@@ -1267,6 +1267,21 @@ contract LazySecureTrade is
         // Individual TradeCancelled events already emitted above
     }
 
+    // ============================================
+    // Owner administration — instant (operational-multisig expected)
+    // ============================================
+    //
+    // The setters in this section are deliberately instant on-chain.
+    // Per the owner administration model (see SECURITY.md), the
+    // contract owner is expected to be a multisig wallet with an
+    // operational-layer timelock — the user-facing notice window
+    // lives there, not in the contract. Fee/pricing setters affect
+    // future trades only (users opt out by not trading); withdrawals
+    // move owner-side accumulated fees, not user funds.
+    //
+    // Code-path / reference rotations that DO require an on-chain
+    // timelock (setBcf) live in their own section further down.
+
     /***
      * @notice Set the cost for an advanced trade
      * An advanced trade is one where the buyer is 0x0 and the trade is open to anyone

@@ -268,11 +268,92 @@ function removeTradeFromState(bytes32 _tradeId, address _buyer, address _seller,
 **Risk**: No external price feeds for validation
 **Mitigation**: Market-driven pricing - users set their own prices
 
+## Owner Administration Model
+
+The marketplace contracts (LST, BCF, EnglishAuction, VIPSubscription)
+are operator-controlled, not DAO-governed. The owner key is expected
+to be a **multisig wallet with an operational-layer timelock** —
+*not* a single EOA. The on-chain timelock policy below assumes that
+expectation is honored at the multisig layer.
+
+### On-chain timelocked setters (code-path / reference changes)
+
+These mutate references or parameters that user-facing bid/trade/auction
+lifecycle code paths depend on. Rotating them without notice could break
+in-flight workflows or silently re-route trust to an attacker-controlled
+contract. They use a **two-mode pattern**: the initial wire-up applies
+instantly (operators need to plug things in at deploy time without
+staging 48 hours of timelock), and subsequent rotations are gated by a
+48-hour timelock with a cancel path.
+
+| Setter | Contract | Pattern | Apply / Cancel |
+|---|---|---|---|
+| `setBcf(address)` | LST | 2-mode | `executeBcfChange` / `cancelBcfChange` |
+| `setBcf(address)` | EnglishAuction | 2-mode | `executeBcfChange` / `cancelBcfChange` |
+| `setAgentTierLimits(Tier, TierLimits)` | BCF | 2-mode per-tier | `executeAgentTierLimitsChange` / `cancelAgentTierLimitsChange` |
+| `setArbitragePayoutBps(uint256)` | BCF | 1-mode (always 48h) | `executeArbPayoutBpsChange` |
+
+`authorizeFactory(address, bool)` on LST is the **one outstanding gap**
+in this category — it grants factory-level trade-creation rights and
+should follow the same 2-mode pattern. Scheduled to land alongside the
+LST bytecode trim (see `docs/v0.3-WORKING-PLAN.md` item #2).
+
+### Operational-multisig setters (instant, off-chain notice expected)
+
+These are deliberately instant on-chain. Risk is bounded — they affect
+*future* trades only, or move owner-side accumulated fees, or are
+emergency switches that need to fire instantly to be useful. The
+multisig + timelock at the operational layer is the user-facing notice
+window.
+
+**Fee / pricing setters** (bounded blast radius — users can simply not
+trade after seeing the change):
+- LST: `setLazyCostForTrade`, `setLazyBurnPercentage`, `setLshDiscount`
+- EnglishAuction: `setProtocolFeeBps`, `setSettlementBountyBps`
+- VIPSubscription: `setMonthlyPrice`, `setAnnualPrepayDiscountBps`,
+  `setMaxCombinedDiscountBps`, `setBurnPercentage`, `setDiscount`
+
+**Profit withdrawals** (owner-side accumulated funds, not user funds):
+- LST: `withdrawPlatformFees`, `retrieveLazy`
+- BCF: `withdrawProtocolProfit`
+- EnglishAuction: `withdrawProtocolFees`
+
+**Parameter / configuration setters** (small numeric tweaks, no
+trust-rotation):
+- EnglishAuction: `setVipSubscription`, `setAntiSnipeDefaults`,
+  `setMaxExtensionWindow`
+- VIPSubscription: `setCooldownSeconds`, `setMaxActiveDurationMonths`
+
+**Instant by design** (timelock would defeat the purpose):
+- EnglishAuction: `setPaused` — emergency kill switch
+- VIPSubscription: `extendSubscription` — one-way grant; only adds time
+  to a user's subscription, never reduces
+
+### Why this split
+
+Adding 48-hour on-chain timelocks to fee setters would slow iteration
+on a small-team operator-controlled protocol for marginal user benefit.
+A 1%→5% fee change affects only the *next* trade — users opt out by
+not trading. Profit withdrawals move accumulated owner-side balance —
+no user-protection concern. Emergency switches need to be instant or
+they're useless.
+
+By contrast, rotating `setBcf` re-points the canonical beneficial-owner
+resolver — stash-listed trades created under the old BCF would resolve
+differently after the rotation. That's a code-path change and warrants
+on-chain notice.
+
+The bright line: **timelock things that change *how* the system works;
+keep instant the things that change *parameters of how it already
+works*.**
+
 ## Recommendations & Best Practices
 
 ### 1. Operational Security
 - **Regular Monitoring**: Track platform fee collection and volume metrics
 - **Parameter Updates**: Use timelocks for critical parameter changes
+  (see "Owner Administration Model" above for the on-chain vs
+  operational-layer split)
 - **Emergency Procedures**: Document sunset and recovery procedures
 
 ### 2. User Education

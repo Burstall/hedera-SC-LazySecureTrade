@@ -752,8 +752,16 @@ contract EnglishAuction is
     }
 
     // ============================================
-    // Admin (instant, bounded by caps)
+    // Admin — instant (operational-multisig expected)
     // ============================================
+    //
+    // Setters in this section are deliberately instant on-chain. Per
+    // the owner administration model (see SECURITY.md), the owner is
+    // expected to be a multisig wallet with an operational-layer
+    // timelock — that's the user-facing notice window. Bounded by
+    // BPS / parameter caps inside each setter. Code-path rotations
+    // that DO require an on-chain timelock (`setBcf`) live in the
+    // "Beneficial-owner resolution" section further up.
 
     function setProtocolFeeBps(uint16 newBps) external onlyOwner {
         if (newBps > 1_000) revert InvalidBps(newBps); // cap at 10%
