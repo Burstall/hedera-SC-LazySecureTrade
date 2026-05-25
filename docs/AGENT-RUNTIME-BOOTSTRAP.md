@@ -1,14 +1,16 @@
-# Agent Runtime — Bootstrap Prompt
+# Lazy Agent Runtime — Bootstrap Prompt
 
-> **Drop this file into the root of a fresh empty repo as `CLAUDE.md` (or
-> as `README.md` if you want it human-facing) and start a Claude Code
-> session there. This file is self-contained — it carries enough context
-> to start the agent runtime without reading anything in the
+> **Drop this file into the root of a fresh empty repo (suggested name:
+> `lazy-agent-runtime` to keep brand consistency with
+> `@lazysuperheroes/*` packages) as `CLAUDE.md` (or as `README.md` if
+> you want it human-facing) and start a Claude Code session there.
+> This file is self-contained — it carries enough context to start the
+> agent runtime without reading anything in the
 > `hedera-SC-LazySecureTrade` repo first, but links every claim to the
 > source of truth.**
 >
 > **Last updated:** 2026-05-25 (against contracts repo `v0.3` branch tip
-> `e6980bf`).
+> `eaca2c5`).
 
 ---
 
@@ -99,6 +101,41 @@ Peer dependencies you must add yourself:
 ```bash
 yarn add ethers@^6 @hashgraph/sdk@^2.50
 ```
+
+### Also install the Hedera AI Agent Kit
+
+The runtime is built on top of **`@hashgraph/hedera-agent-kit`** —
+Hedera's official framework for agent-Hedera integration. Wraps the
+Hashgraph SDK with plugins for HTS (NFT + fungible ops), HCS (topic
+messaging), and account management. Provides LangChain / Vercel AI SDK
+/ Google ADK / ElizaOS toolkit adapters out of the box.
+
+```bash
+yarn add @hashgraph/hedera-agent-kit
+```
+
+**Pin the version.** The kit is at v4 with documented breaking changes;
+budget a quarterly pass to re-pin against the latest. Read the kit's
+own migration guide before bumping major versions.
+
+### How the two layers fit together
+
+| Layer | Source | Responsibility |
+|---|---|---|
+| **Marketplace SDK** (`@lazysuperheroes/marketplace-sdk`) | This repo, contracts side | LST/BCF/EA contract calldata, addresses, typed enums + structs, `AgentAuth` tuple. The marketplace-specific surface that no general framework can know about. |
+| **Hedera Agent Kit** (`@hashgraph/hedera-agent-kit`) | Hedera Foundation | Generic Hedera-native ops: HTS NFT associations, HCS topic creation + messaging (for HCS-10 reasoning trace), account/key management, network routing. LLM-orchestration substrate via the LangChain/AI SDK toolkits. |
+| **Hashgraph SDK** (`@hashgraph/sdk`) | Hedera Foundation | Lowest-level Hedera transport. The Agent Kit wraps this; you'll only reach for it directly for niche cases (e.g., `TransactionRecordQuery`). |
+
+**Rule of thumb:** if the operation touches LST/BCF/EA contracts, use
+the marketplace SDK. If it touches HTS/HCS or account management, use
+the Agent Kit. If it's a low-level Hashgraph operation neither covers,
+use `@hashgraph/sdk` directly.
+
+The first SNIPER milestone is rule-based (watcher + threshold strategy
++ executor) — it doesn't *need* the kit's LangChain integration. Use
+the kit for HCS-10 trace + HTS association flows; defer LangChain
+adoption to later milestones where actual LLM reasoning lives on the
+critical path.
 
 ### What the SDK gives you (v0.1)
 
@@ -196,21 +233,37 @@ selection. Sovereignty paths (`rescueNFT`, `rescueHbar`,
 src/
   agents/
     sniper/
-      strategy.ts       # bid amount + timing logic
+      strategy.ts       # bid amount + timing logic (pure)
       watcher.ts        # mirror polling / event subscription
-      executor.ts       # ethers tx submission via @hashgraph/sdk
+      executor.ts       # tx submission via marketplace SDK + Agent Kit
   config/
     networks.ts         # testnet / mainnet routing
-    accounts.ts         # agent Hedera accounts (env-loaded)
+    accounts.ts         # agent Hedera accounts (env-loaded keys)
   hcs10/
-    topic.ts            # off-chain reasoning trace logged here
+    topic.ts            # HCS-10 reasoning trace (Agent Kit HCS plugin)
   index.ts              # entry: pick agent, start runtime
 ```
 
-HCS-10 is Hedera's standard for agent reasoning topics. Each agent
-action carries a `reasoningTopicId` (`bytes32` in the `AgentAuth`
-tuple) that off-chain readers correlate to a topic where you logged
-the agent's reasoning. Use `0x00...00` if you're not logging trace.
+Module responsibilities:
+
+- **`strategy.ts`** — pure function. Takes auction snapshot + user
+  config, returns `{ bid: bigint, action: 'wait' | 'bid' | 'pass' }`.
+  No I/O, fully testable.
+- **`watcher.ts`** — mirror polling for new auctions + bid events.
+  Driven by Hedera mirror REST or websocket. Backoff + retry.
+- **`executor.ts`** — calldata via marketplace SDK
+  (`bidderContractInterface().encodeFunctionData('placeAuctionBid', [...])`),
+  signed + submitted via Agent Kit's transaction helpers (which wrap
+  `@hashgraph/sdk` underneath).
+- **`hcs10/topic.ts`** — Agent Kit's HCS plugin to publish reasoning
+  trace; pass the resulting topic id (as `bytes32`) in the `AgentAuth`
+  tuple via `buildAgentAuth(agentEoa, topicId)`.
+
+HCS-10 is Hedera's emerging standard for agent reasoning topics. Each
+on-chain action carries a `reasoningTopicId` (`bytes32` in the
+`AgentAuth` tuple) that off-chain readers correlate to a topic where
+you logged the agent's reasoning. Use `0x00...00` if you're not
+logging trace yet — that's a valid sentinel.
 
 ---
 
@@ -299,18 +352,27 @@ SDK layer.
 
 ## First-session checklist
 
-When the agent runtime repo's first Claude Code session starts:
+When the `lazy-agent-runtime` repo's first Claude Code session starts:
 
-1. `yarn init -y` + install ethers + @hashgraph/sdk + the marketplace SDK.
+1. `yarn init -y`. Install peers + both SDKs:
+   ```bash
+   yarn add ethers@^6 @hashgraph/sdk@^2.50 @hashgraph/hedera-agent-kit
+   yarn add "github:Burstall/hedera-SC-LazySecureTrade#v0.3"
+   ```
 2. Skim `docs/AGENT-MARKETPLACE-DELTA.md` in the contracts repo
-   (fetch via WebFetch on the GitHub URL — no clone needed).
-3. Write a smoke test: import the SDK, call `getAddresses('testnet')`,
-   construct an ethers `Interface`, encode `cancelBid` calldata with
-   `EMPTY_AUTH`. Verify the bytes round-trip via `decodeFunctionData`.
-4. Stand up a single-agent SNIPER skeleton against testnet. Use a
+   (fetch via WebFetch on the GitHub URL — no clone needed). Also
+   skim the Hedera AI Agent Kit docs:
+   `https://docs.hedera.com/hedera/open-source-solutions/ai-studio-on-hedera/hedera-ai-agent-kit`
+3. Write a smoke test: import the marketplace SDK, call
+   `getAddresses('testnet')`, construct an ethers `Interface`, encode
+   `cancelBid` calldata with `EMPTY_AUTH`. Verify the bytes round-trip
+   via `decodeFunctionData`.
+4. Smoke the Agent Kit: create an HCS topic + publish a dummy
+   reasoning message; assert the topic id is retrievable.
+5. Stand up a single-agent SNIPER skeleton against testnet. Use a
    throwaway agent Hedera account + a throwaway VIP-Bronze stash so
    the budget cap surfaces early.
-5. Iterate.
+6. Iterate.
 
 ---
 
