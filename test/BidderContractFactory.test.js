@@ -3022,6 +3022,130 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				'cancelBcfChange', [],
 			);
 		});
+
+		// ========================================
+		// authorizeFactory asymmetric timelock (security finding H3)
+		// ========================================
+		// Grants are 48h timelocked (attack vector: adding a malicious
+		// factory). Revokes are instant (emergency response: kicking out
+		// a compromised factory). Uses a throwaway probe address (NOT a
+		// real factory) so we don't accidentally grant rights at the end
+		// of the test run.
+
+		// Probe address — random, must not equal any real factory.
+		const probeFactory = '0x000000000000000000000000000000000000DEAD';
+
+		// --- P5.26: non-owner authorizeFactory reverts (Ownable).
+		it('P5.26: authorizeFactory from non-owner reverts with Ownable', async function () {
+			client.setOperator(bobId, bobPK);
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'authorizeFactory', [probeFactory, true], 0, true,
+			);
+			expect(result?.[0]?.status?.toString?.()).to.not.equal('SUCCESS');
+			console.log('P5.26: non-owner authorizeFactory rejected');
+			client.setOperator(operatorId, operatorKey);
+		});
+
+		// --- P5.27: grant queues FactoryAuthorizePending with 48h ETA.
+		it('P5.27: authorizeFactory(probe, true) queues pending grant with 48h ETA', async function () {
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'authorizeFactory', [probeFactory, true],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			// Pending ETA stored
+			const pendingEta = await mirrorQuery(lstContractId, lstIface, 'pendingFactoryAuthEta', [probeFactory]);
+			const nowSec = Math.floor(Date.now() / 1000);
+			const expectedEta = nowSec + 48 * 60 * 60;
+			expect(Math.abs(Number(pendingEta[0]) - expectedEta)).to.be.lessThan(600);
+
+			// Live authorization is NOT yet flipped on
+			const authorized = await mirrorQuery(lstContractId, lstIface, 'authorizedFactories', [probeFactory]);
+			expect(authorized[0]).to.equal(false);
+			console.log('P5.27: pendingFactoryAuthEta = ~48h, authorizedFactories[probe] = false');
+		});
+
+		// --- P5.28: re-grant overwrites pending ETA (refresh).
+		it('P5.28: re-calling authorizeFactory(probe, true) refreshes pending ETA', async function () {
+			// Pending grant queued in P5.27. Sleep briefly so the new ETA
+			// is provably later than the old one.
+			await sleep(2000);
+			const etaBefore = await mirrorQuery(lstContractId, lstIface, 'pendingFactoryAuthEta', [probeFactory]);
+
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'authorizeFactory', [probeFactory, true],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const etaAfter = await mirrorQuery(lstContractId, lstIface, 'pendingFactoryAuthEta', [probeFactory]);
+			expect(Number(etaAfter[0])).to.be.greaterThan(Number(etaBefore[0]));
+			console.log('P5.28: ETA refreshed; before =', Number(etaBefore[0]), 'after =', Number(etaAfter[0]));
+		});
+
+		// --- P5.29: executeFactoryAuthorization before ETA reverts.
+		it('P5.29: executeFactoryAuthorization before ETA reverts TimelockNotElapsed', async function () {
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'executeFactoryAuthorization', [probeFactory], 0, true,
+			);
+			expectRevertNamed(result, 'TimelockNotElapsed', [lstIface]);
+			console.log('P5.29: executeFactoryAuthorization before ETA → TimelockNotElapsed');
+		});
+
+		// --- P5.30: cancelFactoryAuthorization clears pending state.
+		it('P5.30: cancelFactoryAuthorization clears pending grant', async function () {
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'cancelFactoryAuthorization', [probeFactory],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const pendingEta = await mirrorQuery(lstContractId, lstIface, 'pendingFactoryAuthEta', [probeFactory]);
+			expect(Number(pendingEta[0])).to.equal(0);
+			console.log('P5.30: pending factory auth cleared');
+		});
+
+		// --- P5.31: cancel with no pending reverts NoPendingFactoryAuth.
+		it('P5.31: cancelFactoryAuthorization with no pending reverts NoPendingFactoryAuth', async function () {
+			const result = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'cancelFactoryAuthorization', [probeFactory], 0, true,
+			);
+			expectRevertNamed(result, 'NoPendingFactoryAuth', [lstIface]);
+			console.log('P5.31: cancel-with-no-pending → NoPendingFactoryAuth');
+		});
+
+		// --- P5.32: revoke is instant; also clears any pending grant.
+		it('P5.32: authorizeFactory(probe, false) is instant + clears pending', async function () {
+			// Re-queue a pending grant so we can verify the revoke clears it.
+			await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'authorizeFactory', [probeFactory, true],
+			);
+			await sleep(MIRROR_DELAY);
+
+			// Revoke
+			const [rx] = await contractExecuteFunction(
+				lstContractId, lstIface, client, 200_000,
+				'authorizeFactory', [probeFactory, false],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			// Pending cleared
+			const pendingEta = await mirrorQuery(lstContractId, lstIface, 'pendingFactoryAuthEta', [probeFactory]);
+			expect(Number(pendingEta[0])).to.equal(0);
+			// Live authorization still false (probe was never executed)
+			const authorized = await mirrorQuery(lstContractId, lstIface, 'authorizedFactories', [probeFactory]);
+			expect(authorized[0]).to.equal(false);
+			console.log('P5.32: revoke instant + pending grant cleared');
+		});
 	});
 
 	// ============================================

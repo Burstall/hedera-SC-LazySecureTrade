@@ -116,24 +116,26 @@ const main = async () => {
 		displayBatchTrade(batchId, batchDetails);
 	}
 	else {
-		// Multiple batch query
+		// Multiple batch query — loops single-batch reads because
+		// the batched `getBatchTrades(bytes32[])` view was removed in
+		// v0.3 to free LST bytecode. Mirror-node reads cost the same
+		// either way.
 		console.log('\n=== Multiple Batch Trades Query ===');
 
-		const eC = lstIface.encodeFunctionData('getBatchTrades', [batchIds]);
-		const cS = await readOnlyEVMFromMirrorNode(env, contractId, eC, operatorId, false);
-		const batchList = lstIface.decodeFunctionResult('getBatchTrades', cS)[0];
+		for (let i = 0; i < batchIds.length; i++) {
+			const batchId = batchIds[i];
+			const eC = lstIface.encodeFunctionData('getBatchTrade', [batchId]);
+			const cS = await readOnlyEVMFromMirrorNode(env, contractId, eC, operatorId, false);
+			const batchDetails = lstIface.decodeFunctionResult('getBatchTrade', cS)[0];
 
-		for (let i = 0; i < batchList.length; i++) {
-			const batchDetails = batchList[i];
-
-			console.log(`\n--- Batch Trade ${i + 1} (ID: ${batchIds[i]}) ---`);
+			console.log(`\n--- Batch Trade ${i + 1} (ID: ${batchId}) ---`);
 
 			if (batchDetails[0] == ethers.ZeroAddress) {
 				console.log('❌ Batch trade does not exist');
 				continue;
 			}
 
-			displayBatchTrade(batchIds[i], batchDetails);
+			displayBatchTrade(batchId, batchDetails);
 		}
 	}
 };

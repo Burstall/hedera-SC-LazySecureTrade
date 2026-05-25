@@ -131,6 +131,11 @@
   },
   {
     "inputs": [],
+    "name": "NoPendingFactoryAuth",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "SellerCannotBeBuyer",
     "type": "error"
   },
@@ -334,6 +339,38 @@
       }
     ],
     "name": "BcfRegistered",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "factory",
+        "type": "address"
+      }
+    ],
+    "name": "FactoryAuthorizationCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "factory",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "eta",
+        "type": "uint256"
+      }
+    ],
+    "name": "FactoryAuthorizePending",
     "type": "event"
   },
   {
@@ -790,6 +827,19 @@
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "_factory",
+        "type": "address"
+      }
+    ],
+    "name": "cancelFactoryAuthorization",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "bytes32[]",
         "name": "_tradeIds",
         "type": "bytes32[]"
@@ -1036,6 +1086,19 @@
   {
     "inputs": [
       {
+        "internalType": "address",
+        "name": "_factory",
+        "type": "address"
+      }
+    ],
+    "name": "executeFactoryAuthorization",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "bytes32",
         "name": "_tradeId",
         "type": "bytes32"
@@ -1132,84 +1195,6 @@
         "internalType": "struct LazySecureTrade.BatchTrade",
         "name": "",
         "type": "tuple"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "bytes32[]",
-        "name": "_batchIdList",
-        "type": "bytes32[]"
-      }
-    ],
-    "name": "getBatchTrades",
-    "outputs": [
-      {
-        "components": [
-          {
-            "internalType": "address",
-            "name": "seller",
-            "type": "address"
-          },
-          {
-            "internalType": "address",
-            "name": "buyer",
-            "type": "address"
-          },
-          {
-            "components": [
-              {
-                "internalType": "address",
-                "name": "token",
-                "type": "address"
-              },
-              {
-                "internalType": "uint256",
-                "name": "serial",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "tinybarPrice",
-                "type": "uint256"
-              },
-              {
-                "internalType": "uint256",
-                "name": "lazyPrice",
-                "type": "uint256"
-              }
-            ],
-            "internalType": "struct LazySecureTrade.TokenSerialPrice[]",
-            "name": "items",
-            "type": "tuple[]"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalTinybarPrice",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "totalLazyPrice",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "expiryTime",
-            "type": "uint256"
-          },
-          {
-            "internalType": "uint256",
-            "name": "nonce",
-            "type": "uint256"
-          }
-        ],
-        "internalType": "struct LazySecureTrade.BatchTrade[]",
-        "name": "",
-        "type": "tuple[]"
       }
     ],
     "stateMutability": "view",
@@ -1781,6 +1766,25 @@
         "internalType": "uint256",
         "name": "",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "pendingFactoryAuthEta",
+    "outputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
       }
     ],
     "stateMutability": "view",

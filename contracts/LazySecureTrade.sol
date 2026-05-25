@@ -136,6 +136,16 @@ contract LazySecureTrade is
     // v0.3 Factory Authorization Events
     event FactoryAuthorized(address indexed factory, bool authorized);
 
+    /// @notice Emitted when the owner proposes granting authority to a
+    ///         factory. The grant applies after `eta` via
+    ///         `executeFactoryAuthorization`. Revokes are instant and
+    ///         emit `FactoryAuthorized(factory, false)` directly.
+    event FactoryAuthorizePending(address indexed factory, uint256 eta);
+
+    /// @notice Emitted when the owner cancels a pending factory
+    ///         authorization grant before its ETA.
+    event FactoryAuthorizationCancelled(address indexed factory);
+
     /// @notice Emitted when the canonical BidderContractFactory pointer
     ///         used for beneficial-owner resolution is updated.
     /// @dev    LST queries `bcf.stashOwnerOf(seller)` in
@@ -178,6 +188,10 @@ contract LazySecureTrade is
     error NoPendingBcfChange();
     error TimelockNotElapsed();
 
+    /// @notice Thrown when execute/cancel is called for a factory that
+    ///         has no pending authorization grant.
+    error NoPendingFactoryAuth();
+
     // General Batch Errors
     error InvalidBatchParameters(); // Consolidated: ArrayLengthMismatch, EmptyBatchNotAllowed
 
@@ -213,12 +227,12 @@ contract LazySecureTrade is
     ///         applicable. Zero when no change is pending.
     uint256 public pendingBcfEta;
 
-    // Note: an `authorizeFactory` 48h timelock (security finding H3 from
-    // the agent envelope review) was scoped but deferred — the primary
-    // mitigation (envelopes-on-stash, with `spendForAgent` verifying on
-    // each action regardless of caller-factory) already closes the attack
-    // surface. LST is at the 24 KiB bytecode ceiling; the timelock can be
-    // added once LST surface is trimmed (see docs/v0.3-OPS-RUNBOOK.md §7).
+    /// @notice Pending factory-authorization grant ETA, keyed by factory
+    ///         address. Zero means no pending grant. Revokes do not use
+    ///         this — they are instant and never queue.
+    /// @dev    Public for off-chain monitors that want to surface
+    ///         pending grants (auto-generated getter).
+    mapping(address => uint64) public pendingFactoryAuthEta;
 
     /// @notice Timelock window for BCF rotation. Mirrors the BCF's own
     ///         `ARB_PAYOUT_TIMELOCK = 48h` pattern. Long enough that a
@@ -227,6 +241,11 @@ contract LazySecureTrade is
     ///         legitimate owners have 48 hours to call
     ///         `cancelBcfChange` or escalate.
     uint256 internal constant BCF_CHANGE_TIMELOCK = 48 hours;
+
+    /// @notice Timelock window for granting factory authority. Same 48h
+    ///         as BCF rotation; same threat model (a briefly-compromised
+    ///         owner key cannot silently add a malicious factory).
+    uint256 internal constant FACTORY_AUTH_TIMELOCK = 48 hours;
 
     EnumerableSet.AddressSet private tokens;
 
@@ -532,26 +551,11 @@ contract LazySecureTrade is
         return batchTradesMap[_batchId];
     }
 
-    /***
-     * @notice Pull multiple batch trade details from the contract - convenience method
-     * @param _batchIdList the list of batch trade IDs to pull
-     */
-    function getBatchTrades(
-        bytes32[] memory _batchIdList
-    ) external view returns (BatchTrade[] memory) {
-        uint256 length = _batchIdList.length;
-        BatchTrade[] memory batches = new BatchTrade[](length);
-
-        for (uint256 i = 0; i < length; ) {
-            batches[i] = batchTradesMap[_batchIdList[i]];
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return batches;
-    }
+    // Note: `getBatchTrades(bytes32[])` (batch convenience reader)
+    // was removed in v0.3 to free LST bytecode for the authorizeFactory
+    // 48h timelock. Consumers should loop `getBatchTrade(bytes32)` —
+    // mirror-node reads of multiple slots cost the same regardless of
+    // whether they're one batched call or N single calls.
 
     /***
      * @notice Pull all batch trades for a user
@@ -1373,10 +1377,28 @@ contract LazySecureTrade is
     }
 
     /***
-     * @notice Authorize or deauthorize a factory contract to create trades on behalf of users
+     * @notice Authorize or deauthorize a factory contract to create
+     *         trades on behalf of users.
+     * @dev    **Asymmetric 2-mode** (security finding H3):
+     *           - **Grant** (`_authorized == true`): queues a 48h
+     *             timelock. Apply via `executeFactoryAuthorization`
+     *             once the ETA elapses; abandon via
+     *             `cancelFactoryAuthorization`. A briefly-compromised
+     *             owner key cannot silently add a malicious factory.
+     *             No-op if the factory is already authorized.
+     *             Re-calling overwrites any prior pending grant for
+     *             the same factory and resets the ETA.
+     *           - **Revoke** (`_authorized == false`): instant. The
+     *             emergency-response path — if a factory turns
+     *             malicious, the owner kicks it out immediately, no
+     *             notice window. Also cancels any pending grant for
+     *             the same factory. No-op if already revoked.
+     *
+     *         See `SECURITY.md` → "Owner Administration Model".
      * **ONLY OWNER**
-     * @param _factory Address of the factory contract
-     * @param _authorized Whether the factory is authorized
+     * @param _factory Address of the factory contract.
+     * @param _authorized True to queue a grant; false to instantly
+     *                    revoke (and clear any pending grant).
      */
     function authorizeFactory(
         address _factory,
@@ -1385,8 +1407,53 @@ contract LazySecureTrade is
         if (_factory == address(0)) {
             revert BadArguments();
         }
-        authorizedFactories[_factory] = _authorized;
-        emit FactoryAuthorized(_factory, _authorized);
+        if (_authorized) {
+            if (authorizedFactories[_factory]) return; // already authorized
+            uint64 eta = uint64(block.timestamp + FACTORY_AUTH_TIMELOCK);
+            pendingFactoryAuthEta[_factory] = eta;
+            emit FactoryAuthorizePending(_factory, eta);
+        } else {
+            if (pendingFactoryAuthEta[_factory] != 0) {
+                delete pendingFactoryAuthEta[_factory];
+                emit FactoryAuthorizationCancelled(_factory);
+            }
+            if (authorizedFactories[_factory]) {
+                authorizedFactories[_factory] = false;
+                emit FactoryAuthorized(_factory, false);
+            }
+        }
+    }
+
+    /**
+     * @notice Apply a pending factory-authorization grant once the
+     *         48h timelock has elapsed.
+     * @dev    Permissionless after ETA — avoids requiring the owner
+     *         to be live at the exact moment of expiry. Same shape as
+     *         `executeBcfChange`.
+     * @param _factory Factory address whose pending grant should apply.
+     */
+    function executeFactoryAuthorization(address _factory) external {
+        uint64 eta = pendingFactoryAuthEta[_factory];
+        if (eta == 0) revert NoPendingFactoryAuth();
+        if (block.timestamp < eta) revert TimelockNotElapsed();
+        authorizedFactories[_factory] = true;
+        delete pendingFactoryAuthEta[_factory];
+        emit FactoryAuthorized(_factory, true);
+    }
+
+    /**
+     * @notice Abandon a pending factory-authorization grant without
+     *         queuing a counter-change. Owner-only — used when the
+     *         legitimate owner regains control after a compromised
+     *         proposal and wants to clear it immediately rather than
+     *         wait out the timelock.
+     * @param _factory Factory address whose pending grant should be
+     *                  cancelled. Reverts if no grant is pending.
+     */
+    function cancelFactoryAuthorization(address _factory) external onlyOwner {
+        if (pendingFactoryAuthEta[_factory] == 0) revert NoPendingFactoryAuth();
+        delete pendingFactoryAuthEta[_factory];
+        emit FactoryAuthorizationCancelled(_factory);
     }
 
     /**
