@@ -39,7 +39,7 @@ const {
 	checkFTAllowances,
 } = require('../utils/hederaMirrorHelpers');
 const { sleep } = require('../utils/nodeHelpers');
-const { EMPTY_AUTH } = require('../utils/agentSigning');
+const { EMPTY_AUTH } = require('../utils/agentAuth');
 const { fail } = require('assert');
 require('dotenv').config();
 
@@ -1099,7 +1099,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx, , record] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeAgainstBid',
-				[execBidId, nftTokenId.toSolidityAddress(), execSerial, EMPTY_AUTH],
+				[execBidId, nftTokenId.toSolidityAddress(), execSerial, ethers.ZeroAddress, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			console.log('Trade executed! tx:', record?.transactionId?.toString());
@@ -1210,7 +1210,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				bidderFactoryId, bidderFactoryIface, client, 3_000_000,
 				'executeArbitrage',
 				// minProfit = 0
-				[arbBidId, arbTradeId, 0, EMPTY_AUTH],
+				[arbBidId, arbTradeId, 0, ethers.ZeroAddress, EMPTY_AUTH],
 				0, true,
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -1318,7 +1318,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeArbitrage',
-				[selfBidId, selfTradeId, 0, EMPTY_AUTH],
+				[selfBidId, selfTradeId, 0, ethers.ZeroAddress, EMPTY_AUTH],
 				0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
@@ -1570,7 +1570,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const [rxArb] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 3_000_000,
-				'executeArbitrage', [bidId, tradeId, 0, EMPTY_AUTH],
+				'executeArbitrage', [bidId, tradeId, 0, ethers.ZeroAddress, EMPTY_AUTH],
 			);
 			expect(rxArb.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1645,7 +1645,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Alice (the seller) tries to arb — SelfTradeBlocked
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [carolBidId, tradeId, 0, EMPTY_AUTH], 0, true,
+				'executeArbitrage', [carolBidId, tradeId, 0, ethers.ZeroAddress, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('P5.16: SelfTradeBlocked fired when msg.sender == trade.seller');
@@ -2126,7 +2126,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(aliceId, alicePK);
 			const [rxExec] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_500_000,
-				'executeAgainstBid', [lazyBidId, nftTokenId.toSolidityAddress(), ser, EMPTY_AUTH],
+				'executeAgainstBid', [lazyBidId, nftTokenId.toSolidityAddress(), ser, ethers.ZeroAddress, EMPTY_AUTH],
 			);
 			expect(rxExec.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2181,7 +2181,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(aliceId, alicePK);
 			const [rxExec] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_500_000,
-				'executeAgainstBid', [lshBidId, nftTokenId.toSolidityAddress(), tradeSerial, EMPTY_AUTH],
+				'executeAgainstBid', [lshBidId, nftTokenId.toSolidityAddress(), tradeSerial, ethers.ZeroAddress, EMPTY_AUTH],
 			);
 			expect(rxExec.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2665,7 +2665,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [floorBidId, floorTradeId, 0, EMPTY_AUTH], 0, true,
+				'executeArbitrage', [floorBidId, floorTradeId, 0, ethers.ZeroAddress, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'ArbitrageProfitInsufficient');
 			console.log('T4: minAcceptablePrice floor enforced (3 HBAR < 8 HBAR → ArbitrageProfitInsufficient)');
@@ -2718,7 +2718,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [washBidId, washTradeId, 0, EMPTY_AUTH], 0, true,
+				'executeArbitrage', [washBidId, washTradeId, 0, ethers.ZeroAddress, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('T7: Self-arb blocked with SelfTradeBlocked (bid.user == trade.seller)');
@@ -2917,7 +2917,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [xvecBidId, xvecTradeId, 0, EMPTY_AUTH], 0, true,
+				'executeArbitrage', [xvecBidId, xvecTradeId, 0, ethers.ZeroAddress, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('P5.21: cross-vector self-arb blocked (bid.user=Bob, trade.seller=Bob\'s stash, both resolve)');

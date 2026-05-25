@@ -38,6 +38,7 @@ const {
 	checkMirrorBalance,
 	getSerialsOwned,
 } = require('../utils/hederaMirrorHelpers');
+const { EMPTY_AUTH } = require('../utils/agentAuth');
 require('dotenv').config();
 
 const MIRROR_DELAY = Number(process.env.SLEEP_TIME) || 5000;
@@ -281,7 +282,7 @@ describe('EnglishAuction tests', function () {
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_000_000,
 				'createAuction',
-				[defaultParams([]), ethers.ZeroHash], 0, true,
+				[defaultParams([]), EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'InvalidBundleSize');
 			client.setOperator(operatorId, operatorKey);
@@ -292,7 +293,7 @@ describe('EnglishAuction tests', function () {
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_500_000,
 				'createAuction',
-				[defaultParams([nftItem(testSerial)], { duration: 10 }), ethers.ZeroHash], 0, true,
+				[defaultParams([nftItem(testSerial)], { duration: 10 }), EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'InvalidDuration');
 			client.setOperator(operatorId, operatorKey);
@@ -303,7 +304,7 @@ describe('EnglishAuction tests', function () {
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(testSerial)]), ethers.ZeroHash],
+				[defaultParams([nftItem(testSerial)]), EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -333,7 +334,7 @@ describe('EnglishAuction tests', function () {
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 5_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s1), nftItem(s2), nftItem(s3)]), ethers.ZeroHash],
+				[defaultParams([nftItem(s1), nftItem(s2), nftItem(s3)]), EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -351,7 +352,7 @@ describe('EnglishAuction tests', function () {
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 5_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s1), ftItem(lazyAmount)]), ethers.ZeroHash],
+				[defaultParams([nftItem(s1), ftItem(lazyAmount)]), EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -367,7 +368,7 @@ describe('EnglishAuction tests', function () {
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_500_000,
 				'createAuction',
-				[defaultParams(items), ethers.ZeroHash], 0, true,
+				[defaultParams(items), EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'InvalidBundleSize');
 			client.setOperator(operatorId, operatorKey);
@@ -399,7 +400,7 @@ describe('EnglishAuction tests', function () {
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(bidSerial)], { duration: 60 }), ethers.ZeroHash],
+				[defaultParams([nftItem(bidSerial)], { duration: 60 }), EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
@@ -410,7 +411,7 @@ describe('EnglishAuction tests', function () {
 			const tinybars = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_000_000,
-				'placeBid', [bidAuctionId, tinybars, ethers.ZeroHash], new Hbar(tinybars, HbarUnit.Tinybar), true,
+				'placeBid', [bidAuctionId, tinybars, EMPTY_AUTH], new Hbar(tinybars, HbarUnit.Tinybar), true,
 			);
 			expectRevertNamed(result, 'BidderIsSeller');
 			client.setOperator(operatorId, operatorKey);
@@ -421,7 +422,7 @@ describe('EnglishAuction tests', function () {
 			const tinybars = Number(new Hbar(0.5, HbarUnit.Hbar).toTinybars());
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_000_000,
-				'placeBid', [bidAuctionId, tinybars, ethers.ZeroHash], new Hbar(tinybars, HbarUnit.Tinybar), true,
+				'placeBid', [bidAuctionId, tinybars, EMPTY_AUTH], new Hbar(tinybars, HbarUnit.Tinybar), true,
 			);
 			expectRevertNamed(result, 'BidBelowMinimum');
 			client.setOperator(operatorId, operatorKey);
@@ -432,7 +433,7 @@ describe('EnglishAuction tests', function () {
 			const tinybars = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_000_000,
-				'placeBid', [bidAuctionId, tinybars, ethers.ZeroHash], new Hbar(1, HbarUnit.Tinybar), true,
+				'placeBid', [bidAuctionId, tinybars, EMPTY_AUTH], new Hbar(1, HbarUnit.Tinybar), true,
 			);
 			expectRevertNamed(result, 'WrongPaymentValue');
 			client.setOperator(operatorId, operatorKey);
@@ -443,7 +444,7 @@ describe('EnglishAuction tests', function () {
 			const tinybars = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_500_000,
-				'placeBid', [bidAuctionId, tinybars, ethers.ZeroHash], new Hbar(tinybars, HbarUnit.Tinybar),
+				'placeBid', [bidAuctionId, tinybars, EMPTY_AUTH], new Hbar(tinybars, HbarUnit.Tinybar),
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -468,7 +469,7 @@ describe('EnglishAuction tests', function () {
 			const tinybars = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_500_000,
-				'placeBid', [bidAuctionId, tinybars, ethers.ZeroHash], new Hbar(tinybars, HbarUnit.Tinybar),
+				'placeBid', [bidAuctionId, tinybars, EMPTY_AUTH], new Hbar(tinybars, HbarUnit.Tinybar),
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			await sleep(MIRROR_DELAY);
@@ -503,7 +504,7 @@ describe('EnglishAuction tests', function () {
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s)]), ethers.ZeroHash],
+				[defaultParams([nftItem(s)]), EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
@@ -511,7 +512,7 @@ describe('EnglishAuction tests', function () {
 			client.setOperator(bobId, bobPK);
 			const result = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_000_000,
-				'buyNow', [aid, ethers.ZeroHash], new Hbar(1, HbarUnit.Tinybar), true,
+				'buyNow', [aid, EMPTY_AUTH], new Hbar(1, HbarUnit.Tinybar), true,
 			);
 			expectRevertNamed(result, 'InvalidBuyNowPrice');
 			client.setOperator(operatorId, operatorKey);
@@ -536,7 +537,7 @@ describe('EnglishAuction tests', function () {
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s)], { buyNowPrice, reservePrice: buyNowPrice }), ethers.ZeroHash],
+				[defaultParams([nftItem(s)], { buyNowPrice, reservePrice: buyNowPrice }), EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
@@ -544,7 +545,7 @@ describe('EnglishAuction tests', function () {
 			client.setOperator(bobId, bobPK);
 			const [rx] = await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_500_000,
-				'buyNow', [aid, ethers.ZeroHash], new Hbar(buyNowPrice, HbarUnit.Tinybar),
+				'buyNow', [aid, EMPTY_AUTH], new Hbar(buyNowPrice, HbarUnit.Tinybar),
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -578,7 +579,7 @@ describe('EnglishAuction tests', function () {
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s)]), ethers.ZeroHash],
+				[defaultParams([nftItem(s)]), EMPTY_AUTH],
 			);
 			await sleep(MIRROR_DELAY);
 
@@ -612,7 +613,7 @@ describe('EnglishAuction tests', function () {
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 3_000_000,
 				'createAuction',
-				[defaultParams([nftItem(s)]), ethers.ZeroHash],
+				[defaultParams([nftItem(s)]), EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
@@ -622,7 +623,7 @@ describe('EnglishAuction tests', function () {
 			const bid = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 			await contractExecuteFunction(
 				auctionId_contractId, auctionIface, client, 1_500_000,
-				'placeBid', [aid, bid, ethers.ZeroHash], new Hbar(bid, HbarUnit.Tinybar),
+				'placeBid', [aid, bid, EMPTY_AUTH], new Hbar(bid, HbarUnit.Tinybar),
 			);
 			await sleep(MIRROR_DELAY);
 
@@ -661,7 +662,7 @@ describe('EnglishAuction tests', function () {
 				await contractExecuteFunction(
 					auctionId_contractId, auctionIface, client, 3_000_000,
 					'createAuction',
-					[defaultParams([nftItem(s)], { duration: 35 }), ethers.ZeroHash],
+					[defaultParams([nftItem(s)], { duration: 35 }), EMPTY_AUTH],
 				);
 				await sleep(MIRROR_DELAY);
 
@@ -670,7 +671,7 @@ describe('EnglishAuction tests', function () {
 				const bid = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
 				await contractExecuteFunction(
 					auctionId_contractId, auctionIface, client, 1_500_000,
-					'placeBid', [aid, bid, ethers.ZeroHash], new Hbar(bid, HbarUnit.Tinybar),
+					'placeBid', [aid, bid, EMPTY_AUTH], new Hbar(bid, HbarUnit.Tinybar),
 				);
 				client.setOperator(operatorId, operatorKey);
 

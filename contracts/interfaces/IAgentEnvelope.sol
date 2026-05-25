@@ -11,6 +11,18 @@ import {IVIPSubscription} from "./IVIPSubscription.sol";
  *         `EnglishAuction`, future) call `spendForAgent` on the stash to
  *         authorize + consume budget for agent-initiated actions.
  *
+ *         **Authentication model:** Hedera-native msg.sender. The agent
+ *         submits transactions from its own Hedera account (either ECDSA
+ *         secp256k1 OR ED25519 — both supported); Hedera's consensus
+ *         layer verifies the tx signature before the EVM runs; `msg.sender`
+ *         arrives at the contract pre-authenticated. The on-chain check
+ *         is `msg.sender == envelope.agentKey`. We do NOT re-verify a
+ *         contract-level signature (no ecrecover, no EIP-712) — that
+ *         would be redundant AND would lock out ED25519 agents (no EVM
+ *         precompile for ED25519 verification on Hedera). Agent keys
+ *         MUST be EOA addresses; contract addresses are rejected at
+ *         envelope creation.
+ *
  *         Trade-fee tier resolution stays with `LSHTierLib` (LSH holdings);
  *         envelope slot-count + per-envelope budget limits come from
  *         `IVIPSubscription` (paid tier). The two axes are deliberately
@@ -18,9 +30,7 @@ import {IVIPSubscription} from "./IVIPSubscription.sol";
  *
  * @dev    Storage layout for `AgentEnvelope` is load-bearing: 5 slots,
  *         packed as documented in `BidderContract`. Reordering fields
- *         silently corrupts every deployed stash's envelope state. The
- *         `EnvelopeParams` and `AgentAuth` structs are calldata-only and
- *         can evolve more freely behind versioned function variants.
+ *         silently corrupts every deployed stash's envelope state.
  */
 interface IAgentEnvelope {
     // ============================================
@@ -59,10 +69,7 @@ interface IAgentEnvelope {
         HbarDailyCapExceeded,
         LazyDailyCapExceeded,
         HbarPerTxCapExceeded,
-        LazyPerTxCapExceeded,
-        NonceMismatch,
-        DeadlinePassed,
-        BadSignature
+        LazyPerTxCapExceeded
     }
 
     // ============================================
@@ -73,10 +80,10 @@ interface IAgentEnvelope {
     ///         stash; documented here so consumers can decode mirror reads
     ///         + index events without re-deriving the layout.
     ///
-    /// @dev    Slot layout (5 slots, fully packed where possible):
+    /// @dev    Slot layout (5 slots, packed where possible):
     ///         Slot 0: agentKey(20) + expiresAt(8) + allowedActions(4)
     ///         Slot 1: dailyHbarCap(12) + consumedHbarToday(12) + lastResetDay(8)
-    ///         Slot 2: dailyLazyCap(12) + consumedLazyToday(12) + nonce(8)
+    ///         Slot 2: dailyLazyCap(12) + consumedLazyToday(12) + 8 free
     ///         Slot 3: perTxHbarCap(12) + perTxLazyCap(12) + flags(1) + 7 free
     ///         Slot 4: reasoningTopicId(32)
     ///
@@ -88,7 +95,7 @@ interface IAgentEnvelope {
     ///           bits 2-7 = reserved
     struct AgentEnvelope {
         // Slot 0
-        address agentKey;            // ECDSA signer address (ecrecover return)
+        address agentKey;            // EOA address — msg.sender comparator
         uint64  expiresAt;           // unix seconds; 0 = no expiry (capped via tier)
         uint32  allowedActions;      // bitmap over ActionType
         // Slot 1
@@ -98,11 +105,10 @@ interface IAgentEnvelope {
         // Slot 2
         uint96  dailyLazyCap;        // LAZY base units per UTC day
         uint96  consumedLazyToday;
-        uint64  nonce;               // monotonic, anti-replay
         // Slot 3
         uint96  perTxHbarCap;        // tinybars per single action
         uint96  perTxLazyCap;        // LAZY base units per single action
-        uint8   flags;               // bit 0 paused, bit 1 active, 6 reserved
+        uint8   flags;               // bit 0 paused, bit 1 active
         // Slot 4
         bytes32 reasoningTopicId;    // HCS-10 topic; bytes32(0) = unset
     }
@@ -122,22 +128,20 @@ interface IAgentEnvelope {
     }
 
     /// @notice Compact wire form passed by callers on every authenticated
-    ///         action. `signature.length == 0` is the owner-bypass marker —
+    ///         action. `agentKey == address(0)` is the owner-path marker —
     ///         when present, the caller MUST be the stash owner and no
-    ///         envelope state is touched (matches the pre-envelope path).
+    ///         envelope state is touched.
     ///
-    /// @dev    The 65-byte ECDSA signature is over the EIP-712 digest of
-    ///         the action's struct hash + domain (chainId + stash address).
-    ///         The struct hash composition is action-specific and lives in
-    ///         the call-site contract (BCF, EA) — the library only consumes
-    ///         the precomputed hash.
+    /// @dev    Authentication is msg.sender == agentKey, enforced by the
+    ///         contract's `_ownerOrAgentMsgSender`. No signature field
+    ///         and no nonce — Hedera's protocol layer already validated
+    ///         msg.sender ahead of EVM execution; each tx is unique by
+    ///         consensus timestamp so there's no replay vector to guard.
+    ///         `reasoningTopicId` is carried into events for off-chain
+    ///         agent-reasoning correlation.
     struct AgentAuth {
-        address agentKey;            // address(0) when signature is empty
-        address stash;               // stash to dispatch spendForAgent on (EIP-712 verifyingContract)
-        uint64  nonce;               // must equal envelope.nonce + 1
-        uint64  deadline;            // unix seconds; reverts past this
-        bytes32 reasoningTopicId;    // emitted in events; need not match envelope's stored value
-        bytes   signature;           // 65 bytes (r,s,v) or empty for owner-bypass
+        address agentKey;            // address(0) for owner path
+        bytes32 reasoningTopicId;    // emitted in events
     }
 
     /// @notice BCF-owned table mapping VIP tier to envelope-creation caps.
@@ -191,7 +195,6 @@ interface IAgentEnvelope {
         uint96 lazyAmount,
         uint96 remainingHbar,
         uint96 remainingLazy,
-        uint64 newNonce,
         bytes32 reasoningTopicId
     );
 
@@ -214,6 +217,7 @@ interface IAgentEnvelope {
     error InvalidEnvelopeParams();
     error TierCapExceeded(uint8 attempted, uint8 tierCap);
     error TierDoesNotPermitEnvelopes();
+    error AgentKeyIsContract();
     error CallerNotAuthorized();
     error VIPSubscriptionUnavailable();
 
@@ -231,32 +235,4 @@ interface IAgentEnvelope {
     /// @notice Number of active envelopes on the stash. Compared against
     ///         the tier cap inside `createEnvelope`.
     function activeEnvelopeCount() external view returns (uint8);
-
-    /// @notice Enumerate active envelopes. Returns up to `limit` agent
-    ///         keys starting at `offset`. `nextOffset == 0` signals
-    ///         "no more pages." Hard-capped at 200 per call.
-    function getActiveAgents(uint256 offset, uint256 limit)
-        external view returns (address[] memory keys, uint256 nextOffset);
-
-    /// @notice Current monotonic nonce for an envelope. The next valid
-    ///         action MUST carry `auth.nonce == nonceFor(agent) + 1`.
-    function nonceFor(address agent) external view returns (uint64);
-
-    /// @notice Remaining HBAR + LAZY budget for the current UTC day, and
-    ///         the unix-second timestamp at which the daily window rolls
-    ///         over. Pure view — the runtime should NOT rely on this for
-    ///         correctness (mirror lag); the contract is source of truth.
-    function getRemainingBudget(address agent)
-        external view returns (uint96 hbarRemaining, uint96 lazyRemaining, uint64 windowResetsAt);
-
-    /// @notice Pre-flight check used by SDKs + agent runtimes to surface
-    ///         a typed reason before paying gas. `Ok` means the action
-    ///         WOULD succeed for the supplied amounts and the current
-    ///         envelope state; does NOT consume any state.
-    function canAuthorize(
-        address agent,
-        ActionType action,
-        uint96 hbarAmount,
-        uint96 lazyAmount
-    ) external view returns (bool ok, AuthFailCode reason);
 }

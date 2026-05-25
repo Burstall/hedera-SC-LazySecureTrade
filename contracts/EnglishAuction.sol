@@ -15,6 +15,7 @@ import {IHederaTokenService} from "./interfaces/IHederaTokenService.sol";
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {LSHTierLib} from "./libraries/LSHTierLib.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
+import {IAgentEnvelope} from "./interfaces/IAgentEnvelope.sol";
 import {IEnglishAuction} from "./interfaces/IEnglishAuction.sol";
 
 /**
@@ -384,18 +385,19 @@ contract EnglishAuction is
     ///         prevent a sell-LSH-before-settle game.
     function createAuction(
         AuctionParams calldata params,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant whenNotPaused returns (bytes32 auctionId) {
-        return _createAuctionFor(msg.sender, params, agentKey);
+        return _createAuctionFor(msg.sender, params, auth);
     }
 
-    /// @dev Internal create path. Used both by `createAuction` (msg.sender
-    ///      is seller) and (in a future commit) by the factory-authorized
-    ///      `createAuctionOnBehalfOfStash`.
+    /// @dev Internal create path. Used by `createAuction` (msg.sender
+    ///      is the seller). For agent-mediated flows, the seller's
+    ///      stash exposes a `createAuctionListing` entry point that
+    ///      performs envelope verification + forwards here.
     function _createAuctionFor(
         address seller,
         AuctionParams calldata params,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) internal returns (bytes32 auctionId) {
         // Validate bundle
         uint256 itemCount = params.items.length;
@@ -450,8 +452,8 @@ contract EnglishAuction is
             a.closeAt,
             a.maxCloseAt,
             a.sellerTierAtCreate,
-            agentKey,
-            bytes32(0)
+            bytes32(uint256(uint160(auth.agentKey))),
+            auth.reasoningTopicId
         );
     }
 
@@ -490,9 +492,9 @@ contract EnglishAuction is
     function placeBid(
         bytes32 auctionId,
         uint96 amount,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external payable nonReentrant whenNotPaused {
-        _placeBid(auctionId, amount, agentKey, false);
+        _placeBid(auctionId, amount, auth, false);
     }
 
     /// @notice Convenience wrapper: pay exactly buyNowPrice to collapse
@@ -500,17 +502,17 @@ contract EnglishAuction is
     ///         buy-now price.
     function buyNow(
         bytes32 auctionId,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external payable nonReentrant whenNotPaused {
         AuctionStorage storage a = auctions[auctionId];
         if (a.buyNowPrice == 0) revert InvalidBuyNowPrice();
-        _placeBid(auctionId, a.buyNowPrice, agentKey, true);
+        _placeBid(auctionId, a.buyNowPrice, auth, true);
     }
 
     function _placeBid(
         bytes32 auctionId,
         uint96 amount,
-        bytes32 agentKey,
+        IAgentEnvelope.AgentAuth calldata auth,
         bool calledViaBuyNow
     ) internal {
         AuctionStorage storage a = auctions[auctionId];
@@ -586,8 +588,8 @@ contract EnglishAuction is
             extended,
             a.closeAt,
             triggeredBuyNow,
-            agentKey,
-            bytes32(0)
+            bytes32(uint256(uint160(auth.agentKey))),
+            auth.reasoningTopicId
         );
 
         // If buy-now triggered (or called via buyNow), settle immediately

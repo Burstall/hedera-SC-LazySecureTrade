@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity >=0.8.12 <0.9.0;
 
+import {IAgentEnvelope} from "./IAgentEnvelope.sol";
+
 /**
  * @title IEnglishAuction
  * @notice Minimal read + write surface for the EnglishAuction contract.
@@ -225,7 +227,7 @@ interface IEnglishAuction {
 
     function createAuction(
         AuctionParams calldata params,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external returns (bytes32 auctionId);
 
     function cancelAuction(bytes32 auctionId) external;
@@ -233,10 +235,13 @@ interface IEnglishAuction {
     function placeBid(
         bytes32 auctionId,
         uint96 amount,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external payable;
 
-    function buyNow(bytes32 auctionId, bytes32 agentKey) external payable;
+    function buyNow(
+        bytes32 auctionId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external payable;
 
     function settle(bytes32 auctionId) external;
 

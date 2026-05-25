@@ -621,29 +621,13 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert InvalidBidDetails();
         }
 
-        // Agent envelope check (when auth populated). Composes the
-        // EIP-712 struct hash here so the heavy keccak machinery stays
-        // off the stash bytecode; calls back `spendForAgent` on the
-        // stash (which performs signature recovery + budget decrement
-        // against the stash's own storage).
-        if (auth.signature.length != 0) {
+        // Agent envelope check (when agent path active). Callback to
+        // the stash's spendForAgent which decrements envelope budget.
+        // No signature composition — Hedera msg.sender auth.
+        if (auth.agentKey != address(0)) {
             BidderContract(payable(msg.sender)).spendForAgent(
                 auth,
                 IAgentEnvelope.ActionType.BidCreate,
-                keccak256(abi.encode(
-                    TYPEHASH_BID_CREATE,
-                    auth.agentKey,
-                    auth.stash,
-                    auth.nonce,
-                    auth.deadline,
-                    bidDetails.token,
-                    keccak256(abi.encodePacked(bidDetails.serials)),
-                    bidDetails.hbarAmount,
-                    bidDetails.lazyAmount,
-                    bidDetails.expiry,
-                    bidDetails.minAcceptablePrice,
-                    auth.reasoningTopicId
-                )),
                 uint96(bidDetails.hbarAmount),
                 uint96(bidDetails.lazyAmount)
             );
@@ -714,21 +698,12 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert UnauthorizedCaller();
         }
 
-        // Agent envelope check (when auth populated). Budget = 0/0:
+        // Agent envelope check (when agent path active). Budget = 0/0:
         // cancellation doesn't commit new spend.
-        if (auth.signature.length != 0) {
+        if (auth.agentKey != address(0)) {
             BidderContract(payable(bid.stash)).spendForAgent(
                 auth,
                 IAgentEnvelope.ActionType.BidCancel,
-                keccak256(abi.encode(
-                    TYPEHASH_BID_CANCEL,
-                    auth.agentKey,
-                    auth.stash,
-                    auth.nonce,
-                    auth.deadline,
-                    bidId,
-                    auth.reasoningTopicId
-                )),
                 0,
                 0
             );
@@ -1279,26 +1254,12 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert InvalidStash();
         }
 
-        // Agent envelope check (when auth populated). Budget = 0/0:
+        // Agent envelope check (when agent path active). Budget = 0/0:
         // listing escrows via NFT approval, no new fund commitment.
-        if (auth.signature.length != 0) {
+        if (auth.agentKey != address(0)) {
             BidderContract(payable(msg.sender)).spendForAgent(
                 auth,
                 IAgentEnvelope.ActionType.TradeList,
-                keccak256(abi.encode(
-                    TYPEHASH_CREATE_TRADE,
-                    auth.agentKey,
-                    auth.stash,
-                    auth.nonce,
-                    auth.deadline,
-                    token,
-                    buyer,
-                    serial,
-                    tinybarPrice,
-                    lazyPrice,
-                    expiryTime,
-                    auth.reasoningTopicId
-                )),
                 0,
                 0
             );
@@ -1355,24 +1316,18 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // Agent dispatch — both legacy and agent paths resolve to a
         // beneficial owner that must match the stash's owner. Envelope
         // budget consumed = 0/0 (cancellation doesn't commit new spend).
+        // For the agent path, the agent's callerStash is the same stash
+        // that listed the trade (trade.seller).
         (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
             = _resolveAgentOrOwner(
                 auth,
+                trade.seller,
                 IAgentEnvelope.ActionType.TradeCancel,
-                _cancelTradeStructHash(auth, tradeId),
                 0,
                 0
             );
         if (effectiveCaller != stashOwnerOf[trade.seller])
             revert UnauthorizedCaller();
-        // Defensive: on the agent path, auth.stash must match the trade's
-        // seller stash. Without this an agent for stashA could try to
-        // cancel a trade owned by stashA — caught above by the owner
-        // mismatch — but if stashA and stashB share an owner (impossible
-        // by design but cheap to enforce), this closes the door.
-        if (auth.signature.length != 0 && auth.stash != trade.seller) {
-            revert UnauthorizedCaller();
-        }
 
         // Instruct the stash to cancel. The stash re-derives (token, serial)
         // from LST itself — no spoofable params forwarded. The stash
@@ -1386,28 +1341,6 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             effectiveCaller,
             bytes32(uint256(uint160(agentKeyForEvent))),
             reasoningTopic
-        );
-    }
-
-    /// @dev keccak256("CancelTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 tradeId,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_CANCEL_TRADE = keccak256(
-        "CancelTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 tradeId,bytes32 reasoningTopicId)"
-    );
-
-    function _cancelTradeStructHash(
-        IAgentEnvelope.AgentAuth calldata auth,
-        bytes32 tradeId
-    ) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                TYPEHASH_CANCEL_TRADE,
-                auth.agentKey,
-                auth.stash,
-                auth.nonce,
-                auth.deadline,
-                tradeId,
-                auth.reasoningTopicId
-            )
         );
     }
 
@@ -1433,6 +1366,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         bytes32 bidId,
         address nftToken,
         uint256 serial,
+        address callerStash,
         IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (bytes32 tradeId) {
         // Shared validation: exists, Active, not expired, stash funded
@@ -1448,11 +1382,13 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
 
         // Agent dispatch — envelope budget = 0/0 (no new commitment;
         // the seller's NFT is the value flowing, not new stash funds).
+        // `callerStash` is the agent's own stash on the agent path; on
+        // the EOA / legacy path it is ignored and may be address(0).
         (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
             = _resolveAgentOrOwner(
                 auth,
+                callerStash,
                 IAgentEnvelope.ActionType.TradeExecute,
-                _executeAgainstBidStructHash(auth, bidId, nftToken, serial),
                 0,
                 0
             );
@@ -1516,32 +1452,6 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         );
     }
 
-    /// @dev keccak256("ExecuteAgainstBid(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,address nftToken,uint256 serial,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_EXECUTE_AGAINST_BID = keccak256(
-        "ExecuteAgainstBid(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,address nftToken,uint256 serial,bytes32 reasoningTopicId)"
-    );
-
-    function _executeAgainstBidStructHash(
-        IAgentEnvelope.AgentAuth calldata auth,
-        bytes32 bidId,
-        address nftToken,
-        uint256 serial
-    ) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                TYPEHASH_EXECUTE_AGAINST_BID,
-                auth.agentKey,
-                auth.stash,
-                auth.nonce,
-                auth.deadline,
-                bidId,
-                nftToken,
-                serial,
-                auth.reasoningTopicId
-            )
-        );
-    }
-
     // ============================================
     // Arbitrage
     // ============================================
@@ -1596,6 +1506,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         bytes32 bidId,
         bytes32 existingTradeId,
         uint256 minProfit,
+        address callerStash,
         IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (uint256 spread) {
         // Shared validation: exists, Active, not expired, stash funded
@@ -1620,13 +1531,14 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // Agent dispatch. effectiveCaller is msg.sender's beneficial
         // owner on the legacy path, or the stash owner on the agent path.
         // Envelope budget consumed: 0/0 — arbitrage doesn't commit new
-        // spend; it routes already-committed bid funds. The envelope
-        // still enforces signature, nonce, permission, expiry, paused.
+        // spend; it routes already-committed bid funds. Envelope still
+        // enforces permission + per-tx caps + paused/expired state.
+        // `callerStash` is the agent's stash (ignored on legacy path).
         (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
             = _resolveAgentOrOwner(
                 auth,
+                callerStash,
                 IAgentEnvelope.ActionType.Arbitrage,
-                _arbitrageStructHash(auth, bidId, existingTradeId, minProfit),
                 0,
                 0
             );
@@ -1849,99 +1761,68 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     // EIP-712 action TYPEHASHes
     // ============================================
     //
-    // One typehash per agent-authorizable action. The struct hash is
-    // composed inline at each call site; the library binds the EIP-712
-    // domain (chainId + stash address) when called via spendForAgent on
-    // the stash. Field order must match the corresponding `_*StructHash`
-    // composer below.
-
-    /// @dev keccak256("BidCreate(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,uint256[] serials,uint256 hbarAmount,uint256 lazyAmount,uint256 expiry,uint256 minAcceptablePrice,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_BID_CREATE = keccak256(
-        "BidCreate(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,uint256[] serials,uint256 hbarAmount,uint256 lazyAmount,uint256 expiry,uint256 minAcceptablePrice,bytes32 reasoningTopicId)"
-    );
-
-    /// @dev keccak256("BidCancel(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_BID_CANCEL = keccak256(
-        "BidCancel(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 reasoningTopicId)"
-    );
-
-    /// @dev keccak256("CreateTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,address buyer,uint256 serial,uint256 tinybarPrice,uint256 lazyPrice,uint256 expiryTime,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_CREATE_TRADE = keccak256(
-        "CreateTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,address buyer,uint256 serial,uint256 tinybarPrice,uint256 lazyPrice,uint256 expiryTime,bytes32 reasoningTopicId)"
-    );
-
-    /// @dev keccak256("Arbitrage(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 tradeId,uint256 minProfit,bytes32 reasoningTopicId)")
-    bytes32 internal constant TYPEHASH_ARBITRAGE = keccak256(
-        "Arbitrage(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 tradeId,uint256 minProfit,bytes32 reasoningTopicId)"
-    );
-
-    function _arbitrageStructHash(
-        IAgentEnvelope.AgentAuth calldata auth,
-        bytes32 bidId,
-        bytes32 tradeId,
-        uint256 minProfit
-    ) internal pure returns (bytes32) {
-        return keccak256(
-            abi.encode(
-                TYPEHASH_ARBITRAGE,
-                auth.agentKey,
-                auth.stash,
-                auth.nonce,
-                auth.deadline,
-                bidId,
-                tradeId,
-                minProfit,
-                auth.reasoningTopicId
-            )
-        );
-    }
+    // Agent envelope dispatch — Hedera-native msg.sender auth. No EIP-712,
+    // no signature verification at the contract layer (Hedera's protocol
+    // layer already validated msg.sender's signature, and msg.sender is
+    // checked equal to auth.agentKey in the dispatch helper below). The
+    // stash side performs the envelope state check + budget decrement
+    // via `spendForAgent`.
 
     /**
-     * @dev Single dispatch helper for the AgentAuth-bearing entry points.
-     *      `auth.signature.length == 0` is the legacy/owner path — no
-     *      envelope state touched, msg.sender is the actor. Otherwise
-     *      the agent EOA is calling; we verify msg.sender matches the
-     *      claimed agentKey, dispatch to the named stash's spendForAgent
-     *      choke point (which verifies the signature + decrements
-     *      budget), and resolve the beneficial owner from the stash.
+     * @dev Single dispatch helper for the AgentAuth-bearing EOA entry
+     *      points (`executeArbitrage`, `executeAgainstBid`,
+     *      `cancelTradeFromStash`). For stash-mediated entry points
+     *      (`createBid`, `cancelBid`, `createTradeOnBehalfOfStash`),
+     *      `_dispatchStashMediated` is used instead since msg.sender
+     *      is already the stash.
      *
-     *      Returns the triple (effective caller, agent key for events,
-     *      reasoning topic for events) so the caller can route profit
-     *      credits + emit consistent attribution without re-reading state.
+     *      `auth.agentKey == address(0)` → owner / EOA path. Returns
+     *      `(_resolveBeneficialOwner(msg.sender), 0, 0)`. Envelope state
+     *      untouched. Beneficial-owner resolution preserves the
+     *      EOA-vs-stash distinction for self-trade gates.
+     *
+     *      Otherwise → agent path. Requires `msg.sender == agentKey`
+     *      (Hedera consensus already validated this account signed the
+     *      tx) and that `auth.agentKey` has an active envelope on a
+     *      registered stash. Looks up the stash via the caller-provided
+     *      `callerStash` parameter; verifies it's a registered stash
+     *      and that the envelope's owner controls it; then callbacks
+     *      `BidderContract.spendForAgent` for envelope verification +
+     *      budget decrement.
      *
      *      Budget amounts here are the SPEND consequences for THIS
-     *      action — for arbitrage, the spend was already committed at
-     *      bid-creation time, so we pass (0, 0) and the envelope only
-     *      enforces signature + nonce + permission. Bid-creation paths
-     *      pass the real (hbar, lazy) commitment.
+     *      action — for arbitrage / executeAgainstBid, the spend was
+     *      committed at bid-creation time, so we pass (0, 0) and the
+     *      envelope only enforces permission + per-tx caps + paused
+     *      state. Bid-creation paths pass the real (hbar, lazy)
+     *      commitment via `_dispatchStashMediated` below.
      */
     function _resolveAgentOrOwner(
         IAgentEnvelope.AgentAuth calldata auth,
+        address callerStash,
         IAgentEnvelope.ActionType action,
-        bytes32 structHash,
         uint96 hbarAmount,
         uint96 lazyAmount
     ) internal returns (address effectiveCaller, address agentKey, bytes32 topic) {
-        if (auth.signature.length == 0) {
-            // Legacy / owner path. Beneficial-owner resolution handles
-            // the EOA-vs-stash distinction for self-trade gates.
+        if (auth.agentKey == address(0)) {
+            // Legacy / owner path.
             return (_resolveBeneficialOwner(msg.sender), address(0), bytes32(0));
         }
         if (msg.sender != auth.agentKey) {
             revert IAgentEnvelope.EnvelopeAuthFailed(
-                auth.agentKey, IAgentEnvelope.AuthFailCode.BadSignature
+                auth.agentKey, IAgentEnvelope.AuthFailCode.NotFound
             );
         }
-        if (!isValidStash[auth.stash]) {
+        if (!isValidStash[callerStash]) {
             revert IAgentEnvelope.EnvelopeAuthFailed(
                 auth.agentKey, IAgentEnvelope.AuthFailCode.NotFound
             );
         }
-        BidderContract(payable(auth.stash)).spendForAgent(
-            auth, action, structHash, hbarAmount, lazyAmount
+        BidderContract(payable(callerStash)).spendForAgent(
+            auth, action, hbarAmount, lazyAmount
         );
-        effectiveCaller = stashOwnerOf[auth.stash];
-        if (effectiveCaller == address(0)) effectiveCaller = auth.stash;
+        effectiveCaller = stashOwnerOf[callerStash];
+        if (effectiveCaller == address(0)) effectiveCaller = callerStash;
         agentKey = auth.agentKey;
         topic = auth.reasoningTopicId;
     }

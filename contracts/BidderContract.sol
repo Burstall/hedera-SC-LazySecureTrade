@@ -10,6 +10,7 @@ import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
 import {IAgentEnvelope} from "./interfaces/IAgentEnvelope.sol";
+import {IEnglishAuction} from "./interfaces/IEnglishAuction.sol";
 import {IVIPSubscription} from "./interfaces/IVIPSubscription.sol";
 import {AgentEnvelopeLib} from "./libraries/AgentEnvelopeLib.sol";
 
@@ -74,24 +75,29 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///           1: `_envelopes` mapping pointer
     ///           1: `_activeAgents` dynamic array head
     ///           1: `_agentIndex` mapping pointer
-    ///           1: `vipSubscription` address + `_allAgentsPaused` bool (packed)
-    ///         Total: 4 slots. Gap reduced from 20 → 16.
+    ///           1: `vipSubscription` + `_allAgentsPaused` (packed, 21 bytes)
+    ///           1: `englishAuction` address
+    ///         Total: 5 slots. Gap reduced from 20 → 15.
     mapping(address => IAgentEnvelope.AgentEnvelope) internal _envelopes;
     address[] internal _activeAgents;
     /// @dev 1-based index into `_activeAgents`. Zero means "not active".
     ///      Enables O(1) swap-pop removal on `cancelEnvelope`.
     mapping(address => uint256) internal _agentIndex;
     /// @notice VIPSubscription consulted at envelope creation to enforce
-    ///         tier-driven slot and cap limits. Owner-settable (instant
-    ///         first wire-up, mirrors LST.setBcf two-mode pattern; see
-    ///         setVipSubscription). When address(0), envelope creation
-    ///         falls back to Free tier (zero slots).
+    ///         tier-driven slot and cap limits. Owner-settable. When
+    ///         address(0), envelope creation falls back to Free tier
+    ///         (zero slots).
     address public vipSubscription;
     /// @notice Global kill-switch — set by the owner via pauseAllAgents.
     ///         While true, every envelope on this stash is denied auth
     ///         regardless of its own paused flag.
     bool internal _allAgentsPaused;
-    uint256[16] private __gap;
+    /// @notice EnglishAuction contract authorized to call `spendForAgent`
+    ///         for auction actions (createAuctionListing, placeAuctionBid,
+    ///         buyNowAuction). Owner-settable; address(0) disables the
+    ///         auction-mediated agent path.
+    address public englishAuction;
+    uint256[15] private __gap;
 
     /// @notice Maximum percentage of stash HBAR balance that can be
     ///         pulled by the factory in a single `arbitrageSettle`
@@ -1006,6 +1012,124 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         );
     }
 
+    // ============================================
+    // EnglishAuction stash-mediated entry points
+    // ============================================
+    //
+    // These forward to EnglishAuction with the stash as msg.sender, so
+    // EA records the stash as the seller / bidder. Stash funds + NFTs
+    // are the source of value. On the agent path, the envelope is
+    // verified + budget consumed INTERNALLY (via AgentEnvelopeLib),
+    // unlike the BCF-mediated paths where the factory callbacks
+    // `spendForAgent`. This avoids a roundtrip — EA stays passive on
+    // auth, and the stash (which already holds the envelope state)
+    // does the verification directly.
+    //
+    // For HBAR-denominated auctions the stash forwards `value` to EA.
+    // For LAZY-denominated auctions the stash approves EA to pull
+    // LAZY via transferFrom. The `isLazy` flag discriminates without
+    // requiring an extra read of the auction's payment token from EA.
+
+    /**
+     * @notice Create an auction listing on EnglishAuction with the
+     *         items in `params.items` escrowed from this stash. Each
+     *         item is per-approved to EA before the forward. Owner-
+     *         or-agent gated.
+     */
+    function createAuctionListing(
+        IEnglishAuction.AuctionParams calldata params,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant returns (bytes32 auctionId) {
+        _ownerOrAgentMsgSender(auth);
+        _envelopeVerifyForAuction(auth, IAgentEnvelope.ActionType.AuctionCreate, 0, 0);
+
+        // Approve each item to EA so `_persistItemsAndEscrow` can pull
+        // them. Per-item / per-serial approval keeps the blast radius
+        // bounded if EA is ever compromised.
+        for (uint256 i; i < params.items.length; ) {
+            IEnglishAuction.AuctionItem memory item = params.items[i];
+            if (item.isNFT) {
+                _approveNFTTo(item.token, englishAuction, item.serialOrAmount);
+            } else {
+                IERC20(item.token).approve(englishAuction, item.serialOrAmount);
+            }
+            unchecked { ++i; }
+        }
+        auctionId = IEnglishAuction(englishAuction).createAuction(params, auth);
+    }
+
+    /**
+     * @notice Place a bid on an EnglishAuction from stash funds.
+     *         `isLazy` discriminates payment-token rail. Owner-or-agent
+     *         gated.
+     */
+    function placeAuctionBid(
+        bytes32 auctionId,
+        uint96 amount,
+        bool isLazy,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant {
+        _ownerOrAgentMsgSender(auth);
+        _envelopeVerifyForAuction(
+            auth,
+            IAgentEnvelope.ActionType.AuctionBid,
+            isLazy ? uint96(0) : amount,
+            isLazy ? amount : uint96(0)
+        );
+
+        if (isLazy) {
+            IERC20(lazyToken).approve(englishAuction, amount);
+            IEnglishAuction(englishAuction).placeBid(auctionId, amount, auth);
+        } else {
+            IEnglishAuction(englishAuction).placeBid{value: amount}(auctionId, amount, auth);
+        }
+    }
+
+    /**
+     * @notice Collapse an EnglishAuction via buyNow from stash funds.
+     *         Caller asserts `buyNowPrice` (must match the auction
+     *         state; EA verifies). Owner-or-agent gated.
+     */
+    function buyNowAuction(
+        bytes32 auctionId,
+        uint96 buyNowPrice,
+        bool isLazy,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant {
+        _ownerOrAgentMsgSender(auth);
+        _envelopeVerifyForAuction(
+            auth,
+            IAgentEnvelope.ActionType.AuctionBuyNow,
+            isLazy ? uint96(0) : buyNowPrice,
+            isLazy ? buyNowPrice : uint96(0)
+        );
+
+        if (isLazy) {
+            IERC20(lazyToken).approve(englishAuction, buyNowPrice);
+            IEnglishAuction(englishAuction).buyNow(auctionId, auth);
+        } else {
+            IEnglishAuction(englishAuction).buyNow{value: buyNowPrice}(auctionId, auth);
+        }
+    }
+
+    /// @dev Internal helper to invoke `AgentEnvelopeLib.verifyAndConsume`
+    ///      on the agent path for the three EA-mediated actions. Skipped
+    ///      on the owner path (auth.agentKey == 0).
+    function _envelopeVerifyForAuction(
+        IAgentEnvelope.AgentAuth calldata auth,
+        IAgentEnvelope.ActionType action,
+        uint96 hbarAmount,
+        uint96 lazyAmount
+    ) internal {
+        if (auth.agentKey == address(0)) return;
+        IAgentEnvelope.AgentEnvelope storage env = _envelopes[auth.agentKey];
+        AgentEnvelopeLib.verifyAndConsume(
+            env, owner, auth, action,
+            hbarAmount, lazyAmount,
+            _allAgentsPaused
+        );
+    }
+
     /**
      * @notice Cancel a stash-listed LST trade and atomically revoke the
      *         per-serial NFT approval granted at listing time.
@@ -1091,6 +1215,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     event AllAgentsPaused(address indexed owner, bool paused);
     event EnvelopeCancelled(address indexed owner, address indexed agentKey, uint8 reason);
     event VipSubscriptionSet(address indexed vipSubscription);
+    event EnglishAuctionSet(address indexed englishAuction);
 
     /// @notice Cancellation reason codes for `EnvelopeCancelled`.
     uint8 internal constant CANCEL_REASON_OWNER = 0;
@@ -1113,6 +1238,16 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     }
 
     /**
+     * @notice Wire the EnglishAuction contract that is authorized to call
+     *         `spendForAgent` for auction-mediated agent actions. Pass
+     *         address(0) to revoke. Owner-only.
+     */
+    function setEnglishAuction(address ea) external onlyOwner {
+        englishAuction = ea;
+        emit EnglishAuctionSet(ea);
+    }
+
+    /**
      * @notice Authorize a new agent key with daily HBAR + LAZY caps.
      * @dev    Tier-driven limits are read from the factory's
      *         `getAgentTierLimits(currentTier)`; the user's current tier
@@ -1131,6 +1266,12 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         external onlyOwner
     {
         if (p.agentKey == address(0)) revert IAgentEnvelope.InvalidEnvelopeParams();
+        // Reject contract addresses as agentKey. The auth model is
+        // msg.sender == agentKey; a contract could be called by anyone
+        // and propagate msg.sender, effectively making "the agent" =
+        // "whoever can call the contract". Forcing EOA keeps the auth
+        // model tight. EOAs (both ECDSA and ED25519) have zero code.
+        if (p.agentKey.code.length > 0) revert IAgentEnvelope.AgentKeyIsContract();
         if (_agentIndex[p.agentKey] != 0) {
             revert IAgentEnvelope.EnvelopeAlreadyExists(p.agentKey);
         }
@@ -1166,7 +1307,6 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         env.perTxLazyCap = p.perTxLazyCap;
         env.reasoningTopicId = p.reasoningTopicId;
         env.lastResetDay = uint64(block.timestamp / AgentEnvelopeLib.DAY_SECONDS);
-        // nonce starts at 0; first agent action must carry nonce == 1.
         env.flags = AgentEnvelopeLib.FLAG_ACTIVE;
 
         _activeAgents.push(p.agentKey);
@@ -1241,18 +1381,26 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      *         touches stash funds. Any revert here means the factory
      *         must abort the higher-level action.
      *
-     * @dev    `onlyFactory` is the v1 authorization boundary. EnglishAuction
-     *         integration in v1.1 introduces a wider authorized-callers
-     *         set; for now the factory is the only entry point.
+     * @dev    `onlyFactory` is the authorization boundary. The factory
+     *         is the only external caller of this entry point — it
+     *         routes envelope verification from its bid/trade dispatch
+     *         paths back through here so that envelope state mutation
+     *         lives on the stash that owns the storage.
      *
-     *         The struct hash is composed at the call site against an
-     *         action-specific TYPEHASH (defined in the factory). The
-     *         library binds the EIP-712 domain to (chainId, stash address)
-     *         so signatures cannot cross chains or stashes.
+     *         EnglishAuction does NOT call this — the auction flow uses
+     *         stash-side entry points (`createAuctionListing`,
+     *         `placeAuctionBid`, `buyNowAuction`) that perform the
+     *         envelope check INTERNALLY via `AgentEnvelopeLib`, then
+     *         forward to EA. EA stays passive on auth.
      *
-     * @param auth         Per-action wire form (agentKey, nonce, deadline, sig, topic).
+     *         No signature verification — Hedera's protocol layer
+     *         already validated msg.sender. The caller's
+     *         `_ownerOrAgentMsgSender` (or equivalent) is responsible
+     *         for confirming `msg.sender == auth.agentKey` before
+     *         invoking this entry point.
+     *
+     * @param auth         Per-action wire form (agentKey + reasoningTopicId).
      * @param action       The action being authorized.
-     * @param structHash   Pre-composed EIP-712 struct hash for this action.
      * @param hbarAmount   HBAR (tinybars) this action will spend.
      * @param lazyAmount   LAZY base units this action will spend.
      * @return remHbar     Remaining daily HBAR after the decrement.
@@ -1261,7 +1409,6 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     function spendForAgent(
         IAgentEnvelope.AgentAuth calldata auth,
         IAgentEnvelope.ActionType action,
-        bytes32 structHash,
         uint96 hbarAmount,
         uint96 lazyAmount
     ) external onlyFactory returns (uint96 remHbar, uint96 remLazy) {
@@ -1271,10 +1418,8 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             owner,
             auth,
             action,
-            structHash,
             hbarAmount,
             lazyAmount,
-            address(this),
             _allAgentsPaused
         );
     }
@@ -1303,10 +1448,6 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         return _activeAgents[i];
     }
 
-    function nonceFor(address agent) external view returns (uint64) {
-        return _envelopes[agent].nonce;
-    }
-
     /// @notice Read the global all-agents-paused flag.
     /// @dev    `getRemainingBudget` + `canAuthorize` were trimmed from
     ///         the on-chain surface to keep stash bytecode under 24 KiB.
@@ -1319,20 +1460,22 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     }
 
     /**
-     * @dev Light caller check for stash-mediated agent paths. Confirms
-     *      msg.sender is either the owner (auth empty) or the claimed
-     *      agentKey (auth populated, auth.stash matches). The actual
-     *      envelope verification (signature, nonce, budget) happens in
-     *      the factory via `spendForAgent` callback — keeping the
-     *      heavy EIP-712 + struct hash composers off the stash.
+     * @dev Owner-or-agent caller check for stash-mediated entry points.
+     *      `auth.agentKey == address(0)` → owner path (msg.sender must
+     *      equal `owner`). Otherwise → agent path (msg.sender must
+     *      equal `auth.agentKey`; the envelope verification + budget
+     *      check happens downstream via `spendForAgent`).
+     *
+     *      Hedera's consensus layer has already verified msg.sender's
+     *      tx signature before this runs, so msg.sender is a sufficient
+     *      authentication signal — no contract-level signature recovery
+     *      needed. Works for both ECDSA and ED25519 Hedera accounts.
      */
     function _ownerOrAgentMsgSender(IAgentEnvelope.AgentAuth calldata auth) internal view {
-        if (auth.signature.length == 0) {
+        if (auth.agentKey == address(0)) {
             if (msg.sender != owner) revert OnlyOwner();
         } else {
-            if (msg.sender != auth.agentKey || auth.stash != address(this)) {
-                revert OnlyOwner();
-            }
+            if (msg.sender != auth.agentKey) revert OnlyOwner();
         }
     }
 

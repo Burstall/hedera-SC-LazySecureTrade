@@ -52,18 +52,18 @@ interface IBidderContractFactory {
 
     /**
      * @notice Create a bid in the factory registry.
-     * @dev    Called by the user's stash. The factory orchestrates the
-     *         agent envelope check (when `auth.signature` is populated)
-     *         by composing the EIP-712 struct hash and calling back
-     *         `BidderContract.spendForAgent` on `msg.sender` — keeping
-     *         the heavy hashing logic off the stash to fit the 24 KiB
-     *         bytecode ceiling.
+     * @dev    Called by the user's stash. When `auth.agentKey != 0` the
+     *         factory callbacks `BidderContract.spendForAgent` on the
+     *         stash (`msg.sender`) for envelope verification + budget
+     *         consumption. No on-chain signature verification —
+     *         Hedera's protocol layer has already authenticated
+     *         msg.sender; auth.agentKey is checked equal to the
+     *         envelope's stored agentKey inside `verifyAndConsume`.
      * @param bidDetails Bid details struct.
-     * @param auth       Optional agent envelope authorization. Empty
-     *                   signature = owner-initiated path; populated =
-     *                   agent path (envelope verification + budget
-     *                   consumption against `bidDetails.hbarAmount` and
-     *                   `bidDetails.lazyAmount`).
+     * @param auth       Optional agent envelope authorization.
+     *                   `agentKey == address(0)` = owner-initiated path;
+     *                   populated = agent path (envelope budget consumed
+     *                   against `bidDetails.hbarAmount` and `lazyAmount`).
      * @return bidId Unique bid identifier.
      */
     function createBid(
@@ -75,7 +75,8 @@ interface IBidderContractFactory {
      * @notice Cancel a bid in the factory registry.
      * @dev    Same envelope-via-callback model as `createBid`.
      * @param bidId Bid identifier.
-     * @param auth  Optional agent envelope authorization.
+     * @param auth  Optional agent envelope authorization (agentKey == 0
+     *              = legacy path).
      */
     function cancelBid(
         bytes32 bidId,
@@ -117,15 +118,11 @@ interface IBidderContractFactory {
     /**
      * @notice Cancel a stash-listed trade from the human owner's EOA
      *         (legacy path) OR from an authorized agent (envelope path).
-     * @dev Resolves the trade on LST, verifies (a) the seller is a
-     *      registered stash, and (b) the caller has authority over that
-     *      stash. The authority check supports two modes:
-     *
-     *      - Legacy (auth.signature empty): require
-     *        `stashOwnerOf[trade.seller] == msg.sender`.
-     *      - Agent (auth.signature populated): verify msg.sender ==
-     *        auth.agentKey AND auth.stash == trade.seller AND the
-     *        envelope authorizes TradeCancel.
+     * @dev Resolves the trade on LST, then calls `_resolveAgentOrOwner`
+     *      to produce an `effectiveCaller` — the beneficial owner of
+     *      `msg.sender` on the legacy path, or the agent's stash owner
+     *      on the agent path (with envelope check). Requires
+     *      `effectiveCaller == stashOwnerOf[trade.seller]`.
      *
      *      Then instructs the stash to perform the cancellation. The
      *      stash revokes its per-serial NFT approval to LST atomically
@@ -135,7 +132,7 @@ interface IBidderContractFactory {
      *      LST is not modified — symmetric with the existing
      *      `createTradeOnBehalf` authorized-factory pattern.
      * @param tradeId Trade identifier on LST.
-     * @param auth    Agent envelope authorization (empty = legacy).
+     * @param auth    Agent envelope authorization (agentKey == 0 = legacy).
      */
     function cancelTradeFromStash(
         bytes32 tradeId,

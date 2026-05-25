@@ -52,9 +52,14 @@ const {
 const { sleep } = require('../utils/nodeHelpers');
 const {
     EMPTY_AUTH,
-    signAgentAuth,
-    agentAddress,
-} = require('../utils/agentSigning');
+} = require('../utils/agentAuth');
+
+// Helper: derive an EOA's EVM address from an ethers Wallet (used to
+// register an agent on an envelope). For ED25519 Hedera accounts the
+// SDK provides equivalents (account → long-zero address).
+function agentAddress(signer) {
+    return signer.address;
+}
 const { fail } = require('assert');
 require('dotenv').config();
 
@@ -111,7 +116,7 @@ try {
 }
 
 const env = process.env.ENVIRONMENT ?? 'test';
-const CHAIN_ID = env === 'main' ? 295 : 296;
+// (chain id no longer needed for signing — auth is msg.sender-only)
 
 let client;
 
@@ -469,26 +474,23 @@ describe('AE2 — Signature verification', function () {
         await sleep(MIRROR_DELAY);
     });
 
-    // Note: a "tampered-sig produces EnvelopeAuthFailed" test was scoped
-    // here but removed because BCF.cancelBid checks bid existence BEFORE
-    // the agent envelope auth callback — a fake bidId always reverts
-    // BidNotFound first, making the auth path unreachable on the cancel
-    // surface. The EIP-712 hash + ecrecover pipeline is validated
-    // offline against ethers.signTypedData (see utils/agentSigning.js
-    // + node sanity check that confirmed contract+ethers struct-hashes
-    // match). End-to-end real-sig coverage lands when an agent runtime
-    // is wired and we have a real bid to cancel.
+    // Note: signature-tampering tests were removed when auth moved to
+    // msg.sender-only. The model now is "Hedera's protocol layer
+    // verified msg.sender; the contract checks msg.sender == agentKey".
+    // End-to-end agent-mediated coverage (signed Hedera txs from a
+    // dedicated agent account) lands when the agent runtime repo is
+    // wired and can submit real bids/auctions through stash entry points.
 
-    it('AE2.2: empty signature on cancelBid for non-existent bid hits BidNotFound, not auth failure', async function () {
-        // Owner path with empty auth — owner-bypass branch active.
-        // BidNotFound proves the auth check passed.
+    it('AE2.2: owner-path cancelBid for non-existent bid reverts BidNotFound', async function () {
+        // EMPTY_AUTH = (agentKey=0, topic=0) → legacy owner path.
+        // msg.sender = operator, not the bid owner — but BidNotFound
+        // fires first because the bid doesn't exist (status check
+        // happens before the caller-authority check).
         const result = await contractExecuteFunction(
             bidderFactoryId, bidderFactoryIface, client, 400_000,
             'cancelBid', [ethers.ZeroHash, EMPTY_AUTH],
             0, true,
         );
-        // msg.sender = operator (not bid.user or bid.stash) → returns
-        // BidNotFound first (status check ahead of caller check).
         expectRevertNamed(result, 'BidNotFound', [bidderFactoryIface]);
     });
 });
