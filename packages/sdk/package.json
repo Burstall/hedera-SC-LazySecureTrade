@@ -24,6 +24,7 @@
     "typecheck": "tsc --noEmit",
     "copy-abi": "node scripts/copyAbis.js",
     "prebuild": "npm run copy-abi",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

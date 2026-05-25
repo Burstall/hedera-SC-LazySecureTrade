@@ -44,19 +44,59 @@ everything that depends on a real agent runtime to exist first.
 
 ## Install
 
-```bash
-npm install @lazysuperheroes/marketplace-sdk
-# or
-yarn add @lazysuperheroes/marketplace-sdk
-```
-
-Peer dependencies (you provide these in the consuming app):
+Peer dependencies (the consumer provides these):
 
 ```json
 {
   "@hashgraph/sdk": "^2.50.0",
   "ethers": "^6.0.0"
 }
+```
+
+### Once published (TBD)
+
+```bash
+yarn add @lazysuperheroes/marketplace-sdk
+```
+
+### From GitHub (pre-publish)
+
+The SDK ships pre-committed ABIs and a `prepare` script, so a git
+install auto-builds in the consumer's `node_modules`:
+
+```bash
+yarn add "github:Burstall/hedera-SC-LazySecureTrade#v0.3" --no-lockfile
+# OR if your package manager supports subdirectory git installs:
+yarn add "https://gitpkg.now.sh/Burstall/hedera-SC-LazySecureTrade/packages/sdk?v0.3"
+```
+
+(npm 7+ and yarn classic both run `prepare` on git installs with
+devDependencies temporarily available.)
+
+### From a local checkout
+
+For active development against an unpublished SDK, use one of:
+
+**`file:` protocol** — copies the built SDK into the agent's
+`node_modules` on install. Re-install after each SDK change.
+
+```jsonc
+// agent runtime package.json
+"dependencies": {
+  "@lazysuperheroes/marketplace-sdk":
+    "file:../hedera-SC-LazySecureTrade/packages/sdk"
+}
+```
+
+**`yarn link`** — symlink for live-updating workflow. Rebuild SDK,
+agent sees changes immediately.
+
+```bash
+# in packages/sdk (after every SDK change)
+yarn build && yarn link
+
+# in agent runtime repo (one-time)
+yarn link "@lazysuperheroes/marketplace-sdk"
 ```
 
 ---
