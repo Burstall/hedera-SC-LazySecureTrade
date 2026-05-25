@@ -1,0 +1,56 @@
+{
+  "name": "@lazysuperheroes/marketplace-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for the LazySecureTrade marketplace (LST + BidderContractFactory + EnglishAuction + VIPSubscription) on Hedera",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./abi/*": "./abi/*"
+  },
+  "files": [
+    "dist",
+    "abi",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "dev": "tsup src/index.ts --format cjs,esm --dts --watch",
+    "typecheck": "tsc --noEmit",
+    "copy-abi": "node scripts/copyAbis.js",
+    "prebuild": "npm run copy-abi",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "hedera",
+    "nft",
+    "marketplace",
+    "lazy-superheroes",
+    "lazysecuretrade",
+    "web3"
+  ],
+  "author": "Lazy Superheroes",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade.git",
+    "directory": "packages/sdk"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "@hashgraph/sdk": "^2.50.0",
+    "ethers": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsup": "^8.0.1",
+    "typescript": "^5.3.3"
+  }
+}

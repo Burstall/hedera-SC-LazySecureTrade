@@ -1,0 +1,1991 @@
+[
+  {
+    "inputs": [],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "AgentKeyIsContract",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AlreadyDetached",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "AlreadyInitialized",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BadArguments",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint96",
+        "name": "needed",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "remaining",
+        "type": "uint96"
+      },
+      {
+        "internalType": "bool",
+        "name": "isLazy",
+        "type": "bool"
+      }
+    ],
+    "name": "BudgetExhausted",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "EnvelopeAlreadyExists",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "internalType": "enum IAgentEnvelope.AuthFailCode",
+        "name": "reason",
+        "type": "uint8"
+      }
+    ],
+    "name": "EnvelopeAuthFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int256",
+        "name": "code",
+        "type": "int256"
+      },
+      {
+        "internalType": "bytes4",
+        "name": "op",
+        "type": "bytes4"
+      }
+    ],
+    "name": "HTSCallFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      }
+    ],
+    "name": "HbarAllowanceFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InsufficientBalance",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidAddress",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidAmount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidBidParameters",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidEnvelopeParams",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotMyTrade",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyFactory",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyOwner",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "OnlyOwnerOrFactory",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint96",
+        "name": "attempted",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "cap",
+        "type": "uint96"
+      },
+      {
+        "internalType": "bool",
+        "name": "isLazy",
+        "type": "bool"
+      }
+    ],
+    "name": "PerTxCapExceeded",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint8",
+        "name": "attempted",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint8",
+        "name": "tierCap",
+        "type": "uint8"
+      }
+    ],
+    "name": "TierCapExceeded",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TierDoesNotPermitEnvelopes",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TokenAlreadyAssociated",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TradeNotFoundOrInvalid",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TransferFailed",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "paused",
+        "type": "bool"
+      }
+    ],
+    "name": "AllAgentsPaused",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "englishAuction",
+        "type": "address"
+      }
+    ],
+    "name": "EnglishAuctionSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "agentKey",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint8",
+        "name": "reason",
+        "type": "uint8"
+      }
+    ],
+    "name": "EnvelopeCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "agentKey",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "dailyHbarCap",
+        "type": "uint96"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "dailyLazyCap",
+        "type": "uint96"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "perTxHbarCap",
+        "type": "uint96"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "perTxLazyCap",
+        "type": "uint96"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "expiresAt",
+        "type": "uint64"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "allowedActions",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "reasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "EnvelopeCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "agentKey",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bool",
+        "name": "paused",
+        "type": "bool"
+      }
+    ],
+    "name": "EnvelopePaused",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "formerFactory",
+        "type": "address"
+      }
+    ],
+    "name": "FactoryDetached",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "StashArbSettled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "vipSubscription",
+        "type": "address"
+      }
+    ],
+    "name": "VipSubscriptionSet",
+    "type": "event"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "fallback"
+  },
+  {
+    "inputs": [],
+    "name": "ARB_SETTLE_MAX_BPS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "CUSTODY_HOP_ALLOWANCE_FLOOR",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "CUSTODY_HOP_ALLOWANCE_REFILL",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "WITHDRAW_MIN_BALANCE_FLOOR",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "i",
+        "type": "uint256"
+      }
+    ],
+    "name": "activeAgentAt",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "activeEnvelopeCount",
+    "outputs": [
+      {
+        "internalType": "uint8",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "allAgentsPaused",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "spender",
+        "type": "address"
+      },
+      {
+        "internalType": "int256",
+        "name": "amount",
+        "type": "int256"
+      }
+    ],
+    "name": "approveHbarTo",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "spender",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      }
+    ],
+    "name": "approveNFTTo",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "arbitrageSettle",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "associateToken",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "associatedTokens",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "tokens",
+        "type": "address[]"
+      }
+    ],
+    "name": "batchAssociateTokens",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "tokenIds",
+        "type": "address[]"
+      }
+    ],
+    "name": "batchTokenAssociate",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "auctionId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint96",
+        "name": "buyNowPrice",
+        "type": "uint96"
+      },
+      {
+        "internalType": "bool",
+        "name": "isLazy",
+        "type": "bool"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "buyNowAuction",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "cancelBid",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "cancelEnvelope",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "cancelLstTrade",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "components": [
+              {
+                "internalType": "address",
+                "name": "token",
+                "type": "address"
+              },
+              {
+                "internalType": "bool",
+                "name": "isNFT",
+                "type": "bool"
+              },
+              {
+                "internalType": "uint256",
+                "name": "serialOrAmount",
+                "type": "uint256"
+              }
+            ],
+            "internalType": "struct IEnglishAuction.AuctionItem[]",
+            "name": "items",
+            "type": "tuple[]"
+          },
+          {
+            "internalType": "enum IEnglishAuction.PaymentToken",
+            "name": "payment",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint96",
+            "name": "reservePrice",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "startPrice",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "buyNowPrice",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "duration",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint16",
+            "name": "minStepBps",
+            "type": "uint16"
+          },
+          {
+            "internalType": "uint16",
+            "name": "antiSnipeWindow",
+            "type": "uint16"
+          },
+          {
+            "internalType": "uint16",
+            "name": "antiSnipeExtension",
+            "type": "uint16"
+          }
+        ],
+        "internalType": "struct IEnglishAuction.AuctionParams",
+        "name": "params",
+        "type": "tuple"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "createAuctionListing",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "auctionId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "serials",
+        "type": "uint256[]"
+      },
+      {
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiry",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minAcceptablePrice",
+        "type": "uint256"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "createBid",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "expiresAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint32",
+            "name": "allowedActions",
+            "type": "uint32"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.EnvelopeParams",
+        "name": "p",
+        "type": "tuple"
+      }
+    ],
+    "name": "createEnvelope",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "buyer",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "tinybarPrice",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyPrice",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiryTime",
+        "type": "uint256"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "createTrade",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "detachFromFactory",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "englishAuction",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "envelopeExists",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "executeTrade",
+    "outputs": [],
+    "stateMutability": "payable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "factory",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getAssociatedTokens",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      }
+    ],
+    "name": "getEnvelope",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "uint64",
+            "name": "expiresAt",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint32",
+            "name": "allowedActions",
+            "type": "uint32"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "consumedHbarToday",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "lastResetDay",
+            "type": "uint64"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "consumedLazyToday",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint8",
+            "name": "flags",
+            "type": "uint8"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentEnvelope",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "getTokenExpiryInfo",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "responseCode",
+        "type": "int256"
+      },
+      {
+        "components": [
+          {
+            "internalType": "int64",
+            "name": "second",
+            "type": "int64"
+          },
+          {
+            "internalType": "address",
+            "name": "autoRenewAccount",
+            "type": "address"
+          },
+          {
+            "internalType": "int64",
+            "name": "autoRenewPeriod",
+            "type": "int64"
+          }
+        ],
+        "internalType": "struct IHederaTokenService.Expiry",
+        "name": "expiryInfo",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "keyType",
+        "type": "uint256"
+      }
+    ],
+    "name": "getTokenKey",
+    "outputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      },
+      {
+        "components": [
+          {
+            "internalType": "bool",
+            "name": "inheritAccountKey",
+            "type": "bool"
+          },
+          {
+            "internalType": "address",
+            "name": "contractId",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes",
+            "name": "ed25519",
+            "type": "bytes"
+          },
+          {
+            "internalType": "bytes",
+            "name": "ECDSA_secp256k1",
+            "type": "bytes"
+          },
+          {
+            "internalType": "address",
+            "name": "delegatableContractId",
+            "type": "address"
+          }
+        ],
+        "internalType": "struct IHederaTokenService.KeyValue",
+        "name": "key",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "grantTokenKyc",
+    "outputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "spender",
+        "type": "address"
+      }
+    ],
+    "name": "hbarAllowanceTo",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_owner",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_factory",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyToken",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazySecureTrade",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyGasStation",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyDelegateRegistry",
+        "type": "address"
+      }
+    ],
+    "name": "initialize",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "isAssociated",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "isKyc",
+    "outputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      },
+      {
+        "internalType": "bool",
+        "name": "kycGranted",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "isTokenAssociated",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "lazyDelegateRegistry",
+    "outputs": [
+      {
+        "internalType": "contract ILazyDelegateRegistry",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "lazyGasStation",
+    "outputs": [
+      {
+        "internalType": "contract ILazyGasStation",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "lazySecureTradeAddress",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "lazyToken",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "nonce",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "paused",
+        "type": "bool"
+      }
+    ],
+    "name": "pauseAgent",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bool",
+        "name": "paused",
+        "type": "bool"
+      }
+    ],
+    "name": "pauseAllAgents",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "pauseToken",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "responseCode",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "auctionId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint96",
+        "name": "amount",
+        "type": "uint96"
+      },
+      {
+        "internalType": "bool",
+        "name": "isLazy",
+        "type": "bool"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "placeAuctionBid",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address payable",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "rescueHbar",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "rescueLazy",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "internalType": "int64",
+        "name": "hbarValue",
+        "type": "int64"
+      }
+    ],
+    "name": "rescueNFT",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "revokeTokenKyc",
+    "outputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "tokenIds",
+        "type": "address[]"
+      }
+    ],
+    "name": "safeBatchTokenAssociate",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "ea",
+        "type": "address"
+      }
+    ],
+    "name": "setEnglishAuction",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "v",
+        "type": "address"
+      }
+    ],
+    "name": "setVipSubscription",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      },
+      {
+        "internalType": "enum IAgentEnvelope.ActionType",
+        "name": "action",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint96",
+        "name": "hbarAmount",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "lazyAmount",
+        "type": "uint96"
+      }
+    ],
+    "name": "spendForAgent",
+    "outputs": [
+      {
+        "internalType": "uint96",
+        "name": "remHbar",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "remLazy",
+        "type": "uint96"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "tokenId",
+        "type": "address"
+      }
+    ],
+    "name": "tokenAssociate",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "unpauseToken",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "responseCode",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "components": [
+          {
+            "internalType": "int64",
+            "name": "second",
+            "type": "int64"
+          },
+          {
+            "internalType": "address",
+            "name": "autoRenewAccount",
+            "type": "address"
+          },
+          {
+            "internalType": "int64",
+            "name": "autoRenewPeriod",
+            "type": "int64"
+          }
+        ],
+        "internalType": "struct IHederaTokenService.Expiry",
+        "name": "expiryInfo",
+        "type": "tuple"
+      }
+    ],
+    "name": "updateTokenExpiryInfo",
+    "outputs": [
+      {
+        "internalType": "int256",
+        "name": "responseCode",
+        "type": "int256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "components": [
+          {
+            "internalType": "uint256",
+            "name": "keyType",
+            "type": "uint256"
+          },
+          {
+            "components": [
+              {
+                "internalType": "bool",
+                "name": "inheritAccountKey",
+                "type": "bool"
+              },
+              {
+                "internalType": "address",
+                "name": "contractId",
+                "type": "address"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ed25519",
+                "type": "bytes"
+              },
+              {
+                "internalType": "bytes",
+                "name": "ECDSA_secp256k1",
+                "type": "bytes"
+              },
+              {
+                "internalType": "address",
+                "name": "delegatableContractId",
+                "type": "address"
+              }
+            ],
+            "internalType": "struct IHederaTokenService.KeyValue",
+            "name": "key",
+            "type": "tuple"
+          }
+        ],
+        "internalType": "struct IHederaTokenService.TokenKey[]",
+        "name": "keys",
+        "type": "tuple[]"
+      }
+    ],
+    "name": "updateTokenKeys",
+    "outputs": [
+      {
+        "internalType": "int64",
+        "name": "responseCode",
+        "type": "int64"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "vipSubscription",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdrawHbar",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdrawLazy",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address[]",
+        "name": "tokens",
+        "type": "address[]"
+      },
+      {
+        "internalType": "uint256[][]",
+        "name": "serials",
+        "type": "uint256[][]"
+      },
+      {
+        "internalType": "int64[]",
+        "name": "hbarAmounts",
+        "type": "int64[]"
+      }
+    ],
+    "name": "withdrawNFTs",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdrawSingleNFT",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
+  }
+]

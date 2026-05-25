@@ -1,0 +1,2187 @@
+[
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_lazySecureTrade",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyToken",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyGasStation",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_lazyDelegateRegistry",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "_bidderContractImplementation",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "ArbitrageProfitInsufficient",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ArbitrageTradeInvalid",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BidHasExpired",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BidNotActive",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BidNotFound",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "EmptyBidArray",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "agent",
+        "type": "address"
+      },
+      {
+        "internalType": "enum IAgentEnvelope.AuthFailCode",
+        "name": "reason",
+        "type": "uint8"
+      }
+    ],
+    "name": "EnvelopeAuthFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InsufficientFunds",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidAddress",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidBidDetails",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidBps",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidStash",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoPendingBpsChange",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoPendingTierChange",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NoStashForUser",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NotStashListed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "NothingToClaim",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "PaginationLimitTooLarge",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "RegistryDriftDetected",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "SelfTradeBlocked",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "StashAlreadyExists",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TimelockNotElapsed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TradeExecutionFailed",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "TradeNotFoundOrInvalid",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "UnauthorizedCaller",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "name": "AgentTierLimitsChangeCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "components": [
+          {
+            "internalType": "uint8",
+            "name": "maxAgents",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "maxExpiryWindow",
+            "type": "uint64"
+          }
+        ],
+        "indexed": false,
+        "internalType": "struct IAgentEnvelope.TierLimits",
+        "name": "limits",
+        "type": "tuple"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint64",
+        "name": "eta",
+        "type": "uint64"
+      }
+    ],
+    "name": "AgentTierLimitsChangePending",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "components": [
+          {
+            "internalType": "uint8",
+            "name": "maxAgents",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "maxExpiryWindow",
+            "type": "uint64"
+          }
+        ],
+        "indexed": false,
+        "internalType": "struct IAgentEnvelope.TierLimits",
+        "name": "limits",
+        "type": "tuple"
+      }
+    ],
+    "name": "AgentTierLimitsSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newBps",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "eta",
+        "type": "uint256"
+      }
+    ],
+    "name": "ArbPayoutBpsChangePending",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "ArbPayoutBpsChanged",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "arbitrageur",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ArbProfitClaimed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "arbitrageur",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "arbCut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "protocolCut",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentReasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "ArbitrageExecuted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentReasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "BidCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "user",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "stash",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "hbarAmount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "lazyAmount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "expiry",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256[]",
+            "name": "serials",
+            "type": "uint256[]"
+          },
+          {
+            "internalType": "uint256",
+            "name": "stashNonce",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "createdAt",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "minAcceptablePrice",
+            "type": "uint256"
+          },
+          {
+            "internalType": "enum IBidderContractFactory.BidStatus",
+            "name": "status",
+            "type": "uint8"
+          }
+        ],
+        "indexed": false,
+        "internalType": "struct IBidderContractFactory.BidDetails",
+        "name": "details",
+        "type": "tuple"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentReasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "BidCreated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "executor",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "arbitrageProfit",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentReasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "BidExecuted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentReasoningTopicId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "BidExpired",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "cleaner",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "cleanedCount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ExpiredBidsCleanup",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "previousOwner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "ProtocolProfitWithdrawn",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "deployer",
+        "type": "address"
+      }
+    ],
+    "name": "StashDeployed",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "canceller",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "reasoningTopic",
+        "type": "bytes32"
+      }
+    ],
+    "name": "TradeCancelledFromStash",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "seller",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "agentKey",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "reasoningTopic",
+        "type": "bytes32"
+      }
+    ],
+    "name": "TradeCreatedFromStash",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "BIDDER_CONTRACT_IMPLEMENTATION",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "LAZY_DELEGATE_REGISTRY",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "LAZY_GAS_STATION",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "LAZY_SECURE_TRADE",
+    "outputs": [
+      {
+        "internalType": "contract ILazySecureTrade",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "LAZY_TOKEN",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_VIEW_PAGINATION",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "name": "agentTierConfigured",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "allStashes",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "arbPayoutBpsChangeEta",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "arbitragePayoutBps",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "name": "bidRegistry",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "hbarAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiry",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "stashNonce",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "createdAt",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minAcceptablePrice",
+        "type": "uint256"
+      },
+      {
+        "internalType": "enum IBidderContractFactory.BidStatus",
+        "name": "status",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "name": "cancelAgentTierLimitsChange",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "cancelBid",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "cancelTradeFromStash",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "claimArbProfit",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "bidIds",
+        "type": "bytes32[]"
+      }
+    ],
+    "name": "cleanupExpiredBids",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "cleanedCount",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "user",
+            "type": "address"
+          },
+          {
+            "internalType": "address",
+            "name": "stash",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256",
+            "name": "hbarAmount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "lazyAmount",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "expiry",
+            "type": "uint256"
+          },
+          {
+            "internalType": "address",
+            "name": "token",
+            "type": "address"
+          },
+          {
+            "internalType": "uint256[]",
+            "name": "serials",
+            "type": "uint256[]"
+          },
+          {
+            "internalType": "uint256",
+            "name": "stashNonce",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "createdAt",
+            "type": "uint256"
+          },
+          {
+            "internalType": "uint256",
+            "name": "minAcceptablePrice",
+            "type": "uint256"
+          },
+          {
+            "internalType": "enum IBidderContractFactory.BidStatus",
+            "name": "status",
+            "type": "uint8"
+          }
+        ],
+        "internalType": "struct IBidderContractFactory.BidDetails",
+        "name": "bidDetails",
+        "type": "tuple"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "createBid",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "buyer",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "tinybarPrice",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyPrice",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "expiryTime",
+        "type": "uint256"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "createTradeOnBehalfOfStash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "deployStash",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "deployStashFor",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "nftToken",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "callerStash",
+        "type": "address"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "executeAgainstBid",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "tradeId",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "name": "executeAgentTierLimitsChange",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "executeArbPayoutBpsChange",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "existingTradeId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "minProfit",
+        "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "callerStash",
+        "type": "address"
+      },
+      {
+        "components": [
+          {
+            "internalType": "address",
+            "name": "agentKey",
+            "type": "address"
+          },
+          {
+            "internalType": "bytes32",
+            "name": "reasoningTopicId",
+            "type": "bytes32"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.AgentAuth",
+        "name": "auth",
+        "type": "tuple"
+      }
+    ],
+    "name": "executeArbitrage",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "spread",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "name": "getAgentTierLimits",
+    "outputs": [
+      {
+        "components": [
+          {
+            "internalType": "uint8",
+            "name": "maxAgents",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "maxExpiryWindow",
+            "type": "uint64"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.TierLimits",
+        "name": "",
+        "type": "tuple"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getAllStashes",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "getBestBidForToken",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bestBidId",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "uint256",
+        "name": "bestHbar",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "getBidsForToken",
+    "outputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "name": "getBidsForTokenPaginated",
+    "outputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "serial",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "name": "getBidsForTokenSerialPaginated",
+    "outputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "matches",
+        "type": "bytes32[]"
+      },
+      {
+        "internalType": "uint256",
+        "name": "nextOffset",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "getStashAddress",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getStashCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "getStashOf",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "getStashSnapshot",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "internalType": "bool",
+        "name": "deployed",
+        "type": "bool"
+      },
+      {
+        "internalType": "uint256",
+        "name": "hbarBalance",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "lazyBalance",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes32[]",
+        "name": "activeBidIds",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "offset",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "limit",
+        "type": "uint256"
+      }
+    ],
+    "name": "getStashesPaginated",
+    "outputs": [
+      {
+        "internalType": "address[]",
+        "name": "",
+        "type": "address[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "token",
+        "type": "address"
+      }
+    ],
+    "name": "getTokenBidCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "getTotalBidCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "user",
+        "type": "address"
+      }
+    ],
+    "name": "getUserBids",
+    "outputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "",
+        "type": "bytes32[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "isBidValid",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "valid",
+        "type": "bool"
+      },
+      {
+        "internalType": "enum BidderContractFactory.BidValidityCode",
+        "name": "code",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "isValidStash",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "name": "pendingAgentTierEta",
+    "outputs": [
+      {
+        "internalType": "uint64",
+        "name": "",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "name": "pendingAgentTierLimits",
+    "outputs": [
+      {
+        "internalType": "uint8",
+        "name": "maxAgents",
+        "type": "uint8"
+      },
+      {
+        "internalType": "uint96",
+        "name": "dailyHbarCap",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "dailyLazyCap",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "perTxHbarCap",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "perTxLazyCap",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint64",
+        "name": "maxExpiryWindow",
+        "type": "uint64"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pendingArbPayoutBps",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "pendingArbProfit",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pendingProtocolProfit",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "renounceOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      },
+      {
+        "components": [
+          {
+            "internalType": "uint8",
+            "name": "maxAgents",
+            "type": "uint8"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "dailyLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxHbarCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint96",
+            "name": "perTxLazyCap",
+            "type": "uint96"
+          },
+          {
+            "internalType": "uint64",
+            "name": "maxExpiryWindow",
+            "type": "uint64"
+          }
+        ],
+        "internalType": "struct IAgentEnvelope.TierLimits",
+        "name": "limits",
+        "type": "tuple"
+      }
+    ],
+    "name": "setAgentTierLimits",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "newBps",
+        "type": "uint256"
+      }
+    ],
+    "name": "setArbitragePayoutBps",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "stashOwnerOf",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "tokenToBids",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "totalBidCount",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "newOwner",
+        "type": "address"
+      }
+    ],
+    "name": "transferOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "userToBids",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "userToStash",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32[]",
+        "name": "bidIds",
+        "type": "bytes32[]"
+      }
+    ],
+    "name": "validateBids",
+    "outputs": [
+      {
+        "internalType": "bool[]",
+        "name": "validBids",
+        "type": "bool[]"
+      },
+      {
+        "internalType": "enum BidderContractFactory.BidValidityCode[]",
+        "name": "codes",
+        "type": "uint8[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      }
+    ],
+    "name": "verifyStash",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address payable",
+        "name": "to",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
+      }
+    ],
+    "name": "withdrawProtocolProfit",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "stateMutability": "payable",
+    "type": "receive"
+  }
+]
