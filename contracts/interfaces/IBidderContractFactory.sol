@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0
 pragma solidity >=0.8.12 <0.9.0;
 
+import {IAgentEnvelope} from "./IAgentEnvelope.sol";
+import {IVIPSubscription} from "./IVIPSubscription.sol";
+
 /**
  * @title IBidderContractFactory
  * @notice Interface for factory calls from a user stash (BidderContract clone).
@@ -49,18 +52,35 @@ interface IBidderContractFactory {
 
     /**
      * @notice Create a bid in the factory registry.
+     * @dev    Called by the user's stash. The factory orchestrates the
+     *         agent envelope check (when `auth.signature` is populated)
+     *         by composing the EIP-712 struct hash and calling back
+     *         `BidderContract.spendForAgent` on `msg.sender` — keeping
+     *         the heavy hashing logic off the stash to fit the 24 KiB
+     *         bytecode ceiling.
      * @param bidDetails Bid details struct.
+     * @param auth       Optional agent envelope authorization. Empty
+     *                   signature = owner-initiated path; populated =
+     *                   agent path (envelope verification + budget
+     *                   consumption against `bidDetails.hbarAmount` and
+     *                   `bidDetails.lazyAmount`).
      * @return bidId Unique bid identifier.
      */
     function createBid(
-        BidDetails memory bidDetails
+        BidDetails memory bidDetails,
+        IAgentEnvelope.AgentAuth calldata auth
     ) external returns (bytes32 bidId);
 
     /**
      * @notice Cancel a bid in the factory registry.
+     * @dev    Same envelope-via-callback model as `createBid`.
      * @param bidId Bid identifier.
+     * @param auth  Optional agent envelope authorization.
      */
-    function cancelBid(bytes32 bidId) external;
+    function cancelBid(
+        bytes32 bidId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external;
 
     /**
      * @notice Create a trade in LazySecureTrade on behalf of the calling stash.
@@ -74,17 +94,14 @@ interface IBidderContractFactory {
      *
      *      See `docs/BCF-StashAllowances-DESIGN.md` for the full rationale
      *      on why `seller` is not a parameter (Bug 2 fix).
-     * @param token NFT token address.
-     * @param buyer Address of the buyer (or address(0) for open market).
-     * @param serial NFT serial number.
-     * @param tinybarPrice HBAR price in tinybars.
-     * @param lazyPrice $LAZY price.
-     * @param expiryTime Expiry timestamp (0 = no expiry).
-     * @param agentKey Optional agent identifier for envelope tracking + event
-     *                 tagging. Pass `bytes32(0)` for owner-initiated listings;
-     *                 non-zero values are reserved for the per-agent envelope
-     *                 flow (not enforced on-chain in v0.3 — carried in events
-     *                 only for off-chain correlation).
+     * @param token          NFT token address.
+     * @param buyer          Address of the buyer (or address(0) for open market).
+     * @param serial         NFT serial number.
+     * @param tinybarPrice   HBAR price in tinybars.
+     * @param lazyPrice      $LAZY price.
+     * @param expiryTime     Expiry timestamp (0 = no expiry).
+     * @param auth           Optional agent envelope authorization. Same
+     *                       callback-to-spendForAgent model as `createBid`.
      * @return tradeId Created trade identifier.
      */
     function createTradeOnBehalfOfStash(
@@ -94,23 +111,36 @@ interface IBidderContractFactory {
         uint256 tinybarPrice,
         uint256 lazyPrice,
         uint256 expiryTime,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external returns (bytes32 tradeId);
 
     /**
-     * @notice Cancel a stash-listed trade from the human owner's EOA.
-     * @dev Resolves the trade on LST, verifies (a) the seller is a registered
-     *      stash and (b) the caller is that stash's owner via `stashOwnerOf`,
-     *      then instructs the stash to perform the cancellation. The stash
-     *      revokes its per-serial NFT approval to LST atomically with the
-     *      cancellation — closing the dangling-approval leak surfaced as
-     *      Bug 5 in `docs/BCF-StashAllowances-DESIGN.md`.
+     * @notice Cancel a stash-listed trade from the human owner's EOA
+     *         (legacy path) OR from an authorized agent (envelope path).
+     * @dev Resolves the trade on LST, verifies (a) the seller is a
+     *      registered stash, and (b) the caller has authority over that
+     *      stash. The authority check supports two modes:
+     *
+     *      - Legacy (auth.signature empty): require
+     *        `stashOwnerOf[trade.seller] == msg.sender`.
+     *      - Agent (auth.signature populated): verify msg.sender ==
+     *        auth.agentKey AND auth.stash == trade.seller AND the
+     *        envelope authorizes TradeCancel.
+     *
+     *      Then instructs the stash to perform the cancellation. The
+     *      stash revokes its per-serial NFT approval to LST atomically
+     *      with the cancellation — closing the dangling-approval leak
+     *      surfaced as Bug 5 in `docs/BCF-StashAllowances-DESIGN.md`.
      *
      *      LST is not modified — symmetric with the existing
      *      `createTradeOnBehalf` authorized-factory pattern.
      * @param tradeId Trade identifier on LST.
+     * @param auth    Agent envelope authorization (empty = legacy).
      */
-    function cancelTradeFromStash(bytes32 tradeId) external;
+    function cancelTradeFromStash(
+        bytes32 tradeId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external;
 
     /**
      * @notice Reverse lookup: stash address → human owner address.
@@ -132,4 +162,19 @@ interface IBidderContractFactory {
      *               registered stash.
      */
     function stashOwnerOf(address stash) external view returns (address owner);
+
+    /**
+     * @notice Per-tier limits for agent envelope creation. Queried by
+     *         stashes inside `createEnvelope` to enforce slot count and
+     *         budget caps against the user's current VIPSubscription
+     *         tier.
+     * @dev    Storage on the factory (centralized, owner-tunable behind
+     *         a 48h timelock). Returning a zero-filled struct for any
+     *         tier is the legitimate disable signal — stashes must
+     *         reject envelope creation when `maxAgents == 0`.
+     * @param  tier VIP tier as returned by `IVIPSubscription.getTierFor`.
+     * @return limits Per-envelope cap structure (see IAgentEnvelope).
+     */
+    function getAgentTierLimits(IVIPSubscription.Tier tier)
+        external view returns (IAgentEnvelope.TierLimits memory limits);
 }

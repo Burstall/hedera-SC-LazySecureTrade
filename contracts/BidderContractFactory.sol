@@ -6,6 +6,8 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
+import {IAgentEnvelope} from "./interfaces/IAgentEnvelope.sol";
+import {IVIPSubscription} from "./interfaces/IVIPSubscription.sol";
 import {BidderContract} from "./BidderContract.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
@@ -236,7 +238,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         address indexed seller,
         address token,
         uint256 serial,
-        bytes32 agentKey
+        bytes32 agentKey,
+        bytes32 reasoningTopic
     );
 
     /// @notice Emitted when a stash-listed LST trade is cancelled via
@@ -247,7 +250,9 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     event TradeCancelledFromStash(
         bytes32 indexed tradeId,
         address indexed stash,
-        address indexed canceller
+        address indexed canceller,
+        bytes32 agentKey,
+        bytes32 reasoningTopic
     );
 
     // ===== Arbitrage events =====
@@ -597,7 +602,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      * @return bidId Unique bid identifier.
      */
     function createBid(
-        BidDetails memory bidDetails
+        BidDetails memory bidDetails,
+        IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (bytes32 bidId) {
         // Validate caller is a factory-deployed stash
         if (!isValidStash[msg.sender]) {
@@ -613,6 +619,34 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         }
         if (bidDetails.expiry != 0 && bidDetails.expiry <= block.timestamp) {
             revert InvalidBidDetails();
+        }
+
+        // Agent envelope check (when auth populated). Composes the
+        // EIP-712 struct hash here so the heavy keccak machinery stays
+        // off the stash bytecode; calls back `spendForAgent` on the
+        // stash (which performs signature recovery + budget decrement
+        // against the stash's own storage).
+        if (auth.signature.length != 0) {
+            BidderContract(payable(msg.sender)).spendForAgent(
+                auth,
+                IAgentEnvelope.ActionType.BidCreate,
+                keccak256(abi.encode(
+                    TYPEHASH_BID_CREATE,
+                    auth.agentKey,
+                    auth.stash,
+                    auth.nonce,
+                    auth.deadline,
+                    bidDetails.token,
+                    keccak256(abi.encodePacked(bidDetails.serials)),
+                    bidDetails.hbarAmount,
+                    bidDetails.lazyAmount,
+                    bidDetails.expiry,
+                    bidDetails.minAcceptablePrice,
+                    auth.reasoningTopicId
+                )),
+                uint96(bidDetails.hbarAmount),
+                uint96(bidDetails.lazyAmount)
+            );
         }
 
         // Generate unique bid ID
@@ -649,8 +683,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             bidDetails.user,
             bidDetails.token,
             bidDetails,
-            bytes32(0), // agentKey reserved
-            bytes32(0)  // agentReasoningTopicId reserved
+            bytes32(uint256(uint160(auth.agentKey))),
+            auth.reasoningTopicId
         );
     }
 
@@ -662,7 +696,10 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      *      after cancellation returns a zeroed struct.
      * @param bidId Bid identifier to cancel.
      */
-    function cancelBid(bytes32 bidId) external nonReentrant {
+    function cancelBid(
+        bytes32 bidId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant {
         BidDetails storage bid = bidRegistry[bidId];
 
         if (bid.status == BidStatus.None) {
@@ -672,9 +709,29 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert BidNotActive();
         }
 
-        // Only bid owner or their stash can cancel
+        // Only bid owner or their stash can cancel.
         if (msg.sender != bid.user && msg.sender != bid.stash) {
             revert UnauthorizedCaller();
+        }
+
+        // Agent envelope check (when auth populated). Budget = 0/0:
+        // cancellation doesn't commit new spend.
+        if (auth.signature.length != 0) {
+            BidderContract(payable(bid.stash)).spendForAgent(
+                auth,
+                IAgentEnvelope.ActionType.BidCancel,
+                keccak256(abi.encode(
+                    TYPEHASH_BID_CANCEL,
+                    auth.agentKey,
+                    auth.stash,
+                    auth.nonce,
+                    auth.deadline,
+                    bidId,
+                    auth.reasoningTopicId
+                )),
+                0,
+                0
+            );
         }
 
         // Save before _closeBid hard-deletes the storage struct
@@ -685,8 +742,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             bidId,
             bidUser,
             bidToken,
-            bytes32(0), // agentKey reserved
-            bytes32(0)  // agentReasoningTopicId reserved
+            bytes32(uint256(uint160(auth.agentKey))),
+            auth.reasoningTopicId
         );
     }
 
@@ -1202,9 +1259,10 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      * @param tinybarPrice HBAR price in tinybars.
      * @param lazyPrice $LAZY price.
      * @param expiryTime Expiry timestamp (0 = no expiry).
-     * @param agentKey Optional agent-flow identifier; `bytes32(0)` for
-     *                 owner-initiated listings. Currently carried in the
-     *                 event only — envelope work will gate on this later.
+     * @param auth Optional agent envelope authorization. Empty signature
+     *             = owner-initiated; populated = agent path with envelope
+     *             verification + budget check (budget = 0/0 since listing
+     *             only escrows via approval).
      * @return tradeId Created trade identifier.
      */
     function createTradeOnBehalfOfStash(
@@ -1214,11 +1272,36 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         uint256 tinybarPrice,
         uint256 lazyPrice,
         uint256 expiryTime,
-        bytes32 agentKey
+        IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (bytes32 tradeId) {
         // Validate caller is a factory-deployed stash
         if (!isValidStash[msg.sender]) {
             revert InvalidStash();
+        }
+
+        // Agent envelope check (when auth populated). Budget = 0/0:
+        // listing escrows via NFT approval, no new fund commitment.
+        if (auth.signature.length != 0) {
+            BidderContract(payable(msg.sender)).spendForAgent(
+                auth,
+                IAgentEnvelope.ActionType.TradeList,
+                keccak256(abi.encode(
+                    TYPEHASH_CREATE_TRADE,
+                    auth.agentKey,
+                    auth.stash,
+                    auth.nonce,
+                    auth.deadline,
+                    token,
+                    buyer,
+                    serial,
+                    tinybarPrice,
+                    lazyPrice,
+                    expiryTime,
+                    auth.reasoningTopicId
+                )),
+                0,
+                0
+            );
         }
 
         // The stash (msg.sender) is recorded as both NFT holder AND
@@ -1241,7 +1324,8 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             stashOwnerOf[msg.sender],
             token,
             serial,
-            agentKey
+            bytes32(uint256(uint160(auth.agentKey))),
+            auth.reasoningTopicId
         );
     }
 
@@ -1258,14 +1342,37 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      *      `LST.cancelTrade` for EOA-listed trades. User signs from their
      *      EOA in both cases. See Bug 4 in `docs/BCF-StashAllowances-DESIGN.md`.
      */
-    function cancelTradeFromStash(bytes32 tradeId) external nonReentrant {
+    function cancelTradeFromStash(
+        bytes32 tradeId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant {
         ILazySecureTrade.Trade memory trade = LAZY_SECURE_TRADE.getTrade(
             tradeId
         );
         if (trade.seller == address(0)) revert TradeNotFoundOrInvalid();
         if (!isValidStash[trade.seller]) revert NotStashListed();
-        if (stashOwnerOf[trade.seller] != msg.sender)
+
+        // Agent dispatch — both legacy and agent paths resolve to a
+        // beneficial owner that must match the stash's owner. Envelope
+        // budget consumed = 0/0 (cancellation doesn't commit new spend).
+        (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
+            = _resolveAgentOrOwner(
+                auth,
+                IAgentEnvelope.ActionType.TradeCancel,
+                _cancelTradeStructHash(auth, tradeId),
+                0,
+                0
+            );
+        if (effectiveCaller != stashOwnerOf[trade.seller])
             revert UnauthorizedCaller();
+        // Defensive: on the agent path, auth.stash must match the trade's
+        // seller stash. Without this an agent for stashA could try to
+        // cancel a trade owned by stashA — caught above by the owner
+        // mismatch — but if stashA and stashB share an owner (impossible
+        // by design but cheap to enforce), this closes the door.
+        if (auth.signature.length != 0 && auth.stash != trade.seller) {
+            revert UnauthorizedCaller();
+        }
 
         // Instruct the stash to cancel. The stash re-derives (token, serial)
         // from LST itself — no spoofable params forwarded. The stash
@@ -1273,7 +1380,35 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // LST.cancelTrade, which passes because the stash IS trade.seller.
         BidderContract(payable(trade.seller)).cancelLstTrade(tradeId);
 
-        emit TradeCancelledFromStash(tradeId, trade.seller, msg.sender);
+        emit TradeCancelledFromStash(
+            tradeId,
+            trade.seller,
+            effectiveCaller,
+            bytes32(uint256(uint160(agentKeyForEvent))),
+            reasoningTopic
+        );
+    }
+
+    /// @dev keccak256("CancelTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 tradeId,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_CANCEL_TRADE = keccak256(
+        "CancelTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 tradeId,bytes32 reasoningTopicId)"
+    );
+
+    function _cancelTradeStructHash(
+        IAgentEnvelope.AgentAuth calldata auth,
+        bytes32 tradeId
+    ) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                TYPEHASH_CANCEL_TRADE,
+                auth.agentKey,
+                auth.stash,
+                auth.nonce,
+                auth.deadline,
+                tradeId,
+                auth.reasoningTopicId
+            )
+        );
     }
 
     // ============================================
@@ -1281,16 +1416,24 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     // ============================================
 
     /**
-     * @notice Execute against a bid (seller-initiated)
+     * @notice Execute against a bid (seller-initiated). The caller is
+     *         the NFT seller; the bidder's stash buys at the bid price.
      * @param bidId Bid identifier
      * @param nftToken NFT token address
      * @param serial Serial number
+     * @param auth Optional agent envelope authorization. Empty auth =
+     *             legacy EOA path; populated auth = agent acting on
+     *             behalf of the stash owner at `auth.stash`. Profit is
+     *             not generated on this path (the executor sells their
+     *             own NFT), but agent attribution still threads through
+     *             events + envelope nonce/permission.
      * @return tradeId Created trade ID
      */
     function executeAgainstBid(
         bytes32 bidId,
         address nftToken,
-        uint256 serial
+        uint256 serial,
+        IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (bytes32 tradeId) {
         // Shared validation: exists, Active, not expired, stash funded
         BidDetails memory bid = _validateBidForExecution(bidId);
@@ -1303,15 +1446,20 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert InvalidBidDetails();
         }
 
-        // Self-trade gate: caller (resolved to beneficial owner) must
-        // not match the bidder's beneficial owner. Without this, a user
-        // could create a bid in their stash, then call executeAgainstBid
-        // with their own NFT to wash-trade volume. Mirrors the
-        // three-way guard in `executeArbitrage`.
-        if (
-            _resolveBeneficialOwner(msg.sender) ==
-            _resolveBeneficialOwner(bid.user)
-        ) {
+        // Agent dispatch — envelope budget = 0/0 (no new commitment;
+        // the seller's NFT is the value flowing, not new stash funds).
+        (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
+            = _resolveAgentOrOwner(
+                auth,
+                IAgentEnvelope.ActionType.TradeExecute,
+                _executeAgainstBidStructHash(auth, bidId, nftToken, serial),
+                0,
+                0
+            );
+
+        // Self-trade gate: caller (resolved) must not match the
+        // bidder's beneficial owner. Wash-trade closed.
+        if (effectiveCaller == _resolveBeneficialOwner(bid.user)) {
             revert SelfTradeBlocked();
         }
 
@@ -1325,16 +1473,19 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert ArbitrageProfitInsufficient();
         }
 
-        // Create trade in LazySecureTrade on behalf of seller
-        // Buyer is the BidderContract address
+        // Create trade in LazySecureTrade on behalf of the seller. On
+        // the agent path the actual NFT custodian is `effectiveCaller`'s
+        // stash (the agent's user); on the legacy path it's `msg.sender`.
+        // LST pulls the NFT from the seller address via the per-serial
+        // approval the seller granted when listing.
         tradeId = LAZY_SECURE_TRADE.createTradeOnBehalf(
-            msg.sender, // seller (actual NFT owner)
-            nftToken, // token address
-            bid.stash, // buyer (BidderContract)
-            serial, // serial number
-            bid.hbarAmount, // tinybar price
-            bid.lazyAmount, // lazy price
-            0 // no expiry (execute immediately)
+            agentKeyForEvent == address(0) ? msg.sender : effectiveCaller,
+            nftToken,
+            bid.stash,
+            serial,
+            bid.hbarAmount,
+            bid.lazyAmount,
+            0
         );
 
         // Execute trade via BidderContract
@@ -1353,15 +1504,41 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // Emit execution event with full metadata for cold-start indexers.
         emit BidExecuted(
             bidId,
-            msg.sender,
+            effectiveCaller,
             tradeId,
-            0, // no arbitrage profit on the seller-initiated path
+            0,
             bid.user,
             bid.token,
             bid.hbarAmount,
             bid.lazyAmount,
-            bytes32(0), // agentKey reserved
-            bytes32(0)  // agentReasoningTopicId reserved
+            bytes32(uint256(uint160(agentKeyForEvent))),
+            reasoningTopic
+        );
+    }
+
+    /// @dev keccak256("ExecuteAgainstBid(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,address nftToken,uint256 serial,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_EXECUTE_AGAINST_BID = keccak256(
+        "ExecuteAgainstBid(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,address nftToken,uint256 serial,bytes32 reasoningTopicId)"
+    );
+
+    function _executeAgainstBidStructHash(
+        IAgentEnvelope.AgentAuth calldata auth,
+        bytes32 bidId,
+        address nftToken,
+        uint256 serial
+    ) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                TYPEHASH_EXECUTE_AGAINST_BID,
+                auth.agentKey,
+                auth.stash,
+                auth.nonce,
+                auth.deadline,
+                bidId,
+                nftToken,
+                serial,
+                auth.reasoningTopicId
+            )
         );
     }
 
@@ -1407,12 +1584,19 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      * @param minProfit Minimum acceptable HBAR spread for the caller.
      *                  Reverts cheaply with `ArbitrageProfitInsufficient`
      *                  if the realized spread is below this threshold.
+     * @param auth Optional agent envelope authorization. Pass an empty
+     *                  AgentAuth (zero fields, empty signature) for the
+     *                  legacy EOA path — msg.sender is then the actor and
+     *                  profit credits to msg.sender's beneficial owner.
+     *                  Populated AgentAuth routes profit to the stash
+     *                  owner of `auth.stash` and consumes envelope state.
      * @return spread The HBAR spread captured, pre-split.
      */
     function executeArbitrage(
         bytes32 bidId,
         bytes32 existingTradeId,
-        uint256 minProfit
+        uint256 minProfit,
+        IAgentEnvelope.AgentAuth calldata auth
     ) external nonReentrant returns (uint256 spread) {
         // Shared validation: exists, Active, not expired, stash funded
         BidDetails memory bid = _validateBidForExecution(bidId);
@@ -1433,17 +1617,31 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             revert ArbitrageTradeInvalid();
         }
 
-        // Self-arb / wash-trade guard. Resolve all three legs to their
+        // Agent dispatch. effectiveCaller is msg.sender's beneficial
+        // owner on the legacy path, or the stash owner on the agent path.
+        // Envelope budget consumed: 0/0 — arbitrage doesn't commit new
+        // spend; it routes already-committed bid funds. The envelope
+        // still enforces signature, nonce, permission, expiry, paused.
+        (address effectiveCaller, address agentKeyForEvent, bytes32 reasoningTopic)
+            = _resolveAgentOrOwner(
+                auth,
+                IAgentEnvelope.ActionType.Arbitrage,
+                _arbitrageStructHash(auth, bidId, existingTradeId, minProfit),
+                0,
+                0
+            );
+
+        // Self-arb / wash-trade guard. Resolve both other legs to their
         // beneficial owners so the EOA-vs-stash boundary doesn't open
         // a backdoor (e.g., Alice bids via her stash, lists via her
         // EOA, then "arbs" via a second EOA she controls — but the
         // chain only sees three distinct addresses for the same human).
-        address arbOwner = _resolveBeneficialOwner(msg.sender);
+        // `effectiveCaller` is already at the beneficial-owner layer.
         address bidOwner = _resolveBeneficialOwner(bid.user);
         address sellerOwner = _resolveBeneficialOwner(trade.seller);
         if (
-            arbOwner == bidOwner ||
-            arbOwner == sellerOwner ||
+            effectiveCaller == bidOwner ||
+            effectiveCaller == sellerOwner ||
             bidOwner == sellerOwner
         ) {
             revert SelfTradeBlocked();
@@ -1503,7 +1701,11 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         uint256 arbCut = (spread * arbitragePayoutBps) / MAX_BPS;
         uint256 protocolCut = spread - arbCut;
 
-        pendingArbProfit[msg.sender] += arbCut;
+        // Profit credits to the beneficial owner (`effectiveCaller`) so
+        // the agent operator never custodies user funds on the agent
+        // path. On the legacy path this resolves identically to
+        // `_resolveBeneficialOwner(msg.sender)`.
+        pendingArbProfit[effectiveCaller] += arbCut;
         pendingProtocolProfit += protocolCut;
 
         // Transition to Executed and remove from discovery indexes.
@@ -1512,15 +1714,15 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         emit ArbitrageExecuted(
             bidId,
             existingTradeId,
-            msg.sender,
+            effectiveCaller,
             arbCut,
             protocolCut,
             bid.user,
             bid.token,
             bid.hbarAmount,
             bid.lazyAmount,
-            bytes32(0), // agentKey reserved
-            bytes32(0)  // agentReasoningTopicId reserved
+            bytes32(uint256(uint160(agentKeyForEvent))),
+            reasoningTopic
         );
     }
 
@@ -1598,6 +1800,215 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         pendingArbPayoutBps = 0;
         arbPayoutBpsChangeEta = 0;
         emit ArbPayoutBpsChanged(newBps);
+    }
+
+    // ============================================
+    // Agent envelope tier table (consumed by stashes)
+    // ============================================
+    //
+    // Per-VIP-tier upper bounds on per-envelope budget caps + max envelope
+    // count per user. Read by `BidderContract.createEnvelope` and
+    // `BidderContract.updateEnvelopeCaps`. Owner-tunable with a 48h
+    // timelock per tier (mirroring `setArbitragePayoutBps`). The first
+    // configuration of any given tier is INSTANT; subsequent changes for
+    // that same tier are timelocked. Operators can therefore wire all
+    // five tiers in one deploy without staging four days of timelock.
+    //
+    // Default state (storage zero): every tier returns a zero-filled
+    // limits struct, which the stash treats as "envelopes disabled."
+    // Operators must explicitly call `setAgentTierLimits(tier, ...)` for
+    // every tier they want enabled before users can create envelopes.
+
+    /// @notice Per-tier envelope caps. Returned from `getAgentTierLimits`.
+    mapping(IVIPSubscription.Tier => IAgentEnvelope.TierLimits) internal _agentTierLimits;
+
+    /// @notice Tracks whether a tier has ever been configured. The first
+    ///         `setAgentTierLimits` call for a given tier is instant; all
+    ///         subsequent changes queue a 48h timelock.
+    mapping(IVIPSubscription.Tier => bool) public agentTierConfigured;
+
+    /// @notice Pending tier-limits change keyed by tier. Zero `eta`
+    ///         means "no pending change for this tier."
+    mapping(IVIPSubscription.Tier => uint64) public pendingAgentTierEta;
+    mapping(IVIPSubscription.Tier => IAgentEnvelope.TierLimits) public pendingAgentTierLimits;
+
+    /// @notice Timelock delay for agent-tier-limits changes.
+    uint256 internal constant AGENT_TIER_TIMELOCK = 48 hours;
+
+    event AgentTierLimitsSet(IVIPSubscription.Tier indexed tier, IAgentEnvelope.TierLimits limits);
+    event AgentTierLimitsChangePending(
+        IVIPSubscription.Tier indexed tier,
+        IAgentEnvelope.TierLimits limits,
+        uint64 eta
+    );
+    event AgentTierLimitsChangeCancelled(IVIPSubscription.Tier indexed tier);
+
+    error NoPendingTierChange();
+
+    // ============================================
+    // EIP-712 action TYPEHASHes
+    // ============================================
+    //
+    // One typehash per agent-authorizable action. The struct hash is
+    // composed inline at each call site; the library binds the EIP-712
+    // domain (chainId + stash address) when called via spendForAgent on
+    // the stash. Field order must match the corresponding `_*StructHash`
+    // composer below.
+
+    /// @dev keccak256("BidCreate(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,uint256[] serials,uint256 hbarAmount,uint256 lazyAmount,uint256 expiry,uint256 minAcceptablePrice,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_BID_CREATE = keccak256(
+        "BidCreate(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,uint256[] serials,uint256 hbarAmount,uint256 lazyAmount,uint256 expiry,uint256 minAcceptablePrice,bytes32 reasoningTopicId)"
+    );
+
+    /// @dev keccak256("BidCancel(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_BID_CANCEL = keccak256(
+        "BidCancel(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 reasoningTopicId)"
+    );
+
+    /// @dev keccak256("CreateTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,address buyer,uint256 serial,uint256 tinybarPrice,uint256 lazyPrice,uint256 expiryTime,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_CREATE_TRADE = keccak256(
+        "CreateTrade(address agentKey,address stash,uint64 nonce,uint64 deadline,address token,address buyer,uint256 serial,uint256 tinybarPrice,uint256 lazyPrice,uint256 expiryTime,bytes32 reasoningTopicId)"
+    );
+
+    /// @dev keccak256("Arbitrage(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 tradeId,uint256 minProfit,bytes32 reasoningTopicId)")
+    bytes32 internal constant TYPEHASH_ARBITRAGE = keccak256(
+        "Arbitrage(address agentKey,address stash,uint64 nonce,uint64 deadline,bytes32 bidId,bytes32 tradeId,uint256 minProfit,bytes32 reasoningTopicId)"
+    );
+
+    function _arbitrageStructHash(
+        IAgentEnvelope.AgentAuth calldata auth,
+        bytes32 bidId,
+        bytes32 tradeId,
+        uint256 minProfit
+    ) internal pure returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                TYPEHASH_ARBITRAGE,
+                auth.agentKey,
+                auth.stash,
+                auth.nonce,
+                auth.deadline,
+                bidId,
+                tradeId,
+                minProfit,
+                auth.reasoningTopicId
+            )
+        );
+    }
+
+    /**
+     * @dev Single dispatch helper for the AgentAuth-bearing entry points.
+     *      `auth.signature.length == 0` is the legacy/owner path — no
+     *      envelope state touched, msg.sender is the actor. Otherwise
+     *      the agent EOA is calling; we verify msg.sender matches the
+     *      claimed agentKey, dispatch to the named stash's spendForAgent
+     *      choke point (which verifies the signature + decrements
+     *      budget), and resolve the beneficial owner from the stash.
+     *
+     *      Returns the triple (effective caller, agent key for events,
+     *      reasoning topic for events) so the caller can route profit
+     *      credits + emit consistent attribution without re-reading state.
+     *
+     *      Budget amounts here are the SPEND consequences for THIS
+     *      action — for arbitrage, the spend was already committed at
+     *      bid-creation time, so we pass (0, 0) and the envelope only
+     *      enforces signature + nonce + permission. Bid-creation paths
+     *      pass the real (hbar, lazy) commitment.
+     */
+    function _resolveAgentOrOwner(
+        IAgentEnvelope.AgentAuth calldata auth,
+        IAgentEnvelope.ActionType action,
+        bytes32 structHash,
+        uint96 hbarAmount,
+        uint96 lazyAmount
+    ) internal returns (address effectiveCaller, address agentKey, bytes32 topic) {
+        if (auth.signature.length == 0) {
+            // Legacy / owner path. Beneficial-owner resolution handles
+            // the EOA-vs-stash distinction for self-trade gates.
+            return (_resolveBeneficialOwner(msg.sender), address(0), bytes32(0));
+        }
+        if (msg.sender != auth.agentKey) {
+            revert IAgentEnvelope.EnvelopeAuthFailed(
+                auth.agentKey, IAgentEnvelope.AuthFailCode.BadSignature
+            );
+        }
+        if (!isValidStash[auth.stash]) {
+            revert IAgentEnvelope.EnvelopeAuthFailed(
+                auth.agentKey, IAgentEnvelope.AuthFailCode.NotFound
+            );
+        }
+        BidderContract(payable(auth.stash)).spendForAgent(
+            auth, action, structHash, hbarAmount, lazyAmount
+        );
+        effectiveCaller = stashOwnerOf[auth.stash];
+        if (effectiveCaller == address(0)) effectiveCaller = auth.stash;
+        agentKey = auth.agentKey;
+        topic = auth.reasoningTopicId;
+    }
+
+    /**
+     * @notice View consumed by stashes inside `createEnvelope`.
+     * @dev    Returns the currently-applied limits for the supplied
+     *         tier. A pending (queued, not-yet-executed) change does
+     *         NOT take effect via this view until
+     *         `executeAgentTierLimitsChange` runs.
+     */
+    function getAgentTierLimits(IVIPSubscription.Tier tier)
+        external view override returns (IAgentEnvelope.TierLimits memory)
+    {
+        return _agentTierLimits[tier];
+    }
+
+    /**
+     * @notice Propose tier-limits for a given tier. First call ever for
+     *         a tier applies instantly; subsequent calls queue a 48h
+     *         timelock and overwrite any previously pending change for
+     *         the same tier.
+     * @dev    Owner-only. The owner is expected to be a multisig + timelock
+     *         at the operational layer; the 48h on-chain timelock is the
+     *         user-facing notice window for envelope holders to react if
+     *         caps tighten.
+     */
+    function setAgentTierLimits(
+        IVIPSubscription.Tier tier,
+        IAgentEnvelope.TierLimits calldata limits
+    ) external onlyOwner {
+        if (!agentTierConfigured[tier]) {
+            _agentTierLimits[tier] = limits;
+            agentTierConfigured[tier] = true;
+            emit AgentTierLimitsSet(tier, limits);
+        } else {
+            uint64 eta = uint64(block.timestamp + AGENT_TIER_TIMELOCK);
+            pendingAgentTierLimits[tier] = limits;
+            pendingAgentTierEta[tier] = eta;
+            emit AgentTierLimitsChangePending(tier, limits, eta);
+        }
+    }
+
+    /**
+     * @notice Apply a queued tier-limits change once the 48h timelock has
+     *         elapsed. Permissionless so the owner does not have to be
+     *         live at the exact ETA.
+     */
+    function executeAgentTierLimitsChange(IVIPSubscription.Tier tier) external {
+        uint64 eta = pendingAgentTierEta[tier];
+        if (eta == 0) revert NoPendingTierChange();
+        if (block.timestamp < eta) revert TimelockNotElapsed();
+        IAgentEnvelope.TierLimits memory limits = pendingAgentTierLimits[tier];
+        _agentTierLimits[tier] = limits;
+        delete pendingAgentTierLimits[tier];
+        pendingAgentTierEta[tier] = 0;
+        emit AgentTierLimitsSet(tier, limits);
+    }
+
+    /**
+     * @notice Abandon a queued tier-limits change before it executes.
+     */
+    function cancelAgentTierLimitsChange(IVIPSubscription.Tier tier) external onlyOwner {
+        if (pendingAgentTierEta[tier] == 0) revert NoPendingTierChange();
+        delete pendingAgentTierLimits[tier];
+        pendingAgentTierEta[tier] = 0;
+        emit AgentTierLimitsChangeCancelled(tier);
     }
 
     // ============================================

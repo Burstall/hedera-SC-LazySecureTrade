@@ -39,6 +39,7 @@ const {
 	checkFTAllowances,
 } = require('../utils/hederaMirrorHelpers');
 const { sleep } = require('../utils/nodeHelpers');
+const { EMPTY_AUTH } = require('../utils/agentSigning');
 const { fail } = require('assert');
 require('dotenv').config();
 
@@ -943,6 +944,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 					0,
 					0,
 					0,
+					EMPTY_AUTH,
 				],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -987,7 +989,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx1] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rx1.status.toString()).to.equal('SUCCESS');
 
@@ -1001,7 +1003,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Cancel it
 			const [rx2] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 200_000,
-				'cancelBid', [cancelBidId],
+				'cancelBid', [cancelBidId, EMPTY_AUTH],
 			);
 			expect(rx2.status.toString()).to.equal('SUCCESS');
 
@@ -1073,7 +1075,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [], execBidHbar, 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [], execBidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1097,7 +1099,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx, , record] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeAgainstBid',
-				[execBidId, nftTokenId.toSolidityAddress(), execSerial],
+				[execBidId, nftTokenId.toSolidityAddress(), execSerial, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			console.log('Trade executed! tx:', record?.transactionId?.toString());
@@ -1158,7 +1160,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [arbSerial], bidHbar, 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [arbSerial], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1208,7 +1210,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				bidderFactoryId, bidderFactoryIface, client, 3_000_000,
 				'executeArbitrage',
 				// minProfit = 0
-				[arbBidId, arbTradeId, 0],
+				[arbBidId, arbTradeId, 0, EMPTY_AUTH],
 				0, true,
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -1282,7 +1284,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [selfArbSerial], bidHbar, 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [selfArbSerial], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1316,7 +1318,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
 				'executeArbitrage',
-				[selfBidId, selfTradeId, 0],
+				[selfBidId, selfTradeId, 0, EMPTY_AUTH],
 				0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
@@ -1433,7 +1435,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const result = await contractExecuteFunction(
 				carolStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [], Number(new Hbar(1, HbarUnit.Hbar).toTinybars()), 0, 0, 0],
+				[nftTokenId.toSolidityAddress(), [], Number(new Hbar(1, HbarUnit.Hbar).toTinybars()), 0, 0, 0, EMPTY_AUTH],
 				0, true,
 			);
 			const status = result[0]?.status?.toString() ?? result[0];
@@ -1536,7 +1538,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(6, HbarUnit.Hbar).toTinybars());
 			const [rxBid] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rxBid.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1568,7 +1570,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const [rxArb] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 3_000_000,
-				'executeArbitrage', [bidId, tradeId, 0],
+				'executeArbitrage', [bidId, tradeId, 0, EMPTY_AUTH],
 			);
 			expect(rxArb.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1610,7 +1612,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
 			const [rxBid] = await contractExecuteFunction(
 				carolStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0, EMPTY_AUTH],
 				0, true,
 			);
 			// If Carol's stash is detached (from earlier test), this will fail.
@@ -1643,7 +1645,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// Alice (the seller) tries to arb — SelfTradeBlocked
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [carolBidId, tradeId, 0], 0, true,
+				'executeArbitrage', [carolBidId, tradeId, 0, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('P5.16: SelfTradeBlocked fired when msg.sender == trade.seller');
@@ -1835,7 +1837,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, expiry, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, expiry, 0, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -1972,7 +1974,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			for (let i = 0; i < 3; i++) {
 				await contractExecuteFunction(
 					bobStashId, bidderContractIface, client, 500_000,
-					'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar + i, 0, 0, 0],
+					'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar + i, 0, 0, 0, EMPTY_AUTH],
 				);
 			}
 			client.setOperator(operatorId, operatorKey);
@@ -2110,7 +2112,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rxBid] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 600_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [ser], 0, lazyBid, 0, 0],
+				[nftTokenId.toSolidityAddress(), [ser], 0, lazyBid, 0, 0, EMPTY_AUTH],
 			);
 			expect(rxBid.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2124,7 +2126,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(aliceId, alicePK);
 			const [rxExec] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_500_000,
-				'executeAgainstBid', [lazyBidId, nftTokenId.toSolidityAddress(), ser],
+				'executeAgainstBid', [lazyBidId, nftTokenId.toSolidityAddress(), ser, EMPTY_AUTH],
 			);
 			expect(rxExec.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2166,7 +2168,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
 			const [rxBid] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [tradeSerial], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [tradeSerial], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			expect(rxBid.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2179,7 +2181,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(aliceId, alicePK);
 			const [rxExec] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_500_000,
-				'executeAgainstBid', [lshBidId, nftTokenId.toSolidityAddress(), tradeSerial],
+				'executeAgainstBid', [lshBidId, nftTokenId.toSolidityAddress(), tradeSerial, EMPTY_AUTH],
 			);
 			expect(rxExec.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2264,7 +2266,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 					P58_PRICE,
 					0,
 					0,
-					ethers.ZeroHash,
+					EMPTY_AUTH,
 				],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
@@ -2356,7 +2358,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				[
 					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
 					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
-					ethers.ZeroHash,
+					EMPTY_AUTH,
 				],
 			);
 			expect(rxList.status.toString()).to.equal('SUCCESS');
@@ -2377,7 +2379,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// to LST, then calls LST.cancelTrade.
 			const [rxCancel] = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
-				'cancelTradeFromStash', [tid],
+				'cancelTradeFromStash', [tid, EMPTY_AUTH],
 			);
 			expect(rxCancel.status.toString()).to.equal('SUCCESS');
 			client.setOperator(operatorId, operatorKey);
@@ -2423,7 +2425,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				[
 					nftTokenId.toSolidityAddress(), ethers.ZeroAddress, ser,
 					Number(new Hbar(5, HbarUnit.Hbar).toTinybars()), 0, 0,
-					ethers.ZeroHash,
+					EMPTY_AUTH,
 				],
 			);
 			client.setOperator(operatorId, operatorKey);
@@ -2436,7 +2438,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 800_000,
-				'cancelTradeFromStash', [tid], 0, true,
+				'cancelTradeFromStash', [tid, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'UnauthorizedCaller');
 			client.setOperator(operatorId, operatorKey);
@@ -2446,7 +2448,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(bobId, bobPK);
 			await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
-				'cancelTradeFromStash', [tid],
+				'cancelTradeFromStash', [tid, EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 		});
@@ -2475,7 +2477,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// rejected because trade.seller is an EOA, not a registered stash.
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 800_000,
-				'cancelTradeFromStash', [tid], 0, true,
+				'cancelTradeFromStash', [tid, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'NotStashListed');
 
@@ -2494,7 +2496,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(bobId, bobPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 500_000,
-				'cancelTradeFromStash', [fakeTradeId], 0, true,
+				'cancelTradeFromStash', [fakeTradeId, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'TradeNotFoundOrInvalid');
 			client.setOperator(operatorId, operatorKey);
@@ -2592,7 +2594,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				const bidHbar = Number(new Hbar(1 + i, HbarUnit.Hbar).toTinybars());
 				const [rx] = await contractExecuteFunction(
 					bobStashId, bidderContractIface, client, 500_000,
-					'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0],
+					'createBid', [nftTokenId.toSolidityAddress(), [ser], bidHbar, 0, 0, 0, EMPTY_AUTH],
 				);
 				expect(rx.status.toString()).to.equal('SUCCESS');
 				await sleep(MIRROR_DELAY);
@@ -2630,7 +2632,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const [rxFloorBid] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
 				'createBid',
-				[nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, minPrice],
+				[nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, minPrice, EMPTY_AUTH],
 				0, true,
 			);
 			expect(rxFloorBid.status.toString()).to.equal('SUCCESS');
@@ -2663,7 +2665,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [floorBidId, floorTradeId, 0], 0, true,
+				'executeArbitrage', [floorBidId, floorTradeId, 0, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'ArbitrageProfitInsufficient');
 			console.log('T4: minAcceptablePrice floor enforced (3 HBAR < 8 HBAR → ArbitrageProfitInsufficient)');
@@ -2688,7 +2690,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(10, HbarUnit.Hbar).toTinybars());
 			const [rxWashBid] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [freshSerial], bidHbar, 0, 0, 0, EMPTY_AUTH],
 				0, true,
 			);
 			expect(rxWashBid.status.toString()).to.equal('SUCCESS');
@@ -2716,7 +2718,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [washBidId, washTradeId, 0], 0, true,
+				'executeArbitrage', [washBidId, washTradeId, 0, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('T7: Self-arb blocked with SelfTradeBlocked (bid.user == trade.seller)');
@@ -2758,7 +2760,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
 			await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			await sleep(MIRROR_DELAY);
 
@@ -2768,7 +2770,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// First cancel — should succeed
 			const [rx] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 200_000,
-				'cancelBid', [doubleCancelBidId],
+				'cancelBid', [doubleCancelBidId, EMPTY_AUTH],
 			);
 			expect(rx.status.toString()).to.equal('SUCCESS');
 
@@ -2782,7 +2784,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// resolves correctly.
 			const result = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 200_000,
-				'cancelBid', [doubleCancelBidId], 0, true,
+				'cancelBid', [doubleCancelBidId, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'BidNotFound', [bidderFactoryIface]);
 			console.log('T10: Double-cancel rejected with BidNotFound (struct hard-deleted)');
@@ -2837,7 +2839,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 					ser,
 					Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
 					0, 0,
-					ethers.ZeroHash,
+					EMPTY_AUTH,
 				],
 			);
 			await sleep(MIRROR_DELAY);
@@ -2860,7 +2862,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// don't see a stale trade on this serial.
 			await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
-				'cancelTradeFromStash', [xvecTradeId],
+				'cancelTradeFromStash', [xvecTradeId, EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 		});
@@ -2876,7 +2878,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bidHbar = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
 			await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 500_000,
-				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0],
+				'createBid', [nftTokenId.toSolidityAddress(), [], bidHbar, 0, 0, 0, EMPTY_AUTH],
 			);
 			await sleep(MIRROR_DELAY);
 			const bobBids = await mirrorQuery(bidderFactoryId, bidderFactoryIface, 'getUserBids', [bobId.toSolidityAddress()]);
@@ -2900,7 +2902,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 					ser,
 					Number(new Hbar(1, HbarUnit.Hbar).toTinybars()),
 					0, 0,
-					ethers.ZeroHash,
+					EMPTY_AUTH,
 				],
 			);
 			await sleep(MIRROR_DELAY);
@@ -2915,7 +2917,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(carolId, carolPK);
 			const result = await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
-				'executeArbitrage', [xvecBidId, xvecTradeId, 0], 0, true,
+				'executeArbitrage', [xvecBidId, xvecTradeId, 0, EMPTY_AUTH], 0, true,
 			);
 			expectRevertNamed(result, 'SelfTradeBlocked');
 			console.log('P5.21: cross-vector self-arb blocked (bid.user=Bob, trade.seller=Bob\'s stash, both resolve)');
@@ -2924,11 +2926,11 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(bobId, bobPK);
 			await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 200_000,
-				'cancelBid', [xvecBidId],
+				'cancelBid', [xvecBidId, EMPTY_AUTH],
 			);
 			await contractExecuteFunction(
 				bidderFactoryId, bidderFactoryIface, client, 1_500_000,
-				'cancelTradeFromStash', [xvecTradeId],
+				'cancelTradeFromStash', [xvecTradeId, EMPTY_AUTH],
 			);
 			client.setOperator(operatorId, operatorKey);
 		});

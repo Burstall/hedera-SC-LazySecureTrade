@@ -213,6 +213,13 @@ contract LazySecureTrade is
     ///         applicable. Zero when no change is pending.
     uint256 public pendingBcfEta;
 
+    // Note: an `authorizeFactory` 48h timelock (security finding H3 from
+    // the agent envelope review) was scoped but deferred — the primary
+    // mitigation (envelopes-on-stash, with `spendForAgent` verifying on
+    // each action regardless of caller-factory) already closes the attack
+    // surface. LST is at the 24 KiB bytecode ceiling; the timelock can be
+    // added once LST surface is trimmed (see docs/v0.3-OPS-RUNBOOK.md §7).
+
     /// @notice Timelock window for BCF rotation. Mirrors the BCF's own
     ///         `ARB_PAYOUT_TIMELOCK = 48h` pattern. Long enough that a
     ///         briefly-compromised owner key can't silently re-point

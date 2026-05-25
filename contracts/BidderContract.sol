@@ -9,6 +9,9 @@ import {TokenStakerV2} from "./TokenStakerV2.sol";
 import {HederaResponseCodes} from "./HederaResponseCodes.sol";
 import {ILazySecureTrade} from "./interfaces/ILazySecureTrade.sol";
 import {IBidderContractFactory} from "./interfaces/IBidderContractFactory.sol";
+import {IAgentEnvelope} from "./interfaces/IAgentEnvelope.sol";
+import {IVIPSubscription} from "./interfaces/IVIPSubscription.sol";
+import {AgentEnvelopeLib} from "./libraries/AgentEnvelopeLib.sol";
 
 /**
  * @title BidderContract
@@ -66,7 +69,29 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     ///         (planned in docs/AGENT-MARKETPLACE-DELTA.md) plus a
     ///         comfortable headroom for VIPSubscription / EnglishAuction
     ///         integration without a redeploy.
-    uint256[20] private __gap;
+    ///
+    ///         Slots consumed so far (decrement gap by the same count):
+    ///           1: `_envelopes` mapping pointer
+    ///           1: `_activeAgents` dynamic array head
+    ///           1: `_agentIndex` mapping pointer
+    ///           1: `vipSubscription` address + `_allAgentsPaused` bool (packed)
+    ///         Total: 4 slots. Gap reduced from 20 → 16.
+    mapping(address => IAgentEnvelope.AgentEnvelope) internal _envelopes;
+    address[] internal _activeAgents;
+    /// @dev 1-based index into `_activeAgents`. Zero means "not active".
+    ///      Enables O(1) swap-pop removal on `cancelEnvelope`.
+    mapping(address => uint256) internal _agentIndex;
+    /// @notice VIPSubscription consulted at envelope creation to enforce
+    ///         tier-driven slot and cap limits. Owner-settable (instant
+    ///         first wire-up, mirrors LST.setBcf two-mode pattern; see
+    ///         setVipSubscription). When address(0), envelope creation
+    ///         falls back to Free tier (zero slots).
+    address public vipSubscription;
+    /// @notice Global kill-switch — set by the owner via pauseAllAgents.
+    ///         While true, every envelope on this stash is denied auth
+    ///         regardless of its own paused flag.
+    bool internal _allAgentsPaused;
+    uint256[16] private __gap;
 
     /// @notice Maximum percentage of stash HBAR balance that can be
     ///         pulled by the factory in a single `arbitrageSettle`
@@ -464,6 +489,18 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         address spender,
         uint256 serial
     ) public onlyOwner {
+        _approveNFTTo(token, spender, serial);
+    }
+
+    /// @dev Internal worker. The agent-path `createTrade` calls this
+    ///      after `_verifyAgentOrOwner` has authorized the action — at
+    ///      that point msg.sender is the agent EOA, not the owner, so
+    ///      the public wrapper's `onlyOwner` modifier would reject.
+    function _approveNFTTo(
+        address token,
+        address spender,
+        uint256 serial
+    ) internal {
         if (token == address(0)) revert InvalidAddress();
         IERC721(token).approve(spender, serial);
     }
@@ -748,20 +785,16 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 hbarAmount,
         uint256 lazyAmount,
         uint256 expiry,
-        uint256 minAcceptablePrice
-    ) external onlyOwner nonReentrant returns (bytes32 bidId) {
+        uint256 minAcceptablePrice,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant returns (bytes32 bidId) {
         // Validate parameters
         if (token == address(0)) revert InvalidBidParameters();
         if (hbarAmount == 0 && lazyAmount == 0) revert InvalidBidParameters();
         if (expiry != 0 && expiry <= block.timestamp)
             revert InvalidBidParameters();
-        // minAcceptablePrice above the bid itself is nonsensical — it
-        // would mean the bid can never be arbitraged because the spread
-        // would be negative. Reject at creation time rather than letting
-        // it create an unreachable bid.
         if (minAcceptablePrice > hbarAmount) revert InvalidBidParameters();
 
-        // Validate sufficient funds
         if (hbarAmount > 0 && address(this).balance < hbarAmount) {
             revert InsufficientBalance();
         }
@@ -772,18 +805,21 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             revert InsufficientBalance();
         }
 
-        // Associate token if needed for NFT reception
+        // Light caller check. Factory's `createBid` performs the actual
+        // envelope verification (signature + budget) by calling back to
+        // `spendForAgent` on this stash. The factory holds the EIP-712
+        // typehash + struct-hash composer for `BidCreate` to keep stash
+        // bytecode under 24 KiB.
+        _ownerOrAgentMsgSender(auth);
+
         if (!isAssociated[token]) {
             tokenAssociate(token);
             isAssociated[token] = true;
             associatedTokens.push(token);
         }
 
-        // Increment nonce for uniqueness
         nonce++;
 
-        // Create bid details. The factory sets `createdAt` and
-        // `status` on its side, so we pass placeholder values here.
         IBidderContractFactory.BidDetails
             memory bidDetails = IBidderContractFactory.BidDetails({
                 user: owner,
@@ -794,21 +830,25 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
                 token: token,
                 serials: serials,
                 stashNonce: nonce,
-                createdAt: 0, // factory sets
+                createdAt: 0,
                 minAcceptablePrice: minAcceptablePrice,
-                status: IBidderContractFactory.BidStatus.None // factory sets
+                status: IBidderContractFactory.BidStatus.None
             });
 
-        // Call factory to create bid
-        bidId = IBidderContractFactory(factory).createBid(bidDetails);
+        bidId = IBidderContractFactory(factory).createBid(bidDetails, auth);
     }
 
     /**
-     * @notice Cancel a bid
-     * @param bidId Bid identifier
+     * @notice Cancel a bid. Owner-or-agent path; envelope verification
+     *         (when auth is populated) happens in the factory via
+     *         `spendForAgent` callback.
      */
-    function cancelBid(bytes32 bidId) external onlyOwner {
-        IBidderContractFactory(factory).cancelBid(bidId);
+    function cancelBid(
+        bytes32 bidId,
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external {
+        _ownerOrAgentMsgSender(auth);
+        IBidderContractFactory(factory).cancelBid(bidId, auth);
     }
 
     // ============================================
@@ -932,8 +972,9 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
      * @param tinybarPrice HBAR price in tinybars.
      * @param lazyPrice $LAZY price.
      * @param expiryTime Expiry timestamp (0 = no expiry).
-     * @param agentKey Optional agent identifier for envelope tracking +
-     *                 event tagging. Pass `bytes32(0)` for owner-initiated.
+     * @param auth Optional agent envelope authorization. Empty auth =
+     *             owner-initiated; populated auth = agent acting on
+     *             behalf of the stash owner.
      * @return tradeId Created trade identifier.
      */
     function createTrade(
@@ -943,18 +984,17 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 tinybarPrice,
         uint256 lazyPrice,
         uint256 expiryTime,
-        bytes32 agentKey
-    ) external onlyOwner nonReentrant returns (bytes32 tradeId) {
-        // Grant LST per-serial NFT approval so it can pull this serial at
-        // execution. Per-serial (not setApprovalForAll) bounds the blast
-        // radius if LST is ever compromised AND lets `cancelLstTrade`
-        // revoke atomically. Internal call inherits msg.sender (the owner),
-        // so the `onlyOwner` modifier on `approveNFTTo` passes.
-        approveNFTTo(token, lazySecureTradeAddress, serial);
+        IAgentEnvelope.AgentAuth calldata auth
+    ) external nonReentrant returns (bytes32 tradeId) {
+        // Light caller check. Factory's `createTradeOnBehalfOfStash`
+        // performs the envelope verification via `spendForAgent` callback.
+        _ownerOrAgentMsgSender(auth);
 
-        // BCF hard-codes msg.sender (this stash, validated against
-        // isValidStash) as the LST trade.seller — no spoofable `seller`
-        // param. See docs/BCF-StashAllowances-DESIGN.md Bug 2.
+        // Grant LST per-serial NFT approval so it can pull this serial
+        // at execution time. Internal worker bypasses `onlyOwner` on
+        // the agent path.
+        _approveNFTTo(token, lazySecureTradeAddress, serial);
+
         tradeId = IBidderContractFactory(factory).createTradeOnBehalfOfStash(
             token,
             serial,
@@ -962,7 +1002,7 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             tinybarPrice,
             lazyPrice,
             expiryTime,
-            agentKey
+            auth
         );
     }
 
@@ -1016,6 +1056,331 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         // approveNFTTo). spender = address(0) is the standard ERC-721
         // revocation idiom.
         IERC721(trade.token).approve(address(0), trade.serial);
+    }
+
+    // ============================================
+    // Agent Envelopes (per-stash budget records)
+    // ============================================
+    //
+    // Owner authorizes one or more agent keys to act on behalf of this
+    // stash inside a daily-bounded budget. Per-envelope state is held
+    // here (5 slots packed in `IAgentEnvelope.AgentEnvelope`); admin
+    // CRUD is owner-only; spend authorization is mediated by the factory
+    // via `spendForAgent`. See docs/AGENT-MARKETPLACE-DELTA.md.
+    //
+    // Tier-driven slot + cap limits are sourced from BidderContractFactory
+    // (`getAgentTierLimits(tier)`) — a centralized, owner-tunable table
+    // behind a 48h timelock. The VIP tier itself comes from
+    // `IVIPSubscription.getTierFor(owner)`.
+
+    // Re-declared events (interface event declarations are not emittable
+    // from this contract; same signatures → same topic hashes → indexers
+    // see a single logical stream).
+    event EnvelopeCreated(
+        address indexed owner,
+        address indexed agentKey,
+        uint96 dailyHbarCap,
+        uint96 dailyLazyCap,
+        uint96 perTxHbarCap,
+        uint96 perTxLazyCap,
+        uint64 expiresAt,
+        uint32 allowedActions,
+        bytes32 reasoningTopicId
+    );
+    event EnvelopePaused(address indexed owner, address indexed agentKey, bool paused);
+    event AllAgentsPaused(address indexed owner, bool paused);
+    event EnvelopeCancelled(address indexed owner, address indexed agentKey, uint8 reason);
+    event VipSubscriptionSet(address indexed vipSubscription);
+
+    /// @notice Cancellation reason codes for `EnvelopeCancelled`.
+    uint8 internal constant CANCEL_REASON_OWNER = 0;
+
+    /**
+     * @notice Wire (or rotate) the VIPSubscription consulted at envelope
+     *         creation. Mirrors the simpler single-mode setter on
+     *         TokenStakerV2 — there is no 48h timelock here because the
+     *         envelope subsystem inherits its security from the per-
+     *         envelope daily caps + the owner's instant kill-switches
+     *         (`pauseAllAgents`, `rescueHbar/Lazy`). The frontend should
+     *         surface a confirmation when this changes.
+     * @param  v New VIPSubscription address. Pass address(0) to disable
+     *           tier-driven envelope creation entirely (existing envelopes
+     *           continue to function on their stored caps).
+     */
+    function setVipSubscription(address v) external onlyOwner {
+        vipSubscription = v;
+        emit VipSubscriptionSet(v);
+    }
+
+    /**
+     * @notice Authorize a new agent key with daily HBAR + LAZY caps.
+     * @dev    Tier-driven limits are read from the factory's
+     *         `getAgentTierLimits(currentTier)`; the user's current tier
+     *         comes from `IVIPSubscription.getTierFor(owner)`. When the
+     *         VIP contract is unset, falls back to Free tier (zero slots).
+     *
+     *         Tier limits are UPPER BOUNDS, not defaults — the user
+     *         picks their own caps within the bounds. Per-tx caps must
+     *         be ≤ daily caps (a per-tx cap larger than the daily cap
+     *         is nonsensical).
+     *
+     *         Each agent key is unique per stash; re-authorizing an
+     *         existing agent key requires `cancelEnvelope` first.
+     */
+    function createEnvelope(IAgentEnvelope.EnvelopeParams calldata p)
+        external onlyOwner
+    {
+        if (p.agentKey == address(0)) revert IAgentEnvelope.InvalidEnvelopeParams();
+        if (_agentIndex[p.agentKey] != 0) {
+            revert IAgentEnvelope.EnvelopeAlreadyExists(p.agentKey);
+        }
+        if (p.perTxHbarCap > p.dailyHbarCap || p.perTxLazyCap > p.dailyLazyCap) {
+            revert IAgentEnvelope.InvalidEnvelopeParams();
+        }
+        if (p.expiresAt != 0 && p.expiresAt <= block.timestamp) {
+            revert IAgentEnvelope.InvalidEnvelopeParams();
+        }
+
+        IAgentEnvelope.TierLimits memory limits = _currentTierLimits();
+        uint8 activeCount = uint8(_activeAgents.length);
+        if (limits.maxAgents == 0) revert IAgentEnvelope.TierDoesNotPermitEnvelopes();
+        if (activeCount >= limits.maxAgents) {
+            revert IAgentEnvelope.TierCapExceeded(activeCount + 1, limits.maxAgents);
+        }
+        if (p.dailyHbarCap > limits.dailyHbarCap) revert IAgentEnvelope.InvalidEnvelopeParams();
+        if (p.dailyLazyCap > limits.dailyLazyCap) revert IAgentEnvelope.InvalidEnvelopeParams();
+        if (p.perTxHbarCap > limits.perTxHbarCap) revert IAgentEnvelope.InvalidEnvelopeParams();
+        if (p.perTxLazyCap > limits.perTxLazyCap) revert IAgentEnvelope.InvalidEnvelopeParams();
+        if (p.expiresAt != 0 && limits.maxExpiryWindow != 0
+            && p.expiresAt - block.timestamp > limits.maxExpiryWindow) {
+            revert IAgentEnvelope.InvalidEnvelopeParams();
+        }
+
+        IAgentEnvelope.AgentEnvelope storage env = _envelopes[p.agentKey];
+        env.agentKey = p.agentKey;
+        env.expiresAt = p.expiresAt;
+        env.allowedActions = p.allowedActions;
+        env.dailyHbarCap = p.dailyHbarCap;
+        env.dailyLazyCap = p.dailyLazyCap;
+        env.perTxHbarCap = p.perTxHbarCap;
+        env.perTxLazyCap = p.perTxLazyCap;
+        env.reasoningTopicId = p.reasoningTopicId;
+        env.lastResetDay = uint64(block.timestamp / AgentEnvelopeLib.DAY_SECONDS);
+        // nonce starts at 0; first agent action must carry nonce == 1.
+        env.flags = AgentEnvelopeLib.FLAG_ACTIVE;
+
+        _activeAgents.push(p.agentKey);
+        _agentIndex[p.agentKey] = _activeAgents.length; // 1-based
+
+        emit EnvelopeCreated(
+            owner,
+            p.agentKey,
+            p.dailyHbarCap,
+            p.dailyLazyCap,
+            p.perTxHbarCap,
+            p.perTxLazyCap,
+            p.expiresAt,
+            p.allowedActions,
+            p.reasoningTopicId
+        );
+    }
+
+    /**
+     * @notice Revoke an envelope. Hard-deletes the storage and removes
+     *         the agent key from the active list via O(1) swap-pop.
+     *         Any in-flight signed actions for this agent revert with
+     *         `AuthFailCode.NotFound`.
+     */
+    function cancelEnvelope(address agent) external onlyOwner {
+        _removeAgent(agent);
+        delete _envelopes[agent];
+        emit EnvelopeCancelled(owner, agent, CANCEL_REASON_OWNER);
+    }
+
+    // Note: `updateEnvelopeCaps` and `updateAllowedActions` were trimmed
+    // to fit the 24 KiB stash budget. Owners change envelope parameters
+    // by cancel + recreate. The agent picks up the new envelope on its
+    // next signed action (the cancelled envelope's nonce is gone with
+    // the storage; new envelope starts at nonce 0).
+
+    /**
+     * @notice Per-agent pause. While paused, all actions revert with
+     *         `AuthFailCode.Paused`. Reversible via the same call.
+     */
+    function pauseAgent(address agent, bool paused) external onlyOwner {
+        IAgentEnvelope.AgentEnvelope storage env = _envelopes[agent];
+        if (env.agentKey == address(0)) {
+            revert IAgentEnvelope.EnvelopeAuthFailed(agent, IAgentEnvelope.AuthFailCode.NotFound);
+        }
+        if (paused) {
+            env.flags |= AgentEnvelopeLib.FLAG_PAUSED;
+        } else {
+            env.flags &= ~AgentEnvelopeLib.FLAG_PAUSED;
+        }
+        emit EnvelopePaused(owner, agent, paused);
+    }
+
+    /**
+     * @notice Global kill-switch — pauses every envelope on this stash
+     *         atomically (no loop). While set, `spendForAgent` reverts
+     *         with `AuthFailCode.AllAgentsPaused` regardless of any
+     *         envelope's own `paused` flag.
+     */
+    function pauseAllAgents(bool paused) external onlyOwner {
+        _allAgentsPaused = paused;
+        emit AllAgentsPaused(owner, paused);
+    }
+
+    // ----- Factory-only choke point -----
+
+    /**
+     * @notice Verify a signed agent action, charge its budget cost, and
+     *         return the post-decrement remaining caps. Called by the
+     *         factory from inside its agent-mediated entry points
+     *         (createBid, executeAgainstBid, etc.) BEFORE the action
+     *         touches stash funds. Any revert here means the factory
+     *         must abort the higher-level action.
+     *
+     * @dev    `onlyFactory` is the v1 authorization boundary. EnglishAuction
+     *         integration in v1.1 introduces a wider authorized-callers
+     *         set; for now the factory is the only entry point.
+     *
+     *         The struct hash is composed at the call site against an
+     *         action-specific TYPEHASH (defined in the factory). The
+     *         library binds the EIP-712 domain to (chainId, stash address)
+     *         so signatures cannot cross chains or stashes.
+     *
+     * @param auth         Per-action wire form (agentKey, nonce, deadline, sig, topic).
+     * @param action       The action being authorized.
+     * @param structHash   Pre-composed EIP-712 struct hash for this action.
+     * @param hbarAmount   HBAR (tinybars) this action will spend.
+     * @param lazyAmount   LAZY base units this action will spend.
+     * @return remHbar     Remaining daily HBAR after the decrement.
+     * @return remLazy     Remaining daily LAZY after the decrement.
+     */
+    function spendForAgent(
+        IAgentEnvelope.AgentAuth calldata auth,
+        IAgentEnvelope.ActionType action,
+        bytes32 structHash,
+        uint96 hbarAmount,
+        uint96 lazyAmount
+    ) external onlyFactory returns (uint96 remHbar, uint96 remLazy) {
+        IAgentEnvelope.AgentEnvelope storage env = _envelopes[auth.agentKey];
+        return AgentEnvelopeLib.verifyAndConsume(
+            env,
+            owner,
+            auth,
+            action,
+            structHash,
+            hbarAmount,
+            lazyAmount,
+            address(this),
+            _allAgentsPaused
+        );
+    }
+
+    // ----- Views -----
+
+    function getEnvelope(address agent)
+        external view returns (IAgentEnvelope.AgentEnvelope memory)
+    {
+        return _envelopes[agent];
+    }
+
+    function envelopeExists(address agent) external view returns (bool) {
+        return _agentIndex[agent] != 0;
+    }
+
+    function activeEnvelopeCount() external view returns (uint8) {
+        return uint8(_activeAgents.length);
+    }
+
+    /// @notice Read the i-th active agent key. Pair with `activeEnvelopeCount`
+    ///         for client-side enumeration. Bytecode-cheaper than a paginated
+    ///         view; indexers should prefer `EnvelopeCreated` / `EnvelopeCancelled`
+    ///         events.
+    function activeAgentAt(uint256 i) external view returns (address) {
+        return _activeAgents[i];
+    }
+
+    function nonceFor(address agent) external view returns (uint64) {
+        return _envelopes[agent].nonce;
+    }
+
+    /// @notice Read the global all-agents-paused flag.
+    /// @dev    `getRemainingBudget` + `canAuthorize` were trimmed from
+    ///         the on-chain surface to keep stash bytecode under 24 KiB.
+    ///         The SDK derives both from `getEnvelope(agent)` + block
+    ///         time + this flag. UTC reset semantics are documented in
+    ///         AgentEnvelopeLib: a new UTC day re-zeroes consumed* on
+    ///         the next mutating call.
+    function allAgentsPaused() external view returns (bool) {
+        return _allAgentsPaused;
+    }
+
+    /**
+     * @dev Light caller check for stash-mediated agent paths. Confirms
+     *      msg.sender is either the owner (auth empty) or the claimed
+     *      agentKey (auth populated, auth.stash matches). The actual
+     *      envelope verification (signature, nonce, budget) happens in
+     *      the factory via `spendForAgent` callback — keeping the
+     *      heavy EIP-712 + struct hash composers off the stash.
+     */
+    function _ownerOrAgentMsgSender(IAgentEnvelope.AgentAuth calldata auth) internal view {
+        if (auth.signature.length == 0) {
+            if (msg.sender != owner) revert OnlyOwner();
+        } else {
+            if (msg.sender != auth.agentKey || auth.stash != address(this)) {
+                revert OnlyOwner();
+            }
+        }
+    }
+
+    // ----- Internal helpers -----
+
+    /// @dev O(1) swap-pop removal from `_activeAgents` keyed by 1-based
+    ///      `_agentIndex`. Idempotent on unknown agents (reverts NotFound).
+    function _removeAgent(address agent) internal {
+        uint256 idx = _agentIndex[agent];
+        if (idx == 0) {
+            revert IAgentEnvelope.EnvelopeAuthFailed(agent, IAgentEnvelope.AuthFailCode.NotFound);
+        }
+        uint256 lastIdx = _activeAgents.length;
+        if (idx != lastIdx) {
+            address lastAgent = _activeAgents[lastIdx - 1];
+            _activeAgents[idx - 1] = lastAgent;
+            _agentIndex[lastAgent] = idx;
+        }
+        _activeAgents.pop();
+        delete _agentIndex[agent];
+    }
+
+    /// @dev Resolves the owner's current tier and reads tier limits from
+    ///      the factory's table. When VIPSubscription is unset, returns
+    ///      a zeroed struct (= no envelopes allowed). Try/catch on the
+    ///      VIP call so a broken / paused VIP contract doesn't brick
+    ///      envelope creation entirely (degrades to Free instead).
+    function _currentTierLimits()
+        internal view returns (IAgentEnvelope.TierLimits memory)
+    {
+        IVIPSubscription.Tier tier = IVIPSubscription.Tier.Free;
+        if (vipSubscription != address(0)) {
+            try IVIPSubscription(vipSubscription).getTierFor(owner) returns (IVIPSubscription.Tier t) {
+                tier = t;
+            } catch {
+                tier = IVIPSubscription.Tier.Free;
+            }
+        }
+        if (factory == address(0)) {
+            return IAgentEnvelope.TierLimits(0, 0, 0, 0, 0, 0);
+        }
+        try IBidderContractFactory(factory).getAgentTierLimits(tier)
+            returns (IAgentEnvelope.TierLimits memory limits)
+        {
+            return limits;
+        } catch {
+            return IAgentEnvelope.TierLimits(0, 0, 0, 0, 0, 0);
+        }
     }
 
     // ============================================

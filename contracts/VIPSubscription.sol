@@ -119,6 +119,30 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     /// @notice Basis points denominator (100% = 10_000 bp).
     uint16 internal constant MAX_BPS = 10_000;
 
+    // Owner-action caps — security finding C5 from the agent envelope
+    // review. Bound the blast radius of an owner-key compromise even if
+    // the operational multisig + timelock layer fails. See ops runbook
+    // §7 for residual risk.
+
+    /// @notice Maximum months grantable in a single `extendSubscription`
+    ///         call. Caps any one admin grant at a year of subscription.
+    uint16 internal constant MAX_GRANT_MONTHS = 12;
+
+    /// @notice Floor on per-tier monthly price (LAZY base units).
+    ///         Prevents a compromised admin from setting tier pricing
+    ///         to zero. The token-decimals-agnostic floor of 1 base
+    ///         unit blocks the literal-zero attack; operational
+    ///         multisig + timelock at the owner layer is the primary
+    ///         guard against the "set to 1 base unit ≈ free" attack
+    ///         (which on 8-decimal LAZY would still be effectively
+    ///         free; the on-chain floor cannot generalize across
+    ///         arbitrary token decimals).
+    uint256 internal constant MIN_MONTHLY_PRICE = 1;
+
+    /// @notice Hard upper bound on `maxCombinedDiscountBps`. Stops a
+    ///         compromised admin from enabling a 100%-off path.
+    uint16 internal constant MAX_ALLOWED_COMBINED_DISCOUNT_BPS = 5_000;
+
     // ============================================
     // Events
     // ============================================
@@ -179,6 +203,9 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
 
     error InvalidTier();
     error ZeroMonths();
+    error GrantTooLong(uint16 requested, uint16 cap);
+    error PriceBelowFloor(uint256 requested, uint256 floor);
+    error CombinedDiscountExceedsCap(uint16 requested, uint16 cap);
     error ZeroAddress();
     error InvalidConfigBps(uint16 bps);
     error WouldExceedMaxDuration(uint16 currentRemaining, uint16 requested, uint8 max);
@@ -434,6 +461,7 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     ) external onlyOwner {
         if (user == address(0)) revert ZeroAddress();
         if (months == 0) revert ZeroMonths();
+        if (months > MAX_GRANT_MONTHS) revert GrantTooLong(months, MAX_GRANT_MONTHS);
 
         Subscription memory s = subscriptions[user];
         uint64 base = s.expiresAt > block.timestamp
@@ -456,6 +484,9 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
 
     function setMonthlyPrice(Tier tier, uint256 lazyAmount) external onlyOwner {
         if (tier == Tier.Free) revert InvalidTier();
+        if (lazyAmount < MIN_MONTHLY_PRICE) {
+            revert PriceBelowFloor(lazyAmount, MIN_MONTHLY_PRICE);
+        }
         monthlyPriceLazy[tier] = lazyAmount;
         emit PriceChanged(tier, lazyAmount);
     }
@@ -467,7 +498,9 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     }
 
     function setMaxCombinedDiscountBps(uint16 bps) external onlyOwner {
-        if (bps > MAX_BPS) revert InvalidConfigBps(bps);
+        if (bps > MAX_ALLOWED_COMBINED_DISCOUNT_BPS) {
+            revert CombinedDiscountExceedsCap(bps, MAX_ALLOWED_COMBINED_DISCOUNT_BPS);
+        }
         maxCombinedDiscountBps = bps;
         emit ConfigChanged(CONFIG_KEY_MAX_COMBINED, bps);
     }

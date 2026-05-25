@@ -149,6 +149,21 @@ async function main() {
 	console.log('\nWithout setBcf, stash-listed trades silently fall back to');
 	console.log('charging the stash\'s zero LSH tier (Bug 3). Don\'t skip it.');
 
+	// Agent envelope tier table — first-call-per-tier is INSTANT, so a
+	// fresh deploy can wire all 5 tiers in one operator session before
+	// users begin creating envelopes. Every subsequent setAgentTierLimits
+	// call is 48h-timelocked (apply via executeAgentTierLimitsChange).
+	//
+	// Defaults locked in docs/v0.3-WORKING-PLAN.md "Agent envelopes on BCF":
+	//   - Free:      no envelopes (zero-filled, left at storage default)
+	//   - Bronze:    1 agent, 500 HBAR / 5K LAZY daily, 200/2K per-tx
+	//   - Silver:    2 agents, 1500/15K daily, 500/5K per-tx
+	//   - Gold:      3 agents, 3500/35K daily, 1000/10K per-tx
+	//   - Platinum:  5 agents, 10K/100K daily, 2500/25K per-tx
+	console.log('\n📝 Agent envelope tier table (factory OWNER must execute):');
+	console.log('  BCF.setAgentTierLimits(Tier, TierLimits) — once per tier (instant first call).');
+	console.log('  See docs/v0.3-OPS-RUNBOOK.md §9 for the default table + adjustment runbook.');
+
 	await client.close();
 	process.exit(0);
 }
