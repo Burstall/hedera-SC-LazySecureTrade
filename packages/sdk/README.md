@@ -44,7 +44,11 @@ everything that depends on a real agent runtime to exist first.
 
 ## Install
 
-Peer dependencies (the consumer provides these):
+```bash
+yarn add @lazysuperheroes/marketplace-sdk ethers@^6 @hashgraph/sdk@^2.50
+```
+
+Peer dependencies the consumer must provide:
 
 ```json
 {
@@ -53,43 +57,13 @@ Peer dependencies (the consumer provides these):
 }
 ```
 
-### Once published (TBD)
+Pre-built `dist/` + bundled ABIs ship in the npm tarball — no build
+step runs on the consumer side.
 
-```bash
-yarn add @lazysuperheroes/marketplace-sdk
-```
+### Local development against an unpublished SDK change
 
-### From GitHub (pre-publish)
-
-The SDK ships pre-committed ABIs and a `prepare` script, so a git
-install auto-builds in the consumer's `node_modules`:
-
-```bash
-yarn add "github:Burstall/hedera-SC-LazySecureTrade#v0.3" --no-lockfile
-# OR if your package manager supports subdirectory git installs:
-yarn add "https://gitpkg.now.sh/Burstall/hedera-SC-LazySecureTrade/packages/sdk?v0.3"
-```
-
-(npm 7+ and yarn classic both run `prepare` on git installs with
-devDependencies temporarily available.)
-
-### From a local checkout
-
-For active development against an unpublished SDK, use one of:
-
-**`file:` protocol** — copies the built SDK into the agent's
-`node_modules` on install. Re-install after each SDK change.
-
-```jsonc
-// agent runtime package.json
-"dependencies": {
-  "@lazysuperheroes/marketplace-sdk":
-    "file:../hedera-SC-LazySecureTrade/packages/sdk"
-}
-```
-
-**`yarn link`** — symlink for live-updating workflow. Rebuild SDK,
-agent sees changes immediately.
+If you're iterating on the SDK source itself (not just consuming it),
+use `yarn link` to symlink instead of waiting on a publish:
 
 ```bash
 # in packages/sdk (after every SDK change)
@@ -97,6 +71,16 @@ yarn build && yarn link
 
 # in agent runtime repo (one-time)
 yarn link "@lazysuperheroes/marketplace-sdk"
+```
+
+Or use the `file:` protocol:
+
+```jsonc
+// agent runtime package.json
+"dependencies": {
+  "@lazysuperheroes/marketplace-sdk":
+    "file:../hedera-SC-LazySecureTrade/packages/sdk"
+}
 ```
 
 ---

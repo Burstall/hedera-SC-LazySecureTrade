@@ -84,23 +84,17 @@ any agent logic.
 
 ## Install the marketplace SDK
 
-The contracts repo publishes the SDK as `@lazysuperheroes/marketplace-sdk`.
-It is not yet on npm — install directly from the git URL:
+The contracts repo publishes the SDK to npm as
+`@lazysuperheroes/marketplace-sdk`. Install + peer deps in one line:
 
 ```bash
-yarn add "github:Burstall/hedera-SC-LazySecureTrade#v0.3"
+yarn add @lazysuperheroes/marketplace-sdk ethers@^6 @hashgraph/sdk@^2.50
 ```
 
-(The SDK's `prepare` script auto-builds in your `node_modules` on
-install — `tsup` + `typescript` are pulled in as devDeps temporarily.
-Pre-committed ABIs cover the case where the parent Hardhat
-`artifacts/` directory isn't present.)
-
-Peer dependencies you must add yourself:
-
-```bash
-yarn add ethers@^6 @hashgraph/sdk@^2.50
-```
+(The package ships pre-built `dist/` + bundled ABIs in the npm
+tarball — no build step runs on the consumer side. Consumes ~916 KB
+unpacked, of which most is the ABI JSON bundled into the type
+declarations.)
 
 ### Also install the Hedera AI Agent Kit
 
@@ -356,8 +350,9 @@ When the `lazy-agent-runtime` repo's first Claude Code session starts:
 
 1. `yarn init -y`. Install peers + both SDKs:
    ```bash
-   yarn add ethers@^6 @hashgraph/sdk@^2.50 @hashgraph/hedera-agent-kit
-   yarn add "github:Burstall/hedera-SC-LazySecureTrade#v0.3"
+   yarn add @lazysuperheroes/marketplace-sdk \
+            @hashgraph/hedera-agent-kit \
+            ethers@^6 @hashgraph/sdk@^2.50
    ```
 2. Skim `docs/AGENT-MARKETPLACE-DELTA.md` in the contracts repo
    (fetch via WebFetch on the GitHub URL — no clone needed). Also
