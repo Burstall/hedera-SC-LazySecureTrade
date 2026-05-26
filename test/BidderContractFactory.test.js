@@ -531,7 +531,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			console.log('Reusing BidderContract impl:', bidderImplId.toString());
 		}
 		else {
-			[bidderImplId] = await contractDeployFunction(client, bcJson.bytecode, 5_000_000);
+			[bidderImplId] = await contractDeployFunction(client, bcJson.bytecode, 6_500_000);
 			provisionedThisRun.impl = true;
 			console.log('BidderContract impl deployed:', bidderImplId.toString());
 		}
@@ -1057,7 +1057,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 		let execBidId;
 		let execSerial;
 		let execBidHbar; // hoisted so the event-shape assertion in the test
-		                 // body can compare args[6] against the bid amount
+		// body can compare args[6] against the bid amount
 
 		before(async function () {
 			// Mint a fresh serial for this test and route it to Alice. The

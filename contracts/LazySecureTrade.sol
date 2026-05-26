@@ -234,6 +234,21 @@ contract LazySecureTrade is
     ///         pending grants (auto-generated getter).
     mapping(address => uint64) public pendingFactoryAuthEta;
 
+    /// @notice True once any factory has ever been authorized (instantly
+    ///         at deploy time OR via `executeFactoryAuthorization` after
+    ///         a timelocked grant). Gates the "initial wire-up" instant
+    ///         path in `authorizeFactory` — once flipped, all subsequent
+    ///         grants must traverse the 48h timelock.
+    /// @dev    Mirrors the `setBcf` initial-wire-up exception: at deploy
+    ///         time the operator is trusted (they ARE the system), so
+    ///         the first authorization is instant. After that, the owner
+    ///         is assumed potentially compromisable and grants require a
+    ///         48h public-notice window. Revokes stay instant either way.
+    ///         Internal (no auto-getter) to keep LST under the 24 KiB
+    ///         bytecode ceiling — readers can infer "flag is set" from
+    ///         the `FactoryAuthorized(_, true)` event log instead.
+    bool internal factoryAuthorityEverGranted;
+
     /// @notice Timelock window for BCF rotation. Mirrors the BCF's own
     ///         `ARB_PAYOUT_TIMELOCK = 48h` pattern. Long enough that a
     ///         briefly-compromised owner key can't silently re-point
@@ -1379,17 +1394,24 @@ contract LazySecureTrade is
     /***
      * @notice Authorize or deauthorize a factory contract to create
      *         trades on behalf of users.
-     * @dev    **Asymmetric 2-mode** (security finding H3):
-     *           - **Grant** (`_authorized == true`): queues a 48h
-     *             timelock. Apply via `executeFactoryAuthorization`
-     *             once the ETA elapses; abandon via
+     * @dev    **Asymmetric 3-mode** (security finding H3):
+     *           - **Initial wire-up grant** (`_authorized == true` AND
+     *             `!factoryAuthorityEverGranted`): instant. At deploy
+     *             time the operator is trusted; the system has no
+     *             stashes yet so there's nothing to protect. Mirrors
+     *             the `setBcf` initial-wire-up exception. After the
+     *             first grant ever, `factoryAuthorityEverGranted`
+     *             flips true and all future grants timelock.
+     *           - **Subsequent grant** (`_authorized == true` AND
+     *             flag is set): queues a 48h timelock. Apply via
+     *             `executeFactoryAuthorization`; abandon via
      *             `cancelFactoryAuthorization`. A briefly-compromised
      *             owner key cannot silently add a malicious factory.
-     *             No-op if the factory is already authorized.
-     *             Re-calling overwrites any prior pending grant for
-     *             the same factory and resets the ETA.
-     *           - **Revoke** (`_authorized == false`): instant. The
-     *             emergency-response path — if a factory turns
+     *             No-op if the factory is already authorized. Re-
+     *             calling overwrites any prior pending grant for the
+     *             same factory and resets the ETA.
+     *           - **Revoke** (`_authorized == false`): instant.
+     *             Emergency-response path — if a factory turns
      *             malicious, the owner kicks it out immediately, no
      *             notice window. Also cancels any pending grant for
      *             the same factory. No-op if already revoked.
@@ -1397,7 +1419,8 @@ contract LazySecureTrade is
      *         See `SECURITY.md` → "Owner Administration Model".
      * **ONLY OWNER**
      * @param _factory Address of the factory contract.
-     * @param _authorized True to queue a grant; false to instantly
+     * @param _authorized True to grant (instant on first call ever,
+     *                    timelocked thereafter); false to instantly
      *                    revoke (and clear any pending grant).
      */
     function authorizeFactory(
@@ -1409,9 +1432,16 @@ contract LazySecureTrade is
         }
         if (_authorized) {
             if (authorizedFactories[_factory]) return; // already authorized
-            uint64 eta = uint64(block.timestamp + FACTORY_AUTH_TIMELOCK);
-            pendingFactoryAuthEta[_factory] = eta;
-            emit FactoryAuthorizePending(_factory, eta);
+            if (!factoryAuthorityEverGranted) {
+                // Initial wire-up: apply instantly.
+                factoryAuthorityEverGranted = true;
+                authorizedFactories[_factory] = true;
+                emit FactoryAuthorized(_factory, true);
+            } else {
+                uint64 eta = uint64(block.timestamp + FACTORY_AUTH_TIMELOCK);
+                pendingFactoryAuthEta[_factory] = eta;
+                emit FactoryAuthorizePending(_factory, eta);
+            }
         } else {
             if (pendingFactoryAuthEta[_factory] != 0) {
                 delete pendingFactoryAuthEta[_factory];
