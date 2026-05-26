@@ -2732,9 +2732,9 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			const bcJson = JSON.parse(
 				fs.readFileSync('./artifacts/contracts/BidderContract.sol/BidderContract.json', 'utf8'),
 			);
-			// Match the scaffold's impl deploy gas (5M) — BidderContract is too
-			// large to deploy at 1.5M.
-			const [freshImplId] = await contractDeployFunction(client, bcJson.bytecode, 5_000_000);
+			// Match the scaffold's impl deploy gas (6.5M) — BidderContract is
+			// too large to deploy at 5M after the v0.3 stash surface growth.
+			const [freshImplId] = await contractDeployFunction(client, bcJson.bytecode, 6_500_000);
 
 			// Try to initialize the implementation directly — must revert AlreadyInitialized
 			const result = await contractExecuteFunction(
