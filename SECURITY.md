@@ -292,11 +292,23 @@ staging 48 hours of timelock), and subsequent rotations are gated by a
 | `setBcf(address)` | EnglishAuction | 2-mode | `executeBcfChange` / `cancelBcfChange` |
 | `setAgentTierLimits(Tier, TierLimits)` | BCF | 2-mode per-tier | `executeAgentTierLimitsChange` / `cancelAgentTierLimitsChange` |
 | `setArbitragePayoutBps(uint256)` | BCF | 1-mode (always 48h) | `executeArbPayoutBpsChange` |
+| `authorizeFactory(address, true)` | LST | 3-mode asymmetric | `executeFactoryAuthorization` / `cancelFactoryAuthorization` |
 
-`authorizeFactory(address, bool)` on LST is the **one outstanding gap**
-in this category — it grants factory-level trade-creation rights and
-should follow the same 2-mode pattern. Scheduled to land alongside the
-LST bytecode trim (see `docs/v0.3-WORKING-PLAN.md` item #2).
+`authorizeFactory` uses a slightly different shape from the others —
+**3-mode asymmetric** — driven by the H3 threat model:
+
+- **Initial wire-up grant** (first ever authorize for any factory):
+  instant. Mirrors `setBcf`'s deploy-time exception — the operator is
+  trusted at deploy time; no stashes exist yet to protect.
+- **Subsequent grant** (`_authorized == true`): 48h timelocked. A
+  briefly-compromised owner cannot silently add a malicious factory.
+- **Revoke** (`_authorized == false`): instant. Emergency-response
+  path — kicking out a compromised factory must not wait 48h. Also
+  clears any pending grant for the same factory.
+
+Verified end-to-end on Hedera testnet (75/75 in
+`test/BidderContractFactory.test.js`, including P5.26–P5.32 covering
+all three modes).
 
 ### Operational-multisig setters (instant, off-chain notice expected)
 
