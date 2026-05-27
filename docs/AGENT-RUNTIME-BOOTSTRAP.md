@@ -9,8 +9,11 @@
 > `hedera-SC-LazySecureTrade` repo first, but links every claim to the
 > source of truth.**
 >
-> **Last updated:** 2026-05-25 (against contracts repo `v0.3` branch tip
-> `eaca2c5`).
+> **Last updated:** 2026-05-27 (against contracts repo `v0.3` branch tip
+> `a148c74`). Comprehensive AE0-AE11 envelope test suite landed
+> (Sessions 1-3 live, AE11 timing-gated). Tier-3 polish items #7/#8/#9
+> closed; #6 deferred. Agent Hedera-account provisioning recipe added
+> below (Section "Provisioning an agent Hedera account").
 
 ---
 
@@ -182,18 +185,142 @@ patterns, propose them back to the contracts repo as PRs to
 
 ## Latest testnet deploys
 
-Match what `getAddresses('testnet')` returns:
-
 ```
-LazySecureTrade        0.0.9052246  (0x...008a2056)
-BidderContract (impl)  0.0.9052248  (0x...008a2058)
-BidderContractFactory  0.0.9052252  (0x...008a205c)
+LazySecureTrade        0.0.9057802  (0x...008a360a)   # bumped 2026-05-26 (3-mode timelock)
+BidderContract (impl)  0.0.9062594  (0x...008a48c2)   # bumped 2026-05-26
+BidderContractFactory  0.0.9062601  (0x...008a48c9)   # bumped 2026-05-26
 VIPSubscription        0.0.9043912  (0x...0089ffc8)
 EnglishAuction         0.0.9052454  (0x...008a2126)
 ```
 
+The published `@lazysuperheroes/marketplace-sdk@0.1.0` still points
+at the older LST/BCF/impl deploys. The SDK will bump to 0.1.1 when
+the runtime needs the new operator-side surface (currently it
+doesn't — SNIPER only consumes stash + auction reads).
+
 Mainnet addresses are still null in the SDK — v0.3 hasn't shipped to
 mainnet yet.
+
+**Active state to be aware of**: LST has a 48h-timelocked
+`authorizeFactory` grant queued for the cached BCF that unlocks at
+2026-05-28T18:30:36Z. Until that executes via `LST.executeFactoryAuthorization(bcf)`,
+stash-initiated trade listings (`stash.createTrade` →
+`BCF.createTradeOnBehalfOfStash` → `LST.createTradeOnBehalf`)
+will revert `UnauthorizedFactory`. Bid + arb paths are unaffected.
+
+---
+
+## Provisioning an agent Hedera account
+
+Each agent is a Hedera account; its key signs the transactions that
+hit your envelope. The Hedera SDK has a non-obvious behavior here
+that bit the contracts repo's own integration tests — record this
+recipe before you write a single line of executor code.
+
+### Why this matters (the gotcha)
+
+`AccountId.fromEvmAddress(0, 0, evmAddress)` returns the **long-zero
+form** (`0.0.<evmHex>`). Hedera consensus does NOT accept that form
+as a transaction payer until the EVM→numeric mapping has been
+resolved AND the account has been "completed" by a tx from its
+ECDSA key. Submitting a tx with the long-zero payer fails precheck
+with `PAYER_ACCOUNT_NOT_FOUND`. This is the trap.
+
+The fix is a two-step pattern: fund via the alias-key form
+(`publicKey.toAccountId(0, 0)`), then resolve to numeric via
+`AccountInfoQuery` and use **that** for `setOperator`.
+
+### The recipe
+
+```typescript
+import {
+    AccountId, AccountInfoQuery, Client, Hbar, HbarUnit, PrivateKey,
+    TransferTransaction,
+} from '@hashgraph/sdk';
+import { ethers } from 'ethers';
+
+async function provisionAgentAccount(
+    client: Client,             // signed in as the operator / funder
+    operatorId: AccountId,
+    wallet: ethers.Wallet,      // the agent's ECDSA wallet
+    fundHbar = 5,
+): Promise<{ id: AccountId; pk: PrivateKey; evm: string }> {
+    const ecdsaKey = PrivateKey.fromStringECDSA(wallet.privateKey);
+
+    // Step 1 — fund the alias-key form. Hedera consensus accepts this
+    // as a RECEIVER (auto-creates the account with the ECDSA key).
+    const aliasAccountId = ecdsaKey.publicKey.toAccountId(0, 0);
+    await new TransferTransaction()
+        .addHbarTransfer(operatorId, new Hbar(-fundHbar))
+        .addHbarTransfer(aliasAccountId, new Hbar(fundHbar))
+        .freezeWith(client)
+        .execute(client)
+        .then((resp) => resp.getReceipt(client));
+
+    // Step 2 — resolve to numeric AccountId. SDK rejects the alias
+    // form in setOperator (no checksum on aliases); we need 0.0.<num>.
+    const info = await new AccountInfoQuery()
+        .setAccountId(aliasAccountId)
+        .execute(client);
+
+    return {
+        id: info.accountId,                       // 0.0.<num> — use for setOperator
+        pk: ecdsaKey,                             // signs as the agent
+        evm: wallet.address.toLowerCase(),        // matches msg.sender on-chain
+    };
+}
+
+// Subsequent agent-as-payer calls:
+const agent = await provisionAgentAccount(client, operatorId, wallet);
+client.setOperator(agent.id, agent.pk);
+// Now any contract call from `client` runs with msg.sender == agent.evm.
+```
+
+A working version of this pattern (Hardhat-test idiom) lives at
+`test/scaffold.js:provisionAgentHederaAccount` in the contracts repo.
+Smoke probe at `scripts/testing/agentAliasProbe.js` proves the
+flow with `~3 HBAR`.
+
+### What the contract sees
+
+When the agent submits `stash.createBid(token, serials, hbarAmount,
+lazyAmount, expiry, minAcceptablePrice, auth)`:
+
+- `msg.sender` = the agent's EVM address (derived from the ECDSA
+  pubkey — matches `wallet.address`).
+- `auth = (agentKey, reasoningTopicId)` — built via
+  `buildAgentAuth(agent.evm, hcs10TopicId)` from the SDK.
+- The stash's `_ownerOrAgentMsgSender` check passes when
+  `msg.sender == auth.agentKey`. Both reduce to the same EVM address.
+- BCF.createBid (called by the stash) then calls back to
+  `stash.spendForAgent(auth, ActionType.BidCreate, hbarAmount,
+  lazyAmount)`, which runs the envelope verification +
+  decrements daily/per-tx caps. Atomic with the bid.
+
+### Stash funding (where the bid's value comes from)
+
+The agent submits the transaction but pays only the **fee** in HBAR
+from its own balance (~5 HBAR per agent covers many txs). The bid's
+**value** comes from the user's stash — fund the stash with HBAR
+and/or LAZY first.
+
+```typescript
+// HBAR to stash — use the SDK's sendHbar helper or any TransferTransaction
+// where the stash's numeric ContractId is the receiver.
+await new TransferTransaction()
+    .addHbarTransfer(operatorId, new Hbar(-amount))
+    .addHbarTransfer(stashContractId, new Hbar(amount))
+    .execute(client);
+
+// LAZY to stash — use LAZYTokenCreator.transferHTS(lazyToken, stashEvm, amount)
+// (the pattern the contracts test suite uses to fund stashes for LAZY bids).
+// See scripts/ops/snapshotStashOwners.js for the mirror-side analogues.
+```
+
+The runtime should never assume stash balance — always pre-check
+`mirrorQuery(stash, 'balanceOf')` (LAZY) or
+`checkMirrorHbarBalance(stash)` (HBAR) before sizing a bid, and
+budget agent envelopes against what the stash actually holds.
 
 ---
 

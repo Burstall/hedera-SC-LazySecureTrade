@@ -58,19 +58,54 @@ The architecture has to be designed with **subcall-per-trade-item = 1 (for tier)
 
 ### Resulting architectural decisions
 
-These supersede the corresponding sections below:
+> **⚠️ Outcome annotations (2026-05-27)**: items #1, #2, and #4 below
+> were REVERSED during implementation. The v3 doc reasoning is
+> preserved for historical context, but the live implementation went
+> a different direction. See per-item annotations.
 
-1. **`VIPMembership` → `VIPRegistry` with cached tier.** Single cross-contract call per trade. Internal cache, refresh-on-write, frame-local memoization for batch ops. Detailed below in [Revised: VIPRegistry](#revised-vipregistry-cached-tier-resolution).
+These superseded the corresponding sections below at design time:
 
-2. **Per-agent envelopes live in BCF, not in the stash bytecode.** Trades subcall savings + smaller stash impl. Documented trust note. Detailed below in [Revised: per-agent envelopes](#revised-per-agent-envelopes-location-decision).
+1. ~~**`VIPMembership` → `VIPRegistry` with cached tier.**~~ Single cross-contract call per trade. Internal cache, refresh-on-write, frame-local memoization for batch ops. Detailed below in [Revised: VIPRegistry](#revised-vipregistry-cached-tier-resolution).
+   > **REVERSED** — `VIPRegistry` was split into two contracts during
+   > the design pass: `LSHTierLib` (statically-linked, inlined,
+   > zero-subcall when caller has the lib) for holdings-tier
+   > resolution; `VIPSubscription` (independent contract) for paid
+   > tiers. The cache idea was dropped — the library inlines the
+   > 6-subcall chain at each call site, but short-circuits on the
+   > first positive match (1 subcall for Gen 1 holders). See
+   > `docs/LSHTierLib-DESIGN.md` and `docs/VIPSubscription-DESIGN.md`.
+
+2. ~~**Per-agent envelopes live in BCF, not in the stash bytecode.**~~ Trades subcall savings + smaller stash impl. Documented trust note. Detailed below in [Revised: per-agent envelopes](#revised-per-agent-envelopes-location-decision).
+   > **REVERSED** — Security finding H3 ruled against BCF placement.
+   > Envelopes live on each per-user stash (`BidderContract` clone)
+   > via the statically-linked `AgentEnvelopeLib`. The factory calls
+   > back to `stash.spendForAgent` for envelope verification during
+   > BCF-mediated flows; EnglishAuction-mediated flows verify
+   > directly on the stash side. See `contracts/BidderContract.sol`
+   > and `contracts/libraries/AgentEnvelopeLib.sol`.
 
 3. **LazyLotto migrates to `VIPRegistry` as part of its mainnet deploy.** Eliminates duplicate LSH check; same release-shape as the v0.3 marketplace work. Detailed below in [LazyLotto integration](#lazylotto-integration-shared-vipregistry-opportunity).
+   > **ON TRACK** (different target) — LazyLotto will consume
+   > `LSHTierLib` directly when it migrates. The scanner-side cutover
+   > work also tracks against `BCF.stashOwnerOf` resolution — see
+   > `docs/v0.3-OPS-RUNBOOK.md` §3.
 
-4. **Tier resolution adopts the signed-proof pattern from `LazyStakingSignatureVerifier` as an OPTIONAL hot path.** Zero subcalls when used. Off-chain signer (the agentic layer or a system wallet) signs `(user, tier, validUntil)`; trade contract verifies via `ecrecover` (precompile, not a subcall). Used by power-users / agents; fallback to cached cross-contract call for everyone else.
+4. ~~**Tier resolution adopts the signed-proof pattern from `LazyStakingSignatureVerifier` as an OPTIONAL hot path.**~~ Zero subcalls when used. Off-chain signer (the agentic layer or a system wallet) signs `(user, tier, validUntil)`; trade contract verifies via `ecrecover` (precompile, not a subcall). Used by power-users / agents; fallback to cached cross-contract call for everyone else.
+   > **REVERSED** — Auth model went msg.sender-only (no EIP-712, no
+   > ecrecover) once Hedera's protocol-layer signature verification
+   > was confirmed sufficient. Removes a trust assumption (off-chain
+   > signer compromise) and works uniformly for ECDSA + ED25519
+   > Hedera key types. See `contracts/interfaces/IAgentEnvelope.sol`
+   > "Authentication model" NatSpec.
 
 5. **No new wrapper/abstraction contracts that add subcalls without payback.** Library composition (statically linked, bytecode-inlined) preferred over satellite contracts when DRY is the only driver. Cross-contract calls reserved for cases where the called contract holds independent state worth isolating.
+   > **HELD** — `LSHTierLib` and `AgentEnvelopeLib` both went the
+   > inline-library route; `VIPSubscription` stayed a satellite
+   > contract because it holds independent paid-subscription state
+   > worth isolating (and pays its bytecode in a different consumer).
 
-The rest of the doc retains its structure, with revisions inline below.
+The rest of the doc retains its structure. Annotations like the
+above flag where v3-era reasoning was overtaken by later decisions.
 
 ---
 

@@ -1,9 +1,18 @@
 # VIPSubscription — Contract Design Doc
 
-**Status:** Pre-implementation design.
+> **✅ IMPLEMENTED** (2026-05-27). Live at `contracts/VIPSubscription.sol`
+> (testnet: `0.0.9043912`). All four paid tiers (Bronze/Silver/Gold/Platinum),
+> the holdings-discount table with 14-day per-serial cooldown, annual-prepay
+> pro-rated discount, tier upgrade-in-place semantics, admin
+> `extendSubscription` grant path, and the immutable owner-action
+> caps (`MAX_GRANT_MONTHS = 12`, `MAX_ALLOWED_COMBINED_DISCOUNT_BPS = 5_000`)
+> all match this design. See `test/VIPSubscription.test.js` for the
+> 16/16 acceptance suite.
+
+**Status:** ✅ Implemented (was: pre-implementation design).
 **Companion to:** `docs/AGENT-MARKETPLACE-DELTA.md` (decision context), `docs/LSHTierLib-DESIGN.md` (the holdings-tier library used by trade-fee consumers, NOT by this contract directly).
 **Supersedes (in part):** `docs/VIPRegistry-DESIGN.md` (split into `LSHTierLib` + this contract).
-**Target release:** v0.3 mainnet (companion to LST v2, BCF agent envelopes, EnglishAuction).
+**Target release:** v0.3 mainnet — shipped.
 
 ---
 

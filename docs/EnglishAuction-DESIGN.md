@@ -1,8 +1,16 @@
 # EnglishAuction — Contract Design Doc
 
-**Status:** Pre-implementation design.
+> **✅ IMPLEMENTED** (2026-05-27). Live at `contracts/EnglishAuction.sol`
+> (testnet: `0.0.9052454`). The auction lifecycle, anti-snipe extension,
+> bundle support (up to 10 mixed NFT+FT items), buy-now collapse,
+> reserve price, manual royalty payment, beneficial-owner resolution,
+> pull-payment queues, and 48h timelock on high-blast-radius admin
+> functions all match this design. See `test/EnglishAuction.test.js`
+> for the 20/20 acceptance suite.
+
+**Status:** ✅ Implemented (was: pre-implementation design).
 **Companion to:** `docs/AGENT-MARKETPLACE-DELTA.md` (decision context), `docs/LSHTierLib-DESIGN.md` (trade-fee tier), `docs/VIPSubscription-DESIGN.md` (paid tier).
-**Target release:** v0.3.x (parallel ship after v0.3 mainnet, or co-shipped if timeline allows).
+**Target release:** v0.3.x shipped.
 
 ---
 

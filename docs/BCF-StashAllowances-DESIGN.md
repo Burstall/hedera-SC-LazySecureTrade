@@ -1,8 +1,16 @@
 # BCF Stash Allowances — Design Doc
 
-**Status:** Pre-implementation design.
+> **✅ IMPLEMENTED** (2026-05-27). All 5 bugs documented below have
+> been fixed in the live `contracts/BidderContract.sol`. The HIP-906
+> `hbarApprove` path (`approveHbarTo`, `_ensureHbarAllowanceForCustodyHop`),
+> the per-serial NFT approval (`approveNFTTo`), the `cancelLstTrade`
+> orchestrator, and the spoof-vector guards (`NotMyTrade`,
+> `TradeNotFoundOrInvalid`) all match this design. Doc preserved as
+> historical context.
+
+**Status:** ✅ Implemented (was: pre-implementation design).
 **Companion to:** `docs/BCF-StashInitiatedListing-DESIGN.md`, `docs/v0.3-integration-guide.md`.
-**Target release:** v0.3 mainnet (blocking — without these, executeAgainstBid / executeArbitrage / stash-listed-trade flows revert with `HTSCallFailed(292, "XFER")`).
+**Target release:** v0.3 mainnet (shipped — was blocking, fixed).
 
 ---
 

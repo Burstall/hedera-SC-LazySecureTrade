@@ -1,9 +1,17 @@
 # LSHTierLib — Library Design Doc
 
-**Status:** Pre-implementation design.
+> **✅ IMPLEMENTED** (2026-05-27). Live at
+> `contracts/libraries/LSHTierLib.sol` — statically-linked + inlined
+> into `LazySecureTrade`, `EnglishAuction`, future consumers. The
+> tier enum (Free/Silver/Gold/Platinum), the holdings → staking →
+> delegation priority chain, `_stakingTier` single-subcall pattern,
+> and `_safeDelegatedLength` try/catch resilience all match this
+> design. See `test/LSHTierLib.test.js` for the 18/18 acceptance suite.
+
+**Status:** ✅ Implemented (was: pre-implementation design).
 **Companion to:** `docs/AGENT-MARKETPLACE-DELTA.md` (decision context), `docs/VIPSubscription-DESIGN.md` (the discount-table consumer of this tier model).
 **Supersedes (in part):** `docs/VIPRegistry-DESIGN.md` (split into this library + `VIPSubscription`).
-**Target release:** v0.3 mainnet (critical path).
+**Target release:** v0.3 mainnet — shipped.
 
 ---
 
@@ -137,7 +145,7 @@ Staking check is placed between holdings and delegations: most staking users sti
 
 ## LDR resilience (carried from LST's existing handling)
 
-Per `CLAUDE.md`: `LazyDelegateRegistry` is immutable and has known bugs. LST currently wraps LDR calls in try/catch via `_safeGetDelegatedLength` to prevent an LDR revert from bricking trade execution. The library must do the same:
+Per `CLAUDE.md`: `LazyDelegateRegistry` is immutable and has known bugs. The library wraps LDR calls in try/catch via `_safeDelegatedLength` to prevent an LDR revert from bricking trade execution (renamed from the original `_safeGetDelegatedLength` when the logic moved out of LST into this library):
 
 ```solidity
 function _safeDelegatedLength(

@@ -1,6 +1,23 @@
 # Agent Marketplace — Pickup Document
 
-**Purpose:** This is the resume-from-here doc for the agent-marketplace contract work. Each section below is a discrete continuation thread with enough context that a fresh Claude session can pick it up cleanly without re-reading the entire history.
+> **✅ SUPERSEDED** (2026-05-27). All six pickup items below have shipped.
+> This doc is preserved for historical context — it captures the
+> design-time open questions and how they were eventually resolved.
+> For current state and next steps see `docs/v0.3-WORKING-PLAN.md`.
+>
+> Mapping to live state:
+>
+> | Pickup item | Status | Lives at |
+> |---|---|---|
+> | #1 Per-agent envelope contract | ✅ Shipped | `contracts/BidderContract.sol` + `contracts/libraries/AgentEnvelopeLib.sol`. Option B (envelopes on stash) won the bytecode probe. |
+> | #3 HTS royalty handling for EA | ✅ Shipped | `contracts/EnglishAuction.sol` `_payRoyalties()` — manual royalty pulled from token's HTS fee schedule on settle. |
+> | #4 `agentReasoningTopicId` on BCF events | ✅ Shipped | `BidCreated` / `BidCancelled` / `BidExecuted` / `ArbitrageExecuted` all carry the field. SDK `AgentAuth` tuple wraps `(agentKey, reasoningTopicId)`. |
+> | #5 Marketplace SDK | ✅ Shipped | Published as `@lazysuperheroes/marketplace-sdk@0.1.0` on npm. Source at `packages/sdk/`. |
+> | #6 VIP tier → agent allocation | ✅ Shipped | Locked table in `docs/v0.3-WORKING-PLAN.md` "Locked default tier table". Wired via `scripts/interactions/wireAgentTierLimits.js`. |
+>
+> Pickup item #2 (no record found in this file — likely numbered around earlier draft).
+
+**Purpose (historical):** This was the resume-from-here doc for the agent-marketplace contract work. Each section below was a discrete continuation thread with enough context that a fresh Claude session could pick it up cleanly without re-reading the entire history.
 
 **As of:** 2026-05-17 baseline. BCF v0.3 test rework + four design docs + this pickup doc committed; ready to begin implementation.
 
