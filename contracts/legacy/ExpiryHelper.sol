@@ -2,7 +2,7 @@
 pragma solidity >=0.8.12 <0.9.0;
 pragma experimental ABIEncoderV2;
 
-import { HederaTokenService } from "./HederaTokenService.sol";
+import { LegacyHederaTokenService } from "./LegacyHederaTokenService.sol";
 import { IHederaTokenService } from "./IHederaTokenService.sol";
 
 abstract contract ExpiryHelper {

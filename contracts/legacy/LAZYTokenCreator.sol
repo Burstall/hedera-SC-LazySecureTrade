@@ -3,7 +3,7 @@ pragma solidity >=0.8.12 <0.9.0;
 
 // moved folder structure given these are only included as support for testing
 import { HederaResponseCodes } from "../HederaResponseCodes.sol";
-import { HederaTokenService } from "./HederaTokenService.sol";
+import { LegacyHederaTokenService } from "./LegacyHederaTokenService.sol";
 import { IHederaTokenService } from "./IHederaTokenService.sol";
 import { ExpiryHelper } from "./ExpiryHelper.sol";
 import { KeyHelper } from "./KeyHelper.sol";
@@ -83,11 +83,11 @@ contract LAZYTokenCreator is KeyHelper, ExpiryHelper, Ownable {
         // create the expiry schedule for the token using ExpiryHelper
         token.expiry = createAutoRenewExpiry(
             address(this),
-            HederaTokenService.defaultAutoRenewPeriod
+            LegacyHederaTokenService.defaultAutoRenewPeriod
         );
 
         // call HTS precompiled contract, passing initial supply and decimals
-        (int responseCode, address tokenAddress) = HederaTokenService
+        (int responseCode, address tokenAddress) = LegacyHederaTokenService
             .createFungibleToken(token, initialSupply, decimals);
 
         if (responseCode != HederaResponseCodes.SUCCESS) {
@@ -118,7 +118,7 @@ contract LAZYTokenCreator is KeyHelper, ExpiryHelper, Ownable {
     ) external onlyOwner returns (int responseCode) {
         require(_allowanceWL.exists(spender), "Spender not on WL");
 
-        (responseCode) = HederaTokenService.approve(token, spender, amount);
+        (responseCode) = LegacyHederaTokenService.approve(token, spender, amount);
 
         emit TokenControllerMessage(
             "Approval",
@@ -144,7 +144,7 @@ contract LAZYTokenCreator is KeyHelper, ExpiryHelper, Ownable {
 		external
 		onlyOwner 
 	returns (int responseCode) {
-        responseCode = HederaTokenService.transferToken(
+        responseCode = LegacyHederaTokenService.transferToken(
             token,
             address(this),
             receiver,
@@ -220,7 +220,7 @@ contract LAZYTokenCreator is KeyHelper, ExpiryHelper, Ownable {
         returns (int responseCode)
     {
 		
-		(responseCode) = HederaTokenService.wipeTokenAccount(
+		(responseCode) = LegacyHederaTokenService.wipeTokenAccount(
             token,
             msg.sender,
             amount
@@ -246,7 +246,7 @@ contract LAZYTokenCreator is KeyHelper, ExpiryHelper, Ownable {
         external
         returns (int responseCode, uint256 amount)
     {
-        (responseCode, amount) = HederaTokenService.allowance(
+        (responseCode, amount) = LegacyHederaTokenService.allowance(
             token,
             address(this),
             spender

@@ -4,25 +4,23 @@ pragma experimental ABIEncoderV2;
 
 // ⚠️  LEGACY (v0.2) shape — DO NOT IMPORT FROM PRODUCTION CONTRACTS.
 //
-// This file declares `contract HederaTokenService` with the same symbol
-// name as `contracts/HederaTokenService.sol` (the production v0.3
-// version) but with different `cryptoTransfer` and `defaultAutoRenewPeriod`
-// shapes. Only the legacy test-fixture stack
-// (LAZYTokenCreator / ExpiryHelper / KeyHelper inside `contracts/legacy/`)
-// should import this via the relative path `./HederaTokenService.sol`.
-// Any new file outside `contracts/legacy/` MUST import the production
-// version at `contracts/HederaTokenService.sol` — never reach into
-// `legacy/` from production code.
+// This file declares `contract LegacyHederaTokenService` (formerly
+// `HederaTokenService`, renamed to remove the name clash with the
+// production version at `contracts/HederaTokenService.sol`). The
+// legacy variant ships a different `cryptoTransfer` shape and
+// `defaultAutoRenewPeriod` constant; the production version uses
+// HIP-906-era signatures.
 //
-// A future cleanup pass will rename the contract symbol to
-// `LegacyHederaTokenService` to remove the name clash. ~120 in-file
-// references across 4 files; deferred to keep the v0.3 hardening pass
-// focused.
+// Only the legacy test-fixture stack
+// (LAZYTokenCreator / ExpiryHelper / KeyHelper inside `contracts/legacy/`)
+// imports this file. Any new file outside `contracts/legacy/` MUST
+// import the production version at `contracts/HederaTokenService.sol`
+// — never reach into `legacy/` from production code.
 
 import { HederaResponseCodes } from "../HederaResponseCodes.sol";
 import { IHederaTokenService } from "./IHederaTokenService.sol";
 
-abstract contract HederaTokenService is HederaResponseCodes {
+abstract contract LegacyHederaTokenService is HederaResponseCodes {
     address constant precompileAddress = address(0x167);
     // 90 days in seconds
     uint32 constant defaultAutoRenewPeriod = 7776000;
