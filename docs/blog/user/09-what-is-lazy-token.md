@@ -132,9 +132,14 @@ For a buyer or seller on LST:
 - **If you have LAZY**, denominate your trade in LAZY. Pay 0%
   fees regardless of LSH status.
 - **If you only have HBAR**, denominate in HBAR. Pay 1% (or
-  less if you hold LSH).
+  less if you hold LSH, or 0% if the NFT being sold is itself
+  an LSH — see below).
 - **If you hold LSH Gen 1**, the fee difference between HBAR
   and LAZY is moot — both are 0%.
+- **If you're selling an LSH NFT** (Gen 1, Mutant, or Gen 2),
+  the HBAR trade is fee-free regardless of your wallet's tier.
+  An item-side exemption, independent of the seller-tier
+  discount.
 - **For auctions**, the seller chooses the payment token at
   listing. Pick LAZY if you want to capture fee-free
   settlement; pick HBAR for broader buyer pool.

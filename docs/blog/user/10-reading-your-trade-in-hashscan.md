@@ -18,9 +18,14 @@ thing.
 
 ## A worked example
 
-Let's say you bought NFT serial #42 from a Gen 2 collection
+Let's say you bought NFT serial #42 from a **non-LSH collection**
 for 100 HBAR. The seller is Alice; the platform fee is 1%
-(you don't hold LSH); the collection's royalty is 5%.
+(Alice doesn't hold LSH); the collection's royalty is 5%.
+
+(If the NFT were an LSH itself — Gen 1, Mutant, or Gen 2 — the
+trade would be fee-free regardless of Alice's wallet tier. See
+the [Variations to look for](#variations-to-look-for) section
+below for that case.)
 
 HashScan's transaction view would show something like this
 (simplified):
@@ -164,6 +169,33 @@ This is the kind of trade where beneficial-owner resolution
 matters — see
 [Beneficial-owner resolution](../technical/11-beneficial-owner-resolution.md)
 for the fee-tier implications.
+
+### LSH NFT being sold (item-side exemption)
+
+If the NFT you're trading IS an LSH Gen 1, Mutant, or Gen 2,
+the HBAR Transfers section is simpler:
+
+```
+HBAR Transfers:
+  YOU                  -100.00000000 HBAR
+  ALICE                 +95.00000000 HBAR    (full price minus royalty only)
+  LST Contract          +5.00000000 HBAR    (royalty cut)
+  YOU                   -0.00000001 HBAR    (custody hop)
+  LST Contract          +0.00000001 HBAR
+```
+
+No `PLATFORM FEE WALLET` line. The item-side LSH exemption
+zeroes the platform fee regardless of who the seller is. Alice
+nets 95 HBAR instead of 94. The royalty (5%) is paid normally
+because royalty is a network-level fee tied to the NFT, not the
+marketplace's platform fee.
+
+This route is independent of the seller-tier discount. A
+non-LSH-holder selling an LSH-item pays 0% platform fee. An
+LSH-Gen-1 holder selling a non-LSH item ALSO pays 0% (via
+seller-side discount). Both routes lead to the same line-item
+result; the contract's exemption logic uses whichever fires
+first.
 
 ### Agent-mediated bids
 

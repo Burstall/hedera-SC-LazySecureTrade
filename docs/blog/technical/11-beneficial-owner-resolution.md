@@ -81,6 +81,16 @@ Without the resolution, a Gen-1-holding human listing through
 their stash would pay full 1% instead of 0%. With it, the
 human's tier is read from the right address.
 
+Note: there's a parallel item-side exemption that fires
+independently of the tier check. If the NFT being sold IS
+an LSH (Gen 1, Mutant, or Gen 2), the trade is fee-free
+regardless of seller tier — `LazySecureTrade.sol:1655-1661`.
+Stash-listed LSH items still get the item-side exemption (it's
+not affected by beneficial-owner resolution; it keys on
+`itemAddress`, not seller). The tier-side fix described in
+this post addresses the non-LSH-item, LSH-holder-seller case
+where the item-side exemption doesn't apply.
+
 ### 2. Self-trade block (LST)
 
 LST forbids self-trades (`msg.sender == trade.seller`). But on

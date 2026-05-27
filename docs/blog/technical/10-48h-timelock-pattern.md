@@ -54,7 +54,7 @@ Catalog as of v0.3 (this is the live state, not a wish list):
 | `setDiscount` | VIPSubscription | Same — future-only |
 | `setCooldownSeconds` | VIPSubscription | Same — future locks; existing locks decay normally |
 | `extendSubscription` | VIPSubscription | One-way grant (only adds time), capped at `MAX_GRANT_MONTHS = 12` per call |
-| Fee rate tunes | LST | Hard-capped via `MAX_FEE_RATE`; affects future trades only |
+| Fee rate tunes | LST | `baseFeeRate` hard-capped at 500 bps (5%) inline; affects future trades only |
 | `withdrawPlatformFees` | LST | Owner drains accumulated fees to chosen recipient |
 | `pauseAllAgents` (per stash) | BidderContract | **NOT an owner function** — stash owner controls |
 | Stash sovereignty paths (rescue, detach) | BidderContract | **NOT owner functions** — stash owner controls |
@@ -194,9 +194,13 @@ hours?"
 The answer for both: **the function's effect is bounded enough
 that 48h notice isn't load-bearing.**
 
-- **Platform fee rate** is capped at `MAX_FEE_RATE` (hardcoded
-  in the contract). A compromised owner can move it within the
-  cap, but they can't make it 50%. The cap is the protection.
+- **Platform fee rate** is hard-capped at 500 bps (5%) inside
+  `updateFeeRates` — a compromised owner can move `baseFeeRate`
+  within `[0, 500]` bps but can't make it 50%. The discount
+  knobs (`lshGen1Discount` / `lshMutantDiscount` /
+  `lshGen2Discount`) are each capped at 100% and must be
+  hierarchically ordered (Gen1 ≥ Mutant ≥ Gen2). The cap +
+  ordering check is the protection.
 - **`extendSubscription`** can only EXTEND time. The compromised
   owner can't shorten anyone's subscription, can't change
   anyone's tier, can't drain user funds. The function is

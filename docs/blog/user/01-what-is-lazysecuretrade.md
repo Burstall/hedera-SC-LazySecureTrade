@@ -70,6 +70,13 @@ opt in. The contract checks your wallet at trade time and rates
 you accordingly. Same if you delegated or staked your LSH (we
 honor those, not just direct ownership).
 
+There's also a second fee-free path: **if the NFT you're selling
+IS an LSH (Gen 1, Mutant, or Gen 2), the trade is fee-free
+regardless of your wallet's tier.** The exemption is on the
+item, not the seller — anyone selling an LSH NFT pays 0% on
+that trade. This is independent of and stacked alongside the
+seller-tier discount above.
+
 ## Subscriptions (separate from trade fees)
 
 There's also a paid subscription tier — Bronze through Platinum —

@@ -115,7 +115,10 @@ For buyers:
 
 - **You pay the full price you saw.** The platform fee + royalty
   come out of the seller's side; you don't see a separate
-  royalty line item.
+  royalty line item. (Two cases where the platform fee is 0%:
+  the seller is a 100%-discount LSH Gen 1 holder, OR the NFT
+  being sold is itself an LSH Gen 1/Mutant/Gen 2. Both routes
+  exempt the trade from platform fees independently.)
 - **You need to grant a small HBAR allowance to the marketplace
   contract** so it can pull the 1 tinybar. The frontend
   handles this; HashPack might ask you to approve it the first

@@ -18,8 +18,11 @@ trade-offs, what each tier is actually for.
 
 Subscriptions don't change trade fees. Those stay tied to LSH
 holdings (Gen 1 = 100% off, Mutant = 75%, Gen 2 = 50%, none =
-1%). What subscriptions change is **how many agents you can
-authorize and what they can spend per day**.
+1%) — plus a second fee-free path for trades where the NFT
+being sold is itself an LSH (Gen 1, Mutant, or Gen 2),
+independent of seller tier. What subscriptions change is **how
+many agents you can authorize and what they can spend per
+day**.
 
 | Tier | Agent slots | Daily HBAR cap | Daily LAZY cap | Per-tx HBAR | Per-tx LAZY |
 |---|---|---|---|---|---|

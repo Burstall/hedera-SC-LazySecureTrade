@@ -31,7 +31,9 @@ Three trading surfaces:
 
 All three integrate with the same fee tier system tied to LSH
 holdings (Gen 1 = 100% discount, Mutant = 75%, Gen 2 = 50%).
-$LAZY-denominated trades are always fee-free.
+A second fee-free path: selling an LSH NFT itself is also
+exempt, regardless of the seller's tier. $LAZY-denominated
+trades are always fee-free.
 
 ## What's behind the subscription gate
 
