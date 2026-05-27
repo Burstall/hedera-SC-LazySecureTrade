@@ -171,6 +171,9 @@ async function reconstructStakeHistory(env, stakingContractId, endSec) {
 			} catch {
 				continue; // not a staking event we care about
 			}
+			// ethers v6 returns null (not throws) when the topic doesn't
+			// match a known event in the interface — handle both shapes.
+			if (!parsed) continue;
 			logCount++;
 			const ts = Math.floor(Number(log.timestamp.split('.')[0]));
 			const user = parsed.args[0].toLowerCase();
