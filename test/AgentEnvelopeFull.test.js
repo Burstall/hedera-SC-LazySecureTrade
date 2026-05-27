@@ -40,7 +40,8 @@
 const { expect } = require('chai');
 const { describe, it, before, after } = require('mocha');
 const { ethers } = require('ethers');
-const { Hbar, HbarUnit, TokenId } = require('@hashgraph/sdk');
+const { Hbar, HbarUnit, TokenId, PrivateKey } = require('@hashgraph/sdk');
+const { mintAdditionalSerial, sendNFT } = require('../utils/hederaHelpers');
 
 // Resolve the BCF test NFT collection address once. All AE2+ bid tests
 // reference this token; tests skip cleanly when the .env var is absent.
@@ -1986,19 +1987,111 @@ describe('AE10 — Self-trade-via-agent gate', function () {
 		await sleep(MIRROR_DELAY);
 	});
 
-	it('AE10.1: agent executing Alice\'s own LST trade — END-TO-END (skip-gated)', async function () {
-		// End-to-end LST self-trade requires Alice's stash to hold an
-		// NFT, list it via createTrade, then have the agent attempt
-		// executeTrade against that tradeId. Cost: 1 NFT mint + transfer +
-		// list + execute attempt. Out of scope for the agent envelope
-		// suite — the BCF test already proves LST's self-trade block at
-		// the EOA layer. We skip cleanly here.
-		this.skip();
+	it('AE10.1: agent-initiated arbitrage with Alice on both sides reverts SelfTradeBlocked', async function () {
+		const tokenAddr = bcfNftAddress();
+		if (!tokenAddr || !process.env.BCF_NFT_SUPPLY_KEY) {
+			console.log('AE10.1: BCF_NFT_TOKEN_ID + BCF_NFT_SUPPLY_KEY required — skipping');
+			this.skip();
+			return;
+		}
+		// Precondition: BCF must be authorized on LST. stash.createTrade
+		// routes through BCF.createTradeOnBehalfOfStash → LST.createTradeOnBehalf,
+		// which checks authorizedFactories[msg.sender]. On a cached LST
+		// mid-timelock (see AE0.1) this returns false → createTrade
+		// silently reverts → executeArbitrage hits ArbitrageTradeInvalid
+		// instead of SelfTradeBlocked. Defer until the timelock executes.
+		if (lstId) {
+			const authorized = (await mirrorQuery(
+				lstId, lstIface, 'authorizedFactories', [bcfId.toSolidityAddress()],
+			))[0];
+			if (!authorized) {
+				console.log('AE10.1: BCF not authorized on LST (pending timelock) — skipping');
+				console.log('  Once LST.executeFactoryAuthorization(bcf) runs, this test runs as-written.');
+				this.skip();
+				return;
+			}
+		}
+		// Setup: Alice on both sides of an arb attempt.
+		//   1. Alice's stash creates an open-serial bid (associates token).
+		//   2. Mint a fresh NFT serial and send to Alice's stash.
+		//   3. Alice's stash lists that serial on LST via createTrade.
+		//   4. Alice's agent calls executeArbitrage(bidId, tradeId).
+		// Expected: SelfTradeBlocked because bidOwner == sellerOwner
+		// (both resolve to Alice via _resolveBeneficialOwner).
+		const supplyKey = PrivateKey.fromStringED25519(process.env.BCF_NFT_SUPPLY_KEY);
+		const nftTokenId = TokenId.fromString(process.env.BCF_NFT_TOKEN_ID);
+
+		const auth = buildAgentAuth(agent1.evm, ethers.ZeroHash);
+
+		// Step 1: open-serial bid via agent. hbarAmount=100 covers the
+		// (later) 50-tinybar trade price; bid funded by stash HBAR.
+		client.setOperator(agent1.id, agent1.pk);
+		const [rxBid, bidResults] = await contractExecuteFunction(
+			stashId, bcIface, client, 1_500_000,
+			'createBid', [tokenAddr, [], 100, 0, 0, 0, auth],
+		);
+		expect(rxBid.status.toString()).to.equal('SUCCESS');
+		const bidId = bidResults[0];
+		client.setOperator(operatorId, operatorKey);
+		await sleep(MIRROR_DELAY);
+
+		// Step 2: mint + send NFT to Alice's stash. Token is associated
+		// from the createBid call above.
+		const serial = await mintAdditionalSerial(client, nftTokenId, supplyKey);
+		await sendNFT(client, operatorId, stashId, nftTokenId, [serial]);
+		await sleep(MIRROR_DELAY);
+
+		// Step 3: Alice (owner path) lists the serial via stash.createTrade.
+		// 50 tinybar price; open-market (buyer = 0).
+		client.setOperator(alice.id, alice.pk);
+		await contractExecuteFunction(
+			stashId, bcIface, client, 1_500_000,
+			'createTrade',
+			[tokenAddr, ethers.ZeroAddress, serial, 50, 0, 0, EMPTY_AUTH],
+		);
+		client.setOperator(operatorId, operatorKey);
+		await sleep(MIRROR_DELAY);
+		const tradeId = ethers.solidityPackedKeccak256(
+			['address', 'uint256'], [tokenAddr, serial],
+		);
+
+		// Step 4: agent-initiated arbitrage. Self-arb guard fires:
+		// bidOwner = sellerOwner = Alice's EOA.
+		client.setOperator(agent1.id, agent1.pk);
+		const result = await contractExecuteFunction(
+			bcfId, bcfIface, client, 2_000_000,
+			'executeArbitrage',
+			[bidId, tradeId, 0, stashAddress, auth],
+			0, true,
+		);
+		client.setOperator(operatorId, operatorKey);
+		expectRevertNamed(result, 'SelfTradeBlocked', [bcfIface]);
+
+		// Cleanup: revoke the listing so the serial isn't held hostage
+		// in a stale trade for the next AE10 run.
+		try {
+			client.setOperator(alice.id, alice.pk);
+			await contractExecuteFunction(
+				stashId, bcIface, client, 800_000,
+				'cancelLstTrade', [tradeId],
+			);
+			client.setOperator(operatorId, operatorKey);
+		} catch (e) {
+			console.log('AE10.1 cleanup (cancelLstTrade) failed:', e.message);
+		}
 	});
 
-	it('AE10.2: agent executing Bob\'s own LST trade — END-TO-END (skip-gated)', async function () {
-		// Symmetric to AE10.1, but with Bob's stash as seller. Same
-		// scaffolding cost; skipped.
+	it('AE10.2: same SelfTradeBlocked guard via different actor — covered by AE10.1', async function () {
+		// AE10.1 exercises the bidOwner==sellerOwner branch of the
+		// SelfTradeBlocked guard (BCF.executeArbitrage L1554-1559).
+		// AE10.2 in the test plan was scoped as the "Bob's agent on Bob's
+		// own trade" variant — same code path, different EOAs. The
+		// guard checks ALL three vectors (effectiveCaller==bidOwner,
+		// effectiveCaller==sellerOwner, bidOwner==sellerOwner) in a
+		// single conditional, so a second EOA permutation wouldn't add
+		// branch coverage. The BCF test suite's "Should block self-
+		// arbitrage" case (Bob arb'ing his own bid) covers the
+		// effectiveCaller==bidOwner branch from the EOA path.
 		this.skip();
 	});
 
