@@ -19,14 +19,18 @@ Two tracks:
 | 01 | [What is LazySecureTrade?](user/01-what-is-lazysecuretrade.md) | ~5 min |
 | 02 | [Your stash, explained](user/02-your-stash-explained.md) | ~7 min |
 | 03 | [Agent envelopes — your AI trader, your rules](user/03-agent-envelopes-plain-english.md) | ~8 min |
+| 04 | [Hedera vs Ethereum for NFT traders](user/04-hedera-vs-ethereum-for-nft-traders.md) | ~7 min |
+| 05 | [Trading without trusting — how royalties work on LST](user/05-trading-without-trusting-royalties.md) | ~6 min |
 
 ### Technical track
 
 | # | Post | Read time |
 |---|---|---|
-| 01 | [Building a SNIPER agent in 80 lines](technical/01-building-a-sniper-agent.md) | ~10 min |
+| 01 | [Building a SNIPER agent in ~80 lines](technical/01-building-a-sniper-agent.md) | ~10 min |
 | 02 | [Hedera's msg.sender auth — why we deleted ecrecover](technical/02-msg-sender-auth-model.md) | ~10 min |
 | 03 | [CREATE2 stash addresses — predict before deploy](technical/03-create2-stash-prediction.md) | ~12 min |
+| 04 | [Hedera's 50-subcall ceiling — how it shapes batch operations](technical/04-50-subcall-ceiling.md) | ~9 min |
+| 05 | [Auction settlement and the manual royalty pull](technical/05-auction-settlement-manual-royalty.md) | ~9 min |
 
 ## Style guide
 

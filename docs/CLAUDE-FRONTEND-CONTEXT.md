@@ -565,3 +565,264 @@ Common HTS response codes:
 | `InvalidBatchParameters()` | `0x...` | Array length mismatch or empty batch |
 | `BadArguments()` | inherited | From TokenStakerV2 |
 | `HTSCallFailed(int256 code, bytes4 op)` | inherited | From TokenStakerV2 |
+
+---
+
+## Addendum (2026-05-27) — v0.3 surfaces beyond the bid stack
+
+The original body of this doc was written for the bid/CLOB surface
+(LST + BCF + stash). v0.3 also ships agent envelopes, English
+auctions, and VIP subscription tiers. This section catalogs those
+surfaces at the same depth as the body above so frontend devs have
+the complete contract surface to wire UI against.
+
+### Agent envelopes (per-stash)
+
+**Source:** `contracts/interfaces/IAgentEnvelope.sol`,
+`contracts/libraries/AgentEnvelopeLib.sol`, `contracts/BidderContract.sol`
+(implementation lives on each stash).
+
+**Concept:** owner-authored permission slip on each stash that
+names one agent EOA + budget caps + allowed-actions bitmap. Agent
+acts via `msg.sender == envelope.agentKey`; no signatures.
+
+#### Envelope CRUD (owner-only on stash)
+
+| Function | Params | Notes |
+|---|---|---|
+| `createEnvelope(EnvelopeParams p)` | struct (see below) | Reverts `TierDoesNotPermitEnvelopes` for Free, `TierCapExceeded` past slot cap, `AgentKeyIsContract` for contract addresses |
+| `cancelEnvelope(address agent)` | agent EVM | Hard-deletes envelope; emits `EnvelopeCancelled(owner, agent, reason=0)` |
+| `pauseAgent(address agent, bool paused)` | agent + flag | Per-agent toggle; reverts `EnvelopeAuthFailed(NotFound)` if envelope missing |
+| `pauseAllAgents(bool paused)` | flag | Global kill switch (single slot); owner-path bypass intact |
+| `setVipSubscription(address vip)` | new VIP addr | Owner-settable; `address(0)` falls back to Free |
+| `setEnglishAuction(address ea)` | EA addr | Authorizes EA forwards; `address(0)` disables auction-mediated agent path |
+
+#### EnvelopeParams struct
+
+```typescript
+{
+    agentKey: address;          // EOA — contracts rejected
+    dailyHbarCap: uint96;       // tinybars per UTC day
+    dailyLazyCap: uint96;       // LAZY base units per day
+    perTxHbarCap: uint96;
+    perTxLazyCap: uint96;
+    expiresAt: uint64;          // unix seconds; 0 = no expiry (tier caps)
+    allowedActions: uint32;     // bitmap over ActionType
+    reasoningTopicId: bytes32;  // HCS-10 topic; 0 = unset
+}
+```
+
+#### AgentAuth tuple (passed on every mutating call)
+
+```typescript
+[agentKey: address, reasoningTopicId: bytes32]
+// EMPTY_AUTH = [address(0), bytes32(0)] — owner-path marker
+```
+
+#### ActionType enum (allowedActions bitmap)
+
+| Action | Bit |
+|---|---|
+| `BidCreate` | 0 |
+| `BidCancel` | 1 |
+| `TradeExecute` | 2 |
+| `TradeList` | 3 |
+| `TradeCancel` | 4 |
+| `Arbitrage` | 5 |
+| `AuctionCreate` | 6 |
+| `AuctionBid` | 7 |
+| `AuctionBuyNow` | 8 |
+
+UI: bitwise OR the bits the user grants. `0` = no actions
+permitted (envelope still tracks budget for diagnostics);
+`0xFFFFFFFF` = everything.
+
+#### Envelope view surface
+
+| Function | Returns |
+|---|---|
+| `getEnvelope(address agent)` | `AgentEnvelope` struct (zeroed if not found) |
+| `envelopeExists(address agent)` | bool |
+| `activeEnvelopeCount()` | uint8 (compared against tier cap on create) |
+| `activeAgentAt(uint256 i)` | i-th active agent address (client-side enumeration) |
+| `allAgentsPaused()` | bool (global kill switch state) |
+| `vipSubscription()` | address (the VIP contract this stash consults) |
+| `englishAuction()` | address (authorized EA for auction-mediated agent flows) |
+
+#### Envelope events (indexers)
+
+- `EnvelopeCreated(owner, agentKey, dailyHbarCap, dailyLazyCap, perTxHbarCap, perTxLazyCap, expiresAt, allowedActions, reasoningTopicId)`
+- `EnvelopeBudgetConsumed(owner, agentKey, action, hbarAmount, lazyAmount, remainingHbar, remainingLazy, reasoningTopicId)` — fires on every successful agent action; primary signal for live UI
+- `EnvelopeDailyReset(owner, agentKey, utcDay)` — UTC midnight rollover (lazily emitted on first action of the new day)
+- `EnvelopePaused(owner, agentKey, paused)` — per-agent toggle
+- `AllAgentsPaused(owner, paused)` — global toggle
+- `EnvelopeCancelled(owner, agentKey, reason)`
+- `EnvelopeExpired(owner, agentKey, expiredAt)` — one-shot on first action past expiry
+
+#### Envelope errors
+
+| Error | Selector signature | When |
+|---|---|---|
+| `EnvelopeAlreadyExists(address agent)` | `0x...` | `createEnvelope` for an already-active agent |
+| `EnvelopeAuthFailed(address agent, AuthFailCode reason)` | `0x...` | Any agent action where verification fails. AuthFailCode: 0=Ok, 1=NotFound, 2=Paused, 3=AllAgentsPaused, 4=Expired, 5=ActionNotAllowed |
+| `BudgetExhausted(uint96 needed, uint96 remaining, bool isLazy)` | `0x...` | Daily HBAR or LAZY cap would be exceeded |
+| `PerTxCapExceeded(uint96 attempted, uint96 cap, bool isLazy)` | `0x...` | Single-tx amount > perTx cap |
+| `TierDoesNotPermitEnvelopes()` | `0x...` | Free tier; user must subscribe |
+| `TierCapExceeded(uint8 attempted, uint8 tierCap)` | `0x...` | Slot count at tier ceiling |
+| `InvalidEnvelopeParams()` | `0x...` | perTx > daily, expiresAt in past, caps exceed tier upper bounds |
+| `AgentKeyIsContract()` | `0x...` | Contract address passed as agentKey |
+| `OnlyOwner()` | `0x...` | Non-owner called envelope CRUD, OR msg.sender != auth.agentKey on agent path |
+
+### EnglishAuction
+
+**Source:** `contracts/interfaces/IEnglishAuction.sol`,
+`contracts/EnglishAuction.sol`.
+
+**Concept:** timed auction primitive — reserve, buy-now,
+anti-snipe extension, bundle support (up to 10 mixed NFT+FT
+items), pull-payment refund queues, manual royalty.
+
+#### Lifecycle states
+
+```typescript
+enum AuctionState { None, Open, Closed, Settled, Failed, Cancelled }
+```
+
+`Open → Closed` happens via `block.timestamp >= closeAt`.
+`Closed → Settled` requires explicit `settle(auctionId)` call (permissionless after close).
+`Closed → Failed` is the reserve-not-met outcome.
+`Cancelled` is owner-only and only valid in `Open` with no bids.
+
+#### Core write surface
+
+| Function | Caller | Effect |
+|---|---|---|
+| `createAuction(AuctionParams params, AgentAuth auth)` | seller (or stash via agent) | Locks items in EA; emits `AuctionCreated` |
+| `placeBid(bytes32 auctionId, uint96 amount, AgentAuth auth)` | bidder | HBAR sent inline (`msg.value`) for HBAR auctions; LAZY pulled via allowance for LAZY auctions. Refunds previous high bidder to claimable queue |
+| `buyNow(bytes32 auctionId, AgentAuth auth)` | bidder | Collapses auction at `buyNowPrice` |
+| `settle(bytes32 auctionId)` | anyone | After `closeAt`; pays seller proceeds (or refunds high bidder if reserve not met); transfers NFTs; pays settlement bounty to caller |
+| `cancelAuction(bytes32 auctionId)` | seller | Only valid pre-first-bid in `Open` state |
+| `claim(PaymentToken pt)` | anyone | Pull-payment for queued refunds + seller proceeds (HBAR or LAZY) |
+
+#### View surface
+
+| Function | Returns |
+|---|---|
+| `getAuctionSnapshot(bytes32 auctionId)` | `AuctionSnapshot` (computed view incl. `timeRemaining`, `nextMinimumBid`) |
+| `getActiveAuctionsForToken(token, offset, limit)` | bytes32[] |
+| `getActiveAuctions(offset, limit)` | bytes32[] |
+| `claimableHbar(address)` | uint256 |
+| `claimableLazy(address)` | uint256 |
+
+#### Stash-side forwards (agent-callable)
+
+The stash exposes three EA wrappers that verify the envelope
+before forwarding with the stash as msg.sender:
+
+- `stash.createAuctionListing(params, auth)`
+- `stash.placeAuctionBid(auctionId, amount, isLazy, auth)`
+- `stash.buyNowAuction(auctionId, buyNowPrice, isLazy, auth)`
+
+These are the agent path; for direct EOA flows, call EA directly
+with `EMPTY_AUTH`.
+
+#### Auction events
+
+- `AuctionCreated(auctionId, seller, items, closeAt, startPrice, reservePrice, buyNowPrice, paymentToken, reasoningTopicId)`
+- `BidPlaced(auctionId, bidder, amount, newCloseAt, reasoningTopicId)` — `newCloseAt` reflects any anti-snipe extension
+- `AuctionExtended(auctionId, newCloseAt)` — emitted alongside `BidPlaced` when extension fires
+- `BuyNowExecuted(auctionId, bidder, price, reasoningTopicId)`
+- `AuctionSettled(auctionId, winner, finalPrice, protocolFee, settlementBounty)`
+- `AuctionFailed(auctionId, reason)` — reserve-not-met
+- `AuctionCancelled(auctionId)` — seller-initiated pre-first-bid
+- `RoyaltyPaid(auctionId, token, recipient, amount)` — emitted per royalty entry on settle
+
+### VIPSubscription
+
+**Source:** `contracts/interfaces/IVIPSubscription.sol`,
+`contracts/VIPSubscription.sol`.
+
+**Concept:** paid subscription contract. Drives agent envelope
+slot/cap limits; does NOT affect trade fees (those track
+`LSHTierLib` based on LSH holdings).
+
+#### Tier enum
+
+```typescript
+enum Tier { Free, Bronze, Silver, Gold, Platinum }
+```
+
+#### Locked tier table (currently — owner-tunable behind 48h timelock)
+
+| Tier | Slots | Daily HBAR | Daily LAZY | Per-tx HBAR | Per-tx LAZY |
+|---|---|---|---|---|---|
+| Free | 0 | — | — | — | — |
+| Bronze | 1 | 500 | 5,000 | 200 | 2,000 |
+| Silver | 2 | 1,500 | 15,000 | 500 | 5,000 |
+| Gold | 3 | 3,500 | 35,000 | 1,000 | 10,000 |
+| Platinum | 5 | 10,000 | 100,000 | 2,500 | 25,000 |
+
+#### Key writes
+
+| Function | Caller | Effect |
+|---|---|---|
+| `purchaseSubscription(Tier tier, uint16 months, DiscountProof[] proofs)` | user | $LAZY draw via LGS (burn % + treasury); apply tier+expiry. Tier upgrade-in-place; downgrade reverts `CannotDowngradeActiveSubscription` |
+| `extendSubscription(address user, uint16 months)` | owner | Admin grant; preserves existing tier (defaults to Bronze if none). Capped at `MAX_GRANT_MONTHS = 12` |
+
+#### Key views
+
+| Function | Returns |
+|---|---|
+| `getTierFor(address user)` | `Tier` — current active tier or Free |
+| `subscriptionOf(address user)` | `Subscription { Tier, uint64 expiresAt }` |
+| `remainingDuration(address user)` | seconds remaining |
+| `priceFor(Tier, uint16 months, DiscountProof[], payer)` | (lazyAmount, effectiveDiscountBps) — quote without commit |
+| `isSerialLocked(token, serial)` | (bool, uint64 lockedUntil) — 14-day per-serial discount cooldown |
+
+### LSHTierLib (trade-fee tier — distinct from VIP)
+
+**Source:** `contracts/libraries/LSHTierLib.sol`.
+
+Statically-linked into LST + EA. Computes:
+
+```typescript
+enum Tier { Free, Silver, Gold, Platinum }
+```
+
+From the user's LSH Gen1 / Mutant / Gen2 holdings, with delegation
+(via LazyDelegateRegistry) and staking (via LazyNFTStaking) as
+fallback sources. LST consumers see this as `getLSHTokenTier(user)`
+returning `uint256` (legacy ABI).
+
+**Important:** `LSHTierLib.Tier` and `IVIPSubscription.Tier` are
+**different enums with different integer values**. UI must keep
+them distinct — they drive different effects:
+
+- `LSHTierLib.Tier` → trade-fee discount (0%, 50%, 75%, 100%)
+- `IVIPSubscription.Tier` → agent slot/cap limits (0-5 slots)
+
+A user can be Free on VIP but Platinum on LSH (Gen1 holder who
+never subscribed) — they trade for free but can't authorize agents.
+Conversely a user can be Platinum on VIP but Free on LSH — they
+authorize 5 agents but pay full 1% on trades.
+
+### Reference IDs (testnet, as of 2026-05-27)
+
+```
+LazySecureTrade        0.0.9057802
+BidderContract (impl)  0.0.9062594
+BidderContractFactory  0.0.9062601
+VIPSubscription        0.0.9043912
+EnglishAuction         0.0.9052454
+LAZY token             0.0.8986380
+LazyGasStation         (set per .env)
+LazyDelegateRegistry   (set per .env)
+```
+
+### Where to read more
+
+- Marketplace overview for end users: `docs/blog/user/01-what-is-lazysecuretrade.md`
+- Agent envelope plain-language explainer: `docs/blog/user/03-agent-envelopes-plain-english.md`
+- Integration patterns: `docs/v0.3-integration-guide.md`
+- Bootstrap for the off-chain agent runtime: `docs/AGENT-RUNTIME-BOOTSTRAP.md`
+- Test surface (~225 tests across 6 suites): see `docs/v0.3-WORKING-PLAN.md` state-snapshot table
