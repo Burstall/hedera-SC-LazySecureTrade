@@ -21,6 +21,7 @@ Two tracks:
 | 03 | [Agent envelopes — your AI trader, your rules](user/03-agent-envelopes-plain-english.md) | ~8 min |
 | 04 | [Hedera vs Ethereum for NFT traders](user/04-hedera-vs-ethereum-for-nft-traders.md) | ~7 min |
 | 05 | [Trading without trusting — how royalties work on LST](user/05-trading-without-trusting-royalties.md) | ~6 min |
+| 06 | [What to expect at mainnet launch](user/06-what-to-expect-mainnet-launch.md) | ~6 min |
 
 ### Technical track
 
@@ -31,6 +32,10 @@ Two tracks:
 | 03 | [CREATE2 stash addresses — predict before deploy](technical/03-create2-stash-prediction.md) | ~12 min |
 | 04 | [Hedera's 50-subcall ceiling — how it shapes batch operations](technical/04-50-subcall-ceiling.md) | ~9 min |
 | 05 | [Auction settlement and the manual royalty pull](technical/05-auction-settlement-manual-royalty.md) | ~9 min |
+| 06 | [BCF storage strategy — hard-delete, swap-pop, events as memory](technical/06-bcf-storage-strategy.md) | ~9 min |
+| 07 | [Stash allowance plumbing — HIP-906 + per-serial NFT approvals](technical/07-stash-allowance-plumbing.md) | ~11 min |
+| 08 | [Auction anti-snipe math — why the last 10 minutes are different](technical/08-anti-snipe-math.md) | ~7 min |
+| 09 | [VIPSubscription tier economics — discounts, cooldowns, and the loaner problem](technical/09-vip-subscription-economics.md) | ~9 min |
 
 ## Style guide
 

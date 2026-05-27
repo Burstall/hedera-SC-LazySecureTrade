@@ -557,7 +557,10 @@ In suggested order of dependency:
 
 The constraint-driven revisions move several items **into** the v0.3 mainnet release rather than deferring them. Given LST v1 is sunsetting (no live successor to coordinate with), this is the only sane sequencing — shipping v0.3 with hardcoded tier logic then immediately replacing it would be wasted effort.
 
-Cross-reference `docs/v0.3-REMAINING-ITEMS.md` (the existing to-mainnet checklist) with the additions below before committing to a release plan.
+Cross-reference `docs/v0.3-WORKING-PLAN.md` (the live to-mainnet
+plan; the historical pre-ship checklist is at
+`docs/archive/v0.3-REMAINING-ITEMS.md`) with the additions below
+before committing to a release plan.
 
 **Suggested ordering (revised):**
 

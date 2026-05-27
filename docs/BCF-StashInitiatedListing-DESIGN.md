@@ -1,10 +1,17 @@
 # BCF Stash-Initiated Listing — Design Doc
 
-**Status:** Pre-implementation design.
-**Companion to:** `docs/AGENT-MARKETPLACE-DELTA.md`, `docs/v0.3-integration-guide.md`, **`docs/BCF-StashAllowances-DESIGN.md`** (final signatures + cancel flow + NFT/HBAR allowance plumbing — read first).
-**Target release:** v0.3 mainnet (in scope; closes a known gap flagged in BCF test rework P5.8).
+> **✅ IMPLEMENTED** (2026-05-27). The stash-initiated listing
+> flow shipped as `BidderContract.createTrade(...)` → factory
+> `createTradeOnBehalfOfStash(...)` → LST `createTradeOnBehalf(...)`.
+> The original signature in this doc predates the bug-fix pass
+> documented in `docs/BCF-StashAllowances-DESIGN.md` (Bugs 1-5);
+> for the as-shipped surface read the allowances doc. The flow /
+> use-case framing below remains accurate for the agentic listing
+> motivation.
 
-> **⚠️ Signature reconciliation:** The `createTradeOnBehalfOfStash` signature in this doc predates the Bug 1 / Bug 2 / Bug 4 / Bug 5 analysis in `BCF-StashAllowances-DESIGN.md`. The allowances doc supersedes this one on the final contract surface. The flow / use-case framing below remains accurate for the agentic listing motivation, but for implementation reference the allowances doc.
+**Status:** ✅ Implemented (was: pre-implementation design).
+**Companion to:** `docs/AGENT-MARKETPLACE-DELTA.md`, `docs/v0.3-integration-guide.md`, **`docs/BCF-StashAllowances-DESIGN.md`** (final signatures + cancel flow + NFT/HBAR allowance plumbing — read first).
+**Target release:** v0.3 mainnet — shipped (closed the P5.8 gap).
 
 ---
 

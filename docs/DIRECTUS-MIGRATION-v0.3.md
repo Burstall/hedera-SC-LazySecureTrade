@@ -208,3 +208,154 @@ To remove the v0.3 tables (e.g., during a failed migration):
 1. Delete the three collections in Directus Admin: `bidderFactoryEvents`, `bidderBidsCache`, `bidderStashEvents`
 2. Remove the `BIDDER_*` env vars from `.env`
 3. The v0.2 scanner and tables are unaffected
+
+---
+
+## Addendum (2026-05-27) — Agent envelope event tables
+
+The bid/trade/arb schema above doesn't cover the v0.3 agent
+envelope subsystem (envelopes on each stash, budget consumption
+events, kill-switch toggles). Indexers that want to drive
+agent-permission UI, budget remaining displays, or
+EnvelopeBudgetConsumed analytics need two additional tables.
+
+### Table: `agentEnvelopes` — Current state per (stash, agent)
+
+One row per active envelope. Derived from the event stream;
+updated on every CRUD or budget event.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | integer (auto PK) | Directus default primary key |
+| `stash` | string (44) | Stash address (EVM, 0x-prefixed) |
+| `owner` | string (44) | Stash owner EVM address (denormalized for query speed) |
+| `agentKey` | string (44) | Authorized agent's EVM address |
+| `dailyHbarCap` | string (32) | Bigint as string (tinybars) |
+| `dailyLazyCap` | string (32) | Bigint as string (LAZY base units) |
+| `perTxHbarCap` | string (32) | |
+| `perTxLazyCap` | string (32) | |
+| `consumedHbarToday` | string (32) | Running counter; resets at UTC midnight |
+| `consumedLazyToday` | string (32) | |
+| `lastResetDay` | integer | `block.timestamp / 86400` |
+| `expiresAt` | integer | Unix seconds; 0 = no expiry |
+| `allowedActions` | integer | uint32 bitmap |
+| `reasoningTopicId` | string (66) | HCS-10 topic id (bytes32 hex); 0 = unset |
+| `paused` | boolean | Per-agent pause flag |
+| `cancelled` | boolean | `true` once `EnvelopeCancelled` fires |
+| `cancelledReason` | integer | 0 = owner-initiated (currently the only value) |
+| `createdAt` | datetime | First seen on chain |
+| `updatedAt` | datetime | Last event touched this row |
+
+**Unique constraint**: `(stash, agentKey)` — at most one active
+envelope per pair. Cancellation flips `cancelled = true` but
+keeps the row for history; re-creation produces a NEW row with
+the same `(stash, agentKey)` after marking the old one
+cancelled (so the constraint must be on `(stash, agentKey,
+cancelled = false)` as a partial unique index).
+
+### Table: `agentEvents` — Event stream
+
+Append-only log of every envelope-related event for audit + UI.
+Mirrors the pattern of `bidderStashEvents` for stash-only
+events.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | integer (auto PK) | |
+| `stash` | string (44) | |
+| `owner` | string (44) | |
+| `agentKey` | string (44) | Empty for `AllAgentsPaused` |
+| `eventType` | string (32) | enum: `EnvelopeCreated`, `EnvelopeCancelled`, `EnvelopePaused`, `AllAgentsPaused`, `EnvelopeBudgetConsumed`, `EnvelopeDailyReset`, `EnvelopeExpired`, `VipSubscriptionSet`, `EnglishAuctionSet` |
+| `action` | string (16) | For `EnvelopeBudgetConsumed`: `BidCreate`, `BidCancel`, `TradeExecute`, etc. Empty for other event types |
+| `hbarAmount` | string (32) | The consumed amount (bigint) |
+| `lazyAmount` | string (32) | |
+| `remainingHbar` | string (32) | Post-consumption remainder |
+| `remainingLazy` | string (32) | |
+| `reasoningTopicId` | string (66) | HCS-10 topic from AgentAuth |
+| `timestamp` | string (32) | Mirror consensus timestamp |
+| `txId` | string (64) | For dedup + drill-down |
+| `environment` | string (16) | `mainnet` / `testnet` etc |
+| `date_created` | datetime | |
+
+**Index**: `(stash, agentKey, timestamp)` for the
+"events affecting this agent recently" query.
+
+### Indexer hook points
+
+The scanner reads BCF + stash logs (already covered by
+`bidderStashEvents`); add a parallel reader for envelope
+event topics:
+
+```javascript
+const ENVELOPE_TOPICS = [
+    'EnvelopeCreated(address,address,uint96,uint96,uint96,uint96,uint64,uint32,bytes32)',
+    'EnvelopeCancelled(address,address,uint8)',
+    'EnvelopePaused(address,address,bool)',
+    'AllAgentsPaused(address,bool)',
+    'EnvelopeBudgetConsumed(address,address,uint8,uint96,uint96,uint96,uint96,bytes32)',
+    'EnvelopeDailyReset(address,address,uint64)',
+    'EnvelopeExpired(address,address,uint64)',
+    'VipSubscriptionSet(address)',
+    'EnglishAuctionSet(address)',
+];
+```
+
+The scanner emits the per-stash (the address that emitted the
+log) and the agent key (decoded from the first indexed param).
+
+### EnglishAuction event tables
+
+Auctions are a separate contract with its own event stream.
+Recommend a third table parallel to the others:
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | integer (auto PK) | |
+| `auctionId` | string (66) | bytes32 hex |
+| `seller` | string (44) | EVM address; the stash if listed via agent |
+| `items` | json | `[{token, serialOrAmount, isNFT}, ...]` |
+| `payment` | string (8) | `HBAR` or `LAZY` |
+| `startPrice` | string (32) | |
+| `reservePrice` | string (32) | |
+| `buyNowPrice` | string (32) | 0 = no buy-now |
+| `closeAt` | integer | Unix seconds; updated on anti-snipe extension |
+| `state` | string (16) | enum: `OPEN`, `CLOSED`, `SETTLED`, `FAILED`, `CANCELLED` |
+| `highBidder` | string (44) | |
+| `highBid` | string (32) | |
+| `winner` | string (44) | Set on settle |
+| `finalPrice` | string (32) | Set on settle |
+| `protocolFee` | string (32) | |
+| `settlementBounty` | string (32) | |
+| `royaltyPaid` | string (32) | Aggregate across all recipients |
+| `extensionsCount` | integer | How many times anti-snipe fired |
+| `createdAt` | datetime | |
+| `updatedAt` | datetime | |
+
+Plus the per-bid history table if you want bid-by-bid UI:
+
+| Field | Type | Notes |
+|---|---|---|
+| `auctionId` | string (66) | |
+| `bidder` | string (44) | |
+| `amount` | string (32) | |
+| `previousBidder` | string (44) | |
+| `previousAmount` | string (32) | |
+| `newCloseAt` | integer | |
+| `wasExtension` | boolean | |
+| `reasoningTopicId` | string (66) | |
+| `timestamp` | string (32) | |
+
+### Migration notes
+
+The agent envelope addition is non-breaking — the existing
+`bidderStashEvents` table continues to capture stash events
+(`FactoryDetached`, `StashArbSettled`). The new tables sit
+alongside.
+
+If you're rolling out a fresh indexer build, you can ship the
+4 new tables (`agentEnvelopes`, `agentEvents`, `auctions`,
+`auctionBids`) in one Directus migration. If you're patching
+an existing v0.3 indexer that pre-dates this addendum, the
+agent envelope event topics will have been silently dropped
+until the scanner is updated to read them — backfill from
+mirror node logs filtered by the topics listed above.
