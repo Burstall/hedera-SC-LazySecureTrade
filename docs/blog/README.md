@@ -22,6 +22,10 @@ Two tracks:
 | 04 | [Hedera vs Ethereum for NFT traders](user/04-hedera-vs-ethereum-for-nft-traders.md) | ~7 min |
 | 05 | [Trading without trusting — how royalties work on LST](user/05-trading-without-trusting-royalties.md) | ~6 min |
 | 06 | [What to expect at mainnet launch](user/06-what-to-expect-mainnet-launch.md) | ~6 min |
+| 07 | [When is a subscription worth it? Tier-by-tier breakdown](user/07-when-is-a-subscription-worth-it.md) | ~7 min |
+| 08 | [First-time agent setup — a walkthrough](user/08-first-time-agent-setup.md) | ~8 min |
+| 09 | [What is $LAZY, and why are LAZY trades fee-free?](user/09-what-is-lazy-token.md) | ~6 min |
+| 10 | [Reading your trade in HashScan — what each line means](user/10-reading-your-trade-in-hashscan.md) | ~7 min |
 
 ### Technical track
 
@@ -36,6 +40,11 @@ Two tracks:
 | 07 | [Stash allowance plumbing — HIP-906 + per-serial NFT approvals](technical/07-stash-allowance-plumbing.md) | ~11 min |
 | 08 | [Auction anti-snipe math — why the last 10 minutes are different](technical/08-anti-snipe-math.md) | ~7 min |
 | 09 | [VIPSubscription tier economics — discounts, cooldowns, and the loaner problem](technical/09-vip-subscription-economics.md) | ~9 min |
+| 10 | [The 48h timelock pattern — protecting users from compromised owner keys](technical/10-48h-timelock-pattern.md) | ~11 min |
+| 11 | [Beneficial-owner resolution — what stash addresses really represent](technical/11-beneficial-owner-resolution.md) | ~9 min |
+| 12 | [Hardhat against live testnet — our testing methodology](technical/12-hardhat-against-live-testnet.md) | ~10 min |
+| 13 | [Pull-payment queues — why we don't push refunds](technical/13-pull-payment-queues.md) | ~7 min |
+| 14 | [Self-arb / wash-trade guards — why three checks instead of one](technical/14-self-arb-guards.md) | ~8 min |
 
 ## Style guide
 
