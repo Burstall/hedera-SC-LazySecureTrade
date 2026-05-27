@@ -517,32 +517,97 @@ All tests use `expectRevertNamed(result, 'ErrorName')` for negative cases. All s
 
 ---
 
-## Pre-implementation probe checklist
+## Pre-implementation probe checklist — RESOLVED
 
-- [ ] Compile stub `EnglishAuction.sol` → measure bytecode. Confirms ~10-14 KiB estimate. Headroom for the audit phase additions.
-- [ ] Test `Address.sendValue` reliability for refund payments on Hedera (vs `transfer` / low-level call). Pick the safest pattern.
-- [ ] Verify HTS royalty handling: does the 2-step transfer in TokenStakerV2 trigger royalty fee schedule automatically, or do we need to compute + pay it manually like LST does? Affects step 4 of settlement flow.
-- [ ] Confirm anti-snipe extension storage update is cheap (single SSTORE), not a full storage rewrite. Otherwise sniped auctions become gas-expensive.
+> All four probes resolved during implementation. Bytecode came in
+> at 23.849 KiB (well above the 10-14 KiB estimate — the eventual
+> design added bundle support up to 10 items, pull-payment queues,
+> per-token royalty caching, 48h timelock on high-blast-radius admin
+> functions, and the agent-envelope AgentAuth threading. All fit
+> under the 24 KiB ceiling with ~150 B headroom.).
+
+- [x] **Bytecode size.** Final: 23.849 KiB deployed. Tight against
+      ceiling but feasible.
+- [x] **Refund pattern.** Adopted **pull-payment queues**
+      (`claimableHbar` / `claimableLazy` mappings). See blog post
+      `docs/blog/technical/13-pull-payment-queues.md` for the
+      reasoning. Push-refund was rejected because outbound HBAR
+      transfers fail on griefing recipients, deleted accounts,
+      and contracts without payable receivers — DoSing the entire
+      auction.
+- [x] **HTS royalty handling.** **Manual royalty pull at settle.**
+      The HBAR sits in the contract from `placeBid`-time until
+      `settle()`-time, so HTS doesn't see "NFT moves against value"
+      atomically — the auto-royalty path doesn't fire. EA reads
+      the token's HTS fee schedule at create-time, caches it in
+      the auction's storage, and pays each royalty recipient
+      explicitly in `_payRoyalties` during settle. See blog post
+      `docs/blog/technical/05-auction-settlement-manual-royalty.md`.
+- [x] **Anti-snipe storage update.** Single SSTORE per extension.
+      `closeAt` is in a packed storage slot with other auction
+      fields; the extension only rewrites the slot containing
+      `closeAt` (storage update path is cheap). See blog post
+      `docs/blog/technical/08-anti-snipe-math.md`.
 
 ---
 
-## Open implementation questions
+## Open implementation questions — RESOLVED
 
-1. **Hidden vs visible reserve.** Auction houses (Sotheby's etc.) often hide reserves to encourage early bidding. Easy enough to make reserve private (only seller + contract know) but requires sealed-bid commitment for fairness on the seller side too. v1 recommend public reserve (simple, transparent); add hidden reserve as v2 if there's demand.
+> All eight questions resolved during implementation. Resolutions
+> below.
 
-2. **Multi-serial auctions.** "Auction this basket of 5 NFTs as a bundle." Adds substantial complexity (need to escrow all 5, transfer all 5 on settlement). Recommend NOT for v1.
+1. **Hidden vs visible reserve.** ✅ **Visible reserve shipped.**
+   `reservePrice` is a public field on the auction struct. Hidden
+   reserve was discussed but rejected for v1 — sealed-bid
+   commitment overhead wasn't justified for the early auction
+   market. Could be revisited in a v2 auction primitive.
 
-3. **Auction extension by seller.** Should seller be able to extend their own auction's close time before any bids? Probably yes (no economic impact, just lengthens the window). After bids: definitely no (would let seller game the close time).
+2. **Multi-serial auctions.** ✅ **Bundles up to 10 items shipped**
+   (not "not for v1" as originally recommended — product team
+   wanted Tier-C bundles). The `AuctionParams.items` array
+   supports mixed NFT + FT entries; `_persistItemsAndEscrow`
+   pulls all items at create time; `settle()` transfers all to
+   the winner atomically. `MAX_BUNDLE_ITEMS = 10` is the cap.
 
-4. **Bidder pull-payment vs push.** Already chose pull. Alternative: push refund to address (`call`); fall back to claimable mapping on failure. Slightly better UX but more code paths to audit. Pure pull is simpler; stick with it.
+3. **Auction extension by seller.** ✅ **Not shipped.** Seller
+   can `cancelAuction` only while the auction is `Open` AND has
+   no bids. After first bid, seller is locked into the auction
+   closing on its own schedule (or via buy-now / settle paths).
+   Extension was deferred — the anti-snipe extension covers the
+   "auction is getting close to closing but bidding is hot"
+   case.
 
-5. **Concurrent auctions on same serial.** Per the auctionId scheme (`keccak256(seller, token, serial, nonce)`), multiple sellers can have auctions for the SAME serial if they own it. In practice only one seller can hold it at a time, but post-settlement transfers could make this happen. Acceptable — each auction is independent storage.
+4. **Bidder pull-payment vs push.** ✅ **Pull-payment shipped.**
+   `claimableHbar` / `claimableLazy` mappings; users call
+   `claim(PaymentToken)` to redeem. CEI ordering protects against
+   reentrant griefers. See blog post 13.
 
-6. **Royalty source of truth.** Hedera's HTS native royalty schedule (configured at token creation) is the canonical source. The 2-step `TokenStakerV2` transfer should trigger this automatically. But for fungible payment splits (auction-style), we may need to compute royalty separately and pay creator directly. Probe in step 3 above.
+5. **Concurrent auctions on same serial.** ✅ **As designed.**
+   `auctionId = keccak256(seller, nonce)` (sellerNonce, not
+   serial). Each auction is independent storage. Multiple
+   sellers CAN have auctions on the "same" serial across time,
+   but only one seller can hold the NFT at any moment, so only
+   one auction can have it actively escrowed.
 
-7. **VIP-tier mapping for non-LSH paid subscribers.** Does paid Bronze = Silver (LSH Gen 2 equivalent)? Or get its own slot? Product call. My recommendation: paid Bronze = Silver tier discount for fees, but with own designation for premium features (agent slots, etc.).
+6. **Royalty source of truth.** ✅ **HTS fee schedule, manual
+   pull at settle.** See pre-implementation probe checklist
+   resolution above.
 
-8. **Auction limit per user.** Should we cap the number of concurrent auctions a single seller can have? Probably not — let the market dictate. But if storage grows unboundedly, future cleanup function may be needed.
+7. **VIP-tier mapping for non-LSH paid subscribers.** ✅
+   **Decoupled.** LSH tier (LSHTierLib) drives trade-fee
+   discounts; VIPSubscription tier drives agent-envelope limits.
+   They're independent enums with different effects. Paid
+   subscribers do NOT get LSH-tier fee discounts; LSH holders
+   do NOT get paid-tier agent slots. The two systems serve
+   different purposes. See blog post 09 (technical) for the
+   full rationale.
+
+8. **Auction limit per user.** ✅ **No on-chain cap.** Sellers
+   can have unlimited concurrent auctions. Storage is
+   hard-deleted on settle / cancel / fail, so the footprint is
+   bounded by live auction volume, not cumulative. If storage
+   growth becomes a concern post-mainnet, a cleanup helper
+   could be added without breaking changes.
 
 ---
 
@@ -556,10 +621,25 @@ All tests use `expectRevertNamed(result, 'ErrorName')` for negative cases. All s
 
 ---
 
-## Open product decisions (deferred to release planning)
+## Open product decisions — RESOLVED at deploy
 
-- `protocolFeeBpsBase` starting value (suggest 100 = 1% to match LST base)
-- `minReservePrice` starting value (dust prevention; suggest 1000 tinybar or 10 LAZY)
+| Knob | Shipped value | Bound |
+|---|---|---|
+| `protocolFeeBps` (initial) | 100 (1%) | Capped by setter |
+| `settlementBountyBps` (initial) | 10 (0.1% of settled amount) | Capped by setter |
+| `minDuration` | 1 hour | Owner-tunable |
+| `maxDuration` | 7 days | Owner-tunable |
+| `maxExtensionWindow` | 24 hours | Owner-tunable |
+| `defaultMinStepBps` | 200 (2%) | Per-auction override |
+| `defaultAntiSnipeWindow` | 10 minutes | Per-auction override |
+| `defaultAntiSnipeExtension` | 10 minutes | Per-auction override |
+| `MAX_BUNDLE_ITEMS` | 10 | Hardcoded, not tunable |
+| `TIMELOCK_WINDOW` (on setBcf + fees) | 48 hours | Hardcoded |
+| `MAX_VIEW_PAGINATION` | 200 | Hardcoded |
+
+No `minReservePrice` was ultimately needed — sellers can set
+reserve to whatever they want; the auction simply fails if no
+bid meets it.
 - `minDuration` / `maxDuration` — suggest 10 min / 30 days
 - `defaultMinStepBps` — suggest 200 (2%); reasonable for high-velocity auctions
 - `defaultAntiSnipeWindow` / `Extension` — suggest 5 min / 10 min (Foundation-style)

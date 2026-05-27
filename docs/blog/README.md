@@ -26,6 +26,7 @@ Two tracks:
 | 08 | [First-time agent setup — a walkthrough](user/08-first-time-agent-setup.md) | ~8 min |
 | 09 | [What is $LAZY, and why are LAZY trades fee-free?](user/09-what-is-lazy-token.md) | ~6 min |
 | 10 | [Reading your trade in HashScan — what each line means](user/10-reading-your-trade-in-hashscan.md) | ~7 min |
+| 11 | [The staker rebate — how subscription revenue flows back to LSH stakers](user/11-staker-rebate-explained.md) | ~7 min |
 
 ### Technical track
 
