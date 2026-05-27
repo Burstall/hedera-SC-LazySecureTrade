@@ -34,13 +34,28 @@
 //     proofs: { "0xUserA": ["0x...", ...], ... }
 //   }
 //
-// SKELETON. The mirror-node-event-fetching + stake-history reconstruction
-// are STUBBED — see TODO sections. The script structure is intentionally
-// modular so each phase can be implemented + tested independently.
+// Required .env keys:
+//   ENVIRONMENT                       (test|main|preview)
+//   LAZY_NFT_STAKING_CONTRACT_ID      (the staking contract to walk)
+//   LSH_GEN1_TOKEN_ID                  } needed to derive EVM addresses
+//   LSH_GEN1_MUTANT_TOKEN_ID           } for the multiplier table
+//   LSH_GEN2_TOKEN_ID                  }
+//   For --execute mode:
+//     LAZY_REBATE_POOL_CONTRACT_ID    (the pool that will settle)
+//     ACCOUNT_ID + PRIVATE_KEY         (signer — must equal the pool's
+//                                       configured signer)
 
 const fs = require('fs');
 const path = require('path');
+const { default: axios } = require('axios');
 const { ethers } = require('ethers');
+const {
+	Client,
+	AccountId,
+	PrivateKey,
+	ContractId,
+	TokenId,
+} = require('@hashgraph/sdk');
 require('dotenv').config();
 
 // ============================================
@@ -108,32 +123,88 @@ function getProof(tree, leaf) {
 }
 
 // ============================================
-// Stake history reconstruction (STUB)
+// Mirror node — fetch staking events
 // ============================================
 
+const STAKING_IFACE = new ethers.Interface([
+	'event StakedNFT(address _user, address collection, uint256[] serials, uint256[] rewards)',
+	'event UnstakedNFT(address _user, address collection, uint256[] serials, uint256[] rewards)',
+]);
+
+function getMirrorBase(env) {
+	const e = env.toLowerCase();
+	if (e === 'test' || e === 'testnet') return 'https://testnet.mirrornode.hedera.com';
+	if (e === 'main' || e === 'mainnet') return 'https://mainnet-public.mirrornode.hedera.com';
+	if (e === 'preview' || e === 'previewnet') return 'https://previewnet.mirrornode.hedera.com';
+	throw new Error(`Unsupported ENVIRONMENT: ${env}`);
+}
+
 /**
- * Walk the mirror node for all `Staked` / `Unstaked` events from
- * LazyNFTStaking within the [start, end] window. Returns a per-NFT
- * timeline of (owner, period) tuples.
+ * Walk all StakedNFT / UnstakedNFT events from the staking contract
+ * up to `endSec`. We don't filter on `gte:startSec` at the mirror layer
+ * because we need pre-window stake openings to know which NFTs were
+ * already staked when the window began. The downstream
+ * `computeTimeWeightedUnits` step clamps each period to the window.
  *
- * TODO: implement against the actual LazyNFTStaking event schema.
- * Reference: hedera-SC-LAZY-Farms/contracts/LazyNFTStaking.sol
- *
- * Expected return shape:
- *   {
- *     "0xtoken|serial": [
- *       { owner: "0x...", stakedFrom: 1700000000, stakedTo: 1701000000 },
- *       { owner: "0x...", stakedFrom: 1702000000, stakedTo: null }, // still staked
- *     ],
- *     ...
- *   }
+ * Returns: { "<tokenEvmLower>|<serial>": [ { owner, stakedFrom, stakedTo|null }, ... ] }
  */
-async function reconstructStakeHistory(env, startSec, endSec) {
-	console.warn('TODO: implement mirror-node stake-history reconstruction');
-	console.warn('  Read Staked/Unstaked events from LazyNFTStaking in window');
-	console.warn('  [' + new Date(startSec * 1000).toISOString() + ', '
-		+ new Date(endSec * 1000).toISOString() + ']');
-	return {};
+async function reconstructStakeHistory(env, stakingContractId, endSec) {
+	const baseUrl = getMirrorBase(env);
+	let url = `${baseUrl}/api/v1/contracts/${stakingContractId.toString()}/results/logs`
+		+ `?order=asc&limit=100&timestamp=lte:${endSec}`;
+
+	const history = {};
+	// Track currently-open periods so UnstakedNFT can close the right one
+	// in O(1). Key is the same "tokenEvmLower|serial" used in history.
+	const openPeriods = new Map();
+	let logCount = 0;
+
+	while (url) {
+		const response = await axios.get(url);
+		const data = response.data;
+
+		for (const log of data.logs ?? []) {
+			if (log.data === '0x') continue;
+			let parsed;
+			try {
+				parsed = STAKING_IFACE.parseLog({ topics: log.topics, data: log.data });
+			} catch {
+				continue; // not a staking event we care about
+			}
+			logCount++;
+			const ts = Math.floor(Number(log.timestamp.split('.')[0]));
+			const user = parsed.args[0].toLowerCase();
+			const collection = parsed.args[1].toLowerCase();
+			const serials = parsed.args[2].map((s) => Number(s));
+
+			for (const serial of serials) {
+				const key = `${collection}|${serial}`;
+				if (parsed.name === 'StakedNFT') {
+					if (!history[key]) history[key] = [];
+					// Defensive: if a stake event arrives while a period is
+					// already open for this NFT, leave the existing period
+					// alone (it would be a contract bug, but we don't want
+					// to double-count).
+					if (openPeriods.has(key)) continue;
+					const period = { owner: user, stakedFrom: ts, stakedTo: null };
+					history[key].push(period);
+					openPeriods.set(key, period);
+				} else if (parsed.name === 'UnstakedNFT') {
+					const period = openPeriods.get(key);
+					if (period) {
+						period.stakedTo = ts;
+						openPeriods.delete(key);
+					}
+					// If no open period found, the unstake predates our
+					// scan window — ignore.
+				}
+			}
+		}
+
+		url = data.links?.next ? `${baseUrl}${data.links.next}` : null;
+	}
+
+	return { history, logCount };
 }
 
 /**
@@ -212,6 +283,63 @@ function allocateLazy(userUnits, poolBalance) {
 }
 
 // ============================================
+// Min-stake-days filter
+// ============================================
+
+/**
+ * Drop NFT periods that don't cross `minStakeDaysSec` of clamped
+ * duration within the window. Mirrors the on-chain UX gate that
+ * "<14 days of stake in the epoch = no credit."
+ */
+function applyMinStakeFilter(history, startSec, endSec, minStakeDaysSec) {
+	const filtered = {};
+	let dropped = 0;
+	for (const [key, periods] of Object.entries(history)) {
+		const kept = [];
+		for (const period of periods) {
+			const from = Math.max(period.stakedFrom, startSec);
+			const to = Math.min(period.stakedTo ?? endSec, endSec);
+			if (to - from >= minStakeDaysSec) kept.push(period);
+			else dropped++;
+		}
+		if (kept.length > 0) filtered[key] = kept;
+	}
+	return { filtered, dropped };
+}
+
+// ============================================
+// On-chain settleEpoch
+// ============================================
+
+async function submitSettleEpoch(env, poolId, root, totalAllocated) {
+	const operatorId = AccountId.fromString(process.env.ACCOUNT_ID);
+	const operatorKey = PrivateKey.fromStringED25519(process.env.PRIVATE_KEY);
+	const client = env === 'main' ? Client.forMainnet()
+		: env === 'preview' ? Client.forPreviewnet()
+			: Client.forTestnet();
+	client.setOperator(operatorId, operatorKey);
+
+	const rpJson = JSON.parse(fs.readFileSync(
+		'./artifacts/contracts/LazyRebatePool.sol/LazyRebatePool.json', 'utf8',
+	));
+	const rpIface = new ethers.Interface(rpJson.abi);
+	const { contractExecuteFunction } = require('../../utils/solidityHelpers');
+
+	console.log('Submitting settleEpoch...');
+	const resp = await contractExecuteFunction(
+		poolId, rpIface, client, 400_000,
+		'settleEpoch', [root, totalAllocated.toString()], 0, true,
+	);
+	const status = resp?.[0]?.status;
+	const statusStr = status?.toString?.() ?? '';
+	const errName = status?.name;
+	if (statusStr !== 'SUCCESS') {
+		throw new Error(`settleEpoch failed: status=${statusStr} name=${errName ?? 'unknown'}`);
+	}
+	console.log('settleEpoch: OK');
+}
+
+// ============================================
 // Main
 // ============================================
 
@@ -232,39 +360,73 @@ function allocateLazy(userUnits, poolBalance) {
 		|| path.resolve(process.cwd(), `rebate-epoch-${startSec}-${endSec}.json`);
 
 	if (!startSec || !endSec || !poolBalance) {
-		console.error('Usage: --start=<sec> --end=<sec> --pool-balance=<LAZY base units> [--out=<path>] [--execute]');
+		console.error('Usage: --start=<sec> --end=<sec> --pool-balance=<LAZY base units> [--min-stake-days=14] [--out=<path>] [--execute]');
+		process.exit(1);
+	}
+	if (endSec <= startSec) {
+		console.error(`end (${endSec}) must be > start (${startSec})`);
+		process.exit(1);
+	}
+
+	const env = (process.env.ENVIRONMENT || 'test').toLowerCase();
+
+	if (!process.env.LAZY_NFT_STAKING_CONTRACT_ID) {
+		console.error('Missing LAZY_NFT_STAKING_CONTRACT_ID in .env');
+		process.exit(1);
+	}
+	const stakingContractId = ContractId.fromString(process.env.LAZY_NFT_STAKING_CONTRACT_ID);
+
+	const requiredLshKeys = ['LSH_GEN1_TOKEN_ID', 'LSH_GEN1_MUTANT_TOKEN_ID', 'LSH_GEN2_TOKEN_ID'];
+	const missingLsh = requiredLshKeys.filter((k) => !process.env[k]);
+	if (missingLsh.length) {
+		console.error(`Missing LSH token IDs in .env: ${missingLsh.join(', ')}`);
 		process.exit(1);
 	}
 
 	const lshAddresses = {
-		gen1: process.env.LSH_GEN1_EVM_ADDRESS || '',
-		mutant: process.env.LSH_MUTANT_EVM_ADDRESS || '',
-		gen2: process.env.LSH_GEN2_EVM_ADDRESS || '',
+		gen1: '0x' + TokenId.fromString(process.env.LSH_GEN1_TOKEN_ID).toSolidityAddress(),
+		mutant: '0x' + TokenId.fromString(process.env.LSH_GEN1_MUTANT_TOKEN_ID).toSolidityAddress(),
+		gen2: '0x' + TokenId.fromString(process.env.LSH_GEN2_TOKEN_ID).toSolidityAddress(),
 	};
 
 	console.log('=== Rebate epoch compute ===');
 	console.log('Window:        ', new Date(startSec * 1000).toISOString(), '→', new Date(endSec * 1000).toISOString());
 	console.log('Pool balance:  ', poolBalance, 'LAZY base units');
 	console.log('Min stake days:', minStakeDays);
-	console.log('Mode:          ', args.execute ? '🔴 EXECUTE' : 'dry-run');
+	console.log('Staking:       ', stakingContractId.toString());
+	console.log('LSH Gen1:      ', lshAddresses.gen1);
+	console.log('LSH Mutant:    ', lshAddresses.mutant);
+	console.log('LSH Gen2:      ', lshAddresses.gen2);
+	console.log('Mode:          ', args.execute ? 'EXECUTE' : 'dry-run');
 
 	// Phase 1 — reconstruct stake history from mirror
-	const env = (process.env.ENVIRONMENT || 'test').toLowerCase();
-	const history = await reconstructStakeHistory(env, startSec, endSec);
+	console.log('\n[Phase 1] Reconstructing stake history from mirror...');
+	const { history, logCount } = await reconstructStakeHistory(env, stakingContractId, endSec);
+	console.log(`  ${logCount} staking events parsed across ${Object.keys(history).length} unique NFTs`);
+
+	// Phase 1b — drop sub-min-stake periods
+	const minStakeSec = minStakeDays * 24 * 60 * 60;
+	const { filtered, dropped } = applyMinStakeFilter(history, startSec, endSec, minStakeSec);
+	if (dropped > 0) console.log(`  Dropped ${dropped} sub-${minStakeDays}d periods`);
 
 	// Phase 2 — compute time-weighted units per user
-	const userUnits = computeTimeWeightedUnits(history, startSec, endSec, lshAddresses);
-	console.log(`Eligible users: ${userUnits.size}`);
+	console.log('\n[Phase 2] Computing time-weighted units per user...');
+	const userUnits = computeTimeWeightedUnits(filtered, startSec, endSec, lshAddresses);
+	console.log(`  Eligible users: ${userUnits.size}`);
 
 	// Phase 3 — allocate pool to users pro-rata of their units
+	console.log('\n[Phase 3] Allocating pool pro-rata...');
 	const { allocations, totalAllocated } = allocateLazy(userUnits, poolBalance);
-	console.log(`Total allocated: ${totalAllocated} (of pool ${poolBalance})`);
+	console.log(`  Total allocated: ${totalAllocated} (of pool ${poolBalance})`);
 
 	// Phase 4 — build Merkle tree
+	console.log('\n[Phase 4] Building Merkle tree...');
 	const sortedUsers = [...allocations.keys()].sort();
 	const leaves = sortedUsers.map((u) => hashLeaf(u, allocations.get(u)));
 	const tree = leaves.length > 0 ? buildTree(leaves) : null;
 	const root = tree ? tree[tree.length - 1][0] : ethers.ZeroHash;
+	console.log(`  Root: ${root}`);
+	console.log(`  Leaves: ${leaves.length}`);
 
 	// Phase 5 — emit JSON audit log
 	const proofs = {};
@@ -281,6 +443,7 @@ function allocateLazy(userUnits, poolBalance) {
 			WEIGHT_GEN1, WEIGHT_MUTANT, WEIGHT_LSV, WEIGHT_GEN2, WEIGHT_SCALE,
 			LSV_MIN_SERIAL, LSV_MAX_SERIAL,
 		},
+		stakingContract: stakingContractId.toString(),
 		lshAddresses,
 		root,
 		leafCount: leaves.length,
@@ -294,17 +457,20 @@ function allocateLazy(userUnits, poolBalance) {
 	};
 	fs.writeFileSync(outPath, JSON.stringify(audit, null, 2) + '\n', 'utf8');
 	console.log(`\nWrote audit JSON: ${outPath}`);
-	console.log(`Merkle root:      ${root}`);
-	console.log(`Total allocated:  ${totalAllocated} LAZY base units`);
 
 	if (!args.execute) {
 		console.log('\nDry-run. Re-run with --execute to submit settleEpoch on-chain.');
 		process.exit(0);
 	}
 
-	// Phase 6 — on-chain settleEpoch (requires the signer key)
-	console.log('TODO: implement settleEpoch submission via signer key');
-	console.log('  Signer key: ' + (process.env.REBATE_SIGNER_KEY ? 'set' : 'NOT SET'));
-	console.log('  Rebate pool: ' + (process.env.LAZY_REBATE_POOL_CONTRACT_ID ?? 'NOT SET'));
+	// Phase 6 — on-chain settleEpoch
+	if (!process.env.LAZY_REBATE_POOL_CONTRACT_ID) {
+		console.error('LAZY_REBATE_POOL_CONTRACT_ID not set — cannot submit settleEpoch');
+		process.exit(1);
+	}
+	const poolId = ContractId.fromString(process.env.LAZY_REBATE_POOL_CONTRACT_ID);
+	console.log(`\n[Phase 6] Submitting settleEpoch to ${poolId.toString()}...`);
+	await submitSettleEpoch(env, poolId, root, totalAllocated);
+
 	process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });
