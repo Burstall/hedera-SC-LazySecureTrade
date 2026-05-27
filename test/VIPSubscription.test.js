@@ -466,6 +466,194 @@ describe('VIPSubscription tests', function () {
 		});
 	});
 
+	// ============================================
+	// V7 — 3-sink revenue split end-to-end
+	// ============================================
+	//
+	// Setter bounds are exercised in `test/RebateStack.test.js` (V1–V4).
+	// This section exercises the actual `purchaseSubscription` flow with
+	// rebate + team slices configured, and asserts the post-purchase
+	// balances on the rebate pool + team wallet tick by exactly the
+	// computed slice amounts.
+
+	describe('3-sink revenue split', function () {
+		let rebatePoolId;
+		let rebatePoolIface;
+
+		before(async function () {
+			this.timeout(300_000);
+
+			// --- Deploy a fresh LazyRebatePool with operator as signer +
+			//     365-day claim window. Signer is irrelevant for this test
+			//     (no settleEpoch calls); we just need the contract to
+			//     receive LAZY payouts from LGS.
+			const rpJson = JSON.parse(fs.readFileSync(
+				'./artifacts/contracts/LazyRebatePool.sol/LazyRebatePool.json', 'utf8',
+			));
+			rebatePoolIface = new ethers.Interface(rpJson.abi);
+			const rpParams = new ContractFunctionParameters()
+				.addAddress(lazyTokenId.toSolidityAddress())
+				.addAddress('0x' + operatorId.toSolidityAddress())
+				.addUint64(365 * 24 * 60 * 60);
+			[rebatePoolId] = await contractDeployFunction(
+				client, rpJson.bytecode, 2_000_000, rpParams,
+			);
+			console.log('V7 LazyRebatePool deployed:', rebatePoolId.toString());
+
+			// --- LAZY-associate the pool so LGS.payoutLazy can land.
+			//     flagError=true so revert reasons surface (silent failures
+			//     here produce confusing downstream "no reason" reverts in
+			//     LGS.payoutLazy when the pool transfer destination is
+			//     non-associated).
+			const assocResp = await contractExecuteFunction(
+				rebatePoolId, rebatePoolIface, client, 1_500_000,
+				'associateLazy', [], 0, true,
+			);
+			const assocStatus = assocResp?.[0]?.status;
+			const assocStatusStr = assocStatus?.toString?.() ?? '';
+			const assocErrName = assocStatus?.name;
+			if (assocStatusStr !== 'SUCCESS' && assocErrName !== 'AlreadyAssociated') {
+				throw new Error(`V7 associateLazy failed: status=${assocStatusStr} name=${assocErrName ?? 'unknown'}`);
+			}
+			await sleep(MIRROR_DELAY);
+
+			// Verify on mirror — guard against the silent-success / no-state-update path
+			const assocFlag = (await mirrorQuery(
+				rebatePoolId, rebatePoolIface, 'lazyAssociated', [],
+			))[0];
+			if (!assocFlag) {
+				throw new Error('V7 pool reports lazyAssociated=false after associateLazy — fix associate flow before re-running');
+			}
+
+			// --- Wire the VIP. Use operator as team wallet (operator is
+			//     LAZY-associated and we can read its balance via mirror).
+			const poolEvm = '0x' + rebatePoolId.toSolidityAddress();
+			const operatorEvm = '0x' + operatorId.toSolidityAddress();
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setRebatePool', [poolEvm]);
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setRebateBps', [1000]); // 10%
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setTeamWallet', [operatorEvm]);
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setTeamBps', [500]); // 5%
+			await sleep(MIRROR_DELAY);
+
+			console.log('V7 VIP wired: rebatePool=' + rebatePoolId.toString()
+				+ ', rebateBps=1000 (10%), teamWallet=operator, teamBps=500 (5%)');
+		});
+
+		it('V7.1: Platinum 1mo purchase ticks rebate pool + team wallet by computed slice', async function () {
+			// Quote the price first so we use an exact value for slice math.
+			// Alice currently has Platinum (extended through V3.x + V5.1).
+			// Buying Platinum 1mo is a same-tier extension and applies the
+			// per-month prepay discount.
+			const quote = await mirrorQuery(vipId, vipIface, 'priceFor', [
+				Tier.Platinum, 1, [], aliceId.toSolidityAddress(),
+			]);
+			const finalPrice = Number(quote[0]);
+			const expectedRebate = Math.floor((finalPrice * 1000) / 10000);
+			const expectedTeam = Math.floor((finalPrice * 500) / 10000);
+			console.log(`V7.1: finalPrice=${finalPrice}, expectedRebate=${expectedRebate}, expectedTeam=${expectedTeam}`);
+			expect(finalPrice).to.be.greaterThan(0);
+			expect(expectedRebate).to.be.greaterThan(0);
+			expect(expectedTeam).to.be.greaterThan(0);
+
+			// Pre-snapshot balances
+			const preAliceLazy = (await checkMirrorBalance(ENV, aliceId, lazyTokenId)) ?? 0;
+			const prePoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const preOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			client.setOperator(aliceId, alicePK);
+			const [rx] = await contractExecuteFunction(
+				vipId, vipIface, client, 1_500_000,
+				'purchaseSubscription', [Tier.Platinum, 1, []],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			// Post-snapshot balances
+			const postAliceLazy = (await checkMirrorBalance(ENV, aliceId, lazyTokenId)) ?? 0;
+			const postPoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const postOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			const aliceDelta = preAliceLazy - postAliceLazy;
+			const poolDelta = postPoolLazy - prePoolLazy;
+			const operatorDelta = postOperatorLazy - preOperatorLazy;
+
+			console.log(`V7.1: aliceDelta=${aliceDelta}, poolDelta=${poolDelta}, operatorDelta=${operatorDelta}`);
+
+			expect(aliceDelta).to.equal(finalPrice);
+			expect(poolDelta).to.equal(expectedRebate);
+			expect(operatorDelta).to.equal(expectedTeam);
+		});
+
+		it('V7.2: turning rebate off (rebateBps=0) skips the rebate payout but still ticks team', async function () {
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setRebateBps', [0]);
+			await sleep(MIRROR_DELAY);
+
+			const quote = await mirrorQuery(vipId, vipIface, 'priceFor', [
+				Tier.Platinum, 1, [], aliceId.toSolidityAddress(),
+			]);
+			const finalPrice = Number(quote[0]);
+			const expectedTeam = Math.floor((finalPrice * 500) / 10000);
+
+			const prePoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const preOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			client.setOperator(aliceId, alicePK);
+			const [rx] = await contractExecuteFunction(
+				vipId, vipIface, client, 1_500_000,
+				'purchaseSubscription', [Tier.Platinum, 1, []],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			const postPoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const postOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			expect(postPoolLazy - prePoolLazy).to.equal(0);
+			expect(postOperatorLazy - preOperatorLazy).to.equal(expectedTeam);
+			console.log(`V7.2: rebate skipped, team tick=${expectedTeam}`);
+		});
+
+		it('V7.3: turning team off (teamBps=0) with rebate restored ticks only the pool', async function () {
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setRebateBps', [1000]);
+			await contractExecuteFunction(vipId, vipIface, client, 200_000,
+				'setTeamBps', [0]);
+			await sleep(MIRROR_DELAY);
+
+			const quote = await mirrorQuery(vipId, vipIface, 'priceFor', [
+				Tier.Platinum, 1, [], aliceId.toSolidityAddress(),
+			]);
+			const finalPrice = Number(quote[0]);
+			const expectedRebate = Math.floor((finalPrice * 1000) / 10000);
+
+			const prePoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const preOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			client.setOperator(aliceId, alicePK);
+			const [rx] = await contractExecuteFunction(
+				vipId, vipIface, client, 1_500_000,
+				'purchaseSubscription', [Tier.Platinum, 1, []],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			const postPoolLazy = (await checkMirrorBalance(ENV, rebatePoolId, lazyTokenId)) ?? 0;
+			const postOperatorLazy = (await checkMirrorBalance(ENV, operatorId, lazyTokenId)) ?? 0;
+
+			expect(postPoolLazy - prePoolLazy).to.equal(expectedRebate);
+			expect(postOperatorLazy - preOperatorLazy).to.equal(0);
+			console.log(`V7.3: team skipped, pool tick=${expectedRebate}`);
+		});
+	});
+
 	after(function () {
 		console.log('\n=== VIPSubscription test run summary ===');
 		console.log('VIPSubscription:', vipId?.toString());
