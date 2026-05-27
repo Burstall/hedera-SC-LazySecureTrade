@@ -102,6 +102,32 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     uint8 public maxActiveDurationMonths;
 
     // ============================================
+    // 3-sink revenue split (rebate + team + treasury)
+    // ============================================
+
+    /// @notice Basis points of subscription revenue routed to the
+    ///         LSH staker rebate pool. Capped at MAX_REBATE_BPS.
+    ///         Default 0 (inert) until the rebate pool is wired up;
+    ///         flipping to non-zero after deploy enables the rebate
+    ///         flow.
+    uint16 public rebateBps;
+
+    /// @notice Basis points of subscription revenue routed to the
+    ///         team operations wallet. Capped at MAX_TEAM_BPS.
+    ///         Funds team operations, LP support, audits, etc.
+    uint16 public teamBps;
+
+    /// @notice Address of the `LazyRebatePool` that receives the
+    ///         rebate slice. Owner-settable; `address(0)` disables
+    ///         the rebate path regardless of `rebateBps`.
+    address public rebatePool;
+
+    /// @notice Multisig / team operations wallet that receives the
+    ///         team slice. Owner-settable; `address(0)` disables the
+    ///         team path regardless of `teamBps`.
+    address public teamWallet;
+
+    // ============================================
     // Immutables
     // ============================================
 
@@ -142,6 +168,14 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     /// @notice Hard upper bound on `maxCombinedDiscountBps`. Stops a
     ///         compromised admin from enabling a 100%-off path.
     uint16 internal constant MAX_ALLOWED_COMBINED_DISCOUNT_BPS = 5_000;
+
+    /// @notice Hard upper bound on `rebateBps`. Caps the rebate slice
+    ///         at 50% of subscription revenue.
+    uint16 internal constant MAX_REBATE_BPS = 5_000;
+
+    /// @notice Hard upper bound on `teamBps`. Caps the team slice at
+    ///         50% of subscription revenue.
+    uint16 internal constant MAX_TEAM_BPS = 5_000;
 
     // ============================================
     // Events
@@ -196,6 +230,25 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     bytes32 internal constant CONFIG_KEY_BURN = keccak256("burnPercentage");
     bytes32 internal constant CONFIG_KEY_COOLDOWN = keccak256("cooldownSeconds");
     bytes32 internal constant CONFIG_KEY_MAX_DURATION = keccak256("maxActiveDurationMonths");
+    bytes32 internal constant CONFIG_KEY_REBATE_BPS = keccak256("rebateBps");
+    bytes32 internal constant CONFIG_KEY_TEAM_BPS = keccak256("teamBps");
+
+    /// @notice Emitted per `purchaseSubscription` with the three split
+    ///         amounts in LAZY base units. Indexers use this to track
+    ///         the revenue split flows.
+    event SubscriptionRevenueSplit(
+        address indexed user,
+        uint256 finalPrice,
+        uint256 burnedAmount,
+        uint256 rebateAmount,
+        uint256 teamAmount
+    );
+
+    /// @notice Emitted when the rebate pool address is updated.
+    event RebatePoolChanged(address indexed newPool);
+
+    /// @notice Emitted when the team wallet address is updated.
+    event TeamWalletChanged(address indexed newWallet);
 
     // ============================================
     // Errors
@@ -214,6 +267,8 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     error NotSerialOwner(address user, address token, uint256 serial);
     error SerialNotInAllowList(address token, Tier tier, uint256 serial);
     error SerialCooldownActive(address token, uint256 serial, uint64 lockedUntil);
+    error RebateBpsExceedsCap(uint16 requested, uint16 cap);
+    error TeamBpsExceedsCap(uint16 requested, uint16 cap);
 
     // ============================================
     // Constructor
@@ -237,6 +292,13 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
         burnPercentage = 50; // matches LST's convention (LGS interprets)
         cooldownSeconds = 14 days; // 1_209_600
         maxActiveDurationMonths = 12;
+        // 3-sink split defaults: 10% rebate, 0% team. The rebate slice
+        // is inert until `rebatePool` is set; same for team.
+        rebateBps = 1_000;
+        teamBps = 0;
+        // rebatePool + teamWallet stay address(0) at deploy. Owner
+        // sets them post-deploy once the rebate pool contract is up
+        // and the team multisig is associated with LAZY.
     }
 
     // ============================================
@@ -389,12 +451,59 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
             unchecked { ++i; }
         }
 
-        // Execute payment via LGS
+        // Execute payment via LGS — 3-sink split:
+        //   1. burn `burnPercentage`% of the full price via LGS
+        //   2. pay out `rebateBps` of full price to `rebatePool` from LGS
+        //      (uses LGS treasury — see note below)
+        //   3. pay out `teamBps` of full price to `teamWallet` from LGS
+        //      (uses LGS treasury)
+        //
+        // Burn % is on the original 100. Rebate and team bps are also
+        // on the original 100. The residual (100 - burn - rebate - team)
+        // stays on LGS as protocol treasury. If burn + rebate + team
+        // exceeds 100%, LGS dips into its existing treasury to cover —
+        // operationally that's fine as long as LGS is well-funded
+        // (the team configures the bps with this in mind).
         if (finalPrice > 0) {
+            // Step 1: pull from user, burn the burn fraction
             ILazyGasStation(LAZY_GAS_STATION).drawLazyFrom(
                 msg.sender,
                 finalPrice,
                 burnPercentage
+            );
+
+            // Step 2: rebate slice — LGS payout to rebatePool
+            uint256 rebateAmt;
+            if (rebateBps > 0 && rebatePool != address(0)) {
+                rebateAmt = (finalPrice * rebateBps) / MAX_BPS;
+                if (rebateAmt > 0) {
+                    ILazyGasStation(LAZY_GAS_STATION).payoutLazy(
+                        rebatePool,
+                        rebateAmt,
+                        0
+                    );
+                }
+            }
+
+            // Step 3: team slice — LGS payout to teamWallet
+            uint256 teamAmt;
+            if (teamBps > 0 && teamWallet != address(0)) {
+                teamAmt = (finalPrice * teamBps) / MAX_BPS;
+                if (teamAmt > 0) {
+                    ILazyGasStation(LAZY_GAS_STATION).payoutLazy(
+                        teamWallet,
+                        teamAmt,
+                        0
+                    );
+                }
+            }
+
+            emit SubscriptionRevenueSplit(
+                msg.sender,
+                finalPrice,
+                (finalPrice * burnPercentage) / 100,
+                rebateAmt,
+                teamAmt
             );
         }
 
@@ -525,6 +634,40 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     function setMaxActiveDurationMonths(uint8 m) external onlyOwner {
         maxActiveDurationMonths = m;
         emit ConfigChanged(CONFIG_KEY_MAX_DURATION, m);
+    }
+
+    /// @notice Set the rebate slice in basis points. Hard-capped at
+    ///         MAX_REBATE_BPS (50%). Pass 0 to disable the rebate
+    ///         path entirely.
+    function setRebateBps(uint16 bps) external onlyOwner {
+        if (bps > MAX_REBATE_BPS) revert RebateBpsExceedsCap(bps, MAX_REBATE_BPS);
+        rebateBps = bps;
+        emit ConfigChanged(CONFIG_KEY_REBATE_BPS, bps);
+    }
+
+    /// @notice Set the team slice in basis points. Hard-capped at
+    ///         MAX_TEAM_BPS (50%). Pass 0 to disable the team path
+    ///         entirely.
+    function setTeamBps(uint16 bps) external onlyOwner {
+        if (bps > MAX_TEAM_BPS) revert TeamBpsExceedsCap(bps, MAX_TEAM_BPS);
+        teamBps = bps;
+        emit ConfigChanged(CONFIG_KEY_TEAM_BPS, bps);
+    }
+
+    /// @notice Set the rebate pool address. `address(0)` disables
+    ///         the rebate flow regardless of `rebateBps`. Owner-only.
+    ///         The target contract must be LAZY-associated before
+    ///         LGS can pay it.
+    function setRebatePool(address pool) external onlyOwner {
+        rebatePool = pool;
+        emit RebatePoolChanged(pool);
+    }
+
+    /// @notice Set the team wallet address. `address(0)` disables the
+    ///         team flow. Owner-only. Wallet must be LAZY-associated.
+    function setTeamWallet(address wallet) external onlyOwner {
+        teamWallet = wallet;
+        emit TeamWalletChanged(wallet);
     }
 
     // ============================================

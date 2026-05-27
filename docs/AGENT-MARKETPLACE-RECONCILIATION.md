@@ -116,26 +116,40 @@ Two items from the DELTA proposal are not implemented and worth
 explicit acknowledgment. Both are minor relative to the
 shipped scope but warrant a v0.4 or follow-up release.
 
-### Gap 1 — Subscription split: staker-rebate flow missing
+### ~~Gap 1 — Subscription split: staker-rebate flow missing~~ — **CLOSED 2026-05-27**
 
-**DELTA Q2 proposal:** 40% burn / 35% staker rebate / 25% treasury.
+**Was:** Binary split via `burnPercentage`; no staker-rebate.
 
-**Live state:** binary split via `burnPercentage` (default 50%);
-burned fraction goes through LGS's `_burnPercentage` path,
-remainder retained on the LGS treasury. **No code path
-rebates a portion to active LSH stakers** proportional to stake.
+**Now shipped:** Full 3-sink split with off-chain epoch-based
+distribution. Lives at:
+- `contracts/LazyRebatePool.sol` — Merkle-airdrop-style claim
+  contract receiving the rebate slice, with quarterly epochs
+  and 1-year claim windows.
+- `contracts/LSHRebateMultipliers.sol` — pure-view reference
+  for the per-NFT weight table (Gen1=50, Mutant=25, LSV=25,
+  Gen2=10, max 60,000 scaled units).
+- `contracts/VIPSubscription.sol` — patched with `rebateBps`,
+  `teamBps`, `rebatePool`, `teamWallet` knobs + the 3-call
+  LGS routing in `purchaseSubscription`.
+- `scripts/ops/computeRebateEpoch.js` — off-chain
+  audit-trail-producing tool. Reads mirror-node stake history,
+  computes TWAPs, builds Merkle tree, settles on-chain.
+- `test/RebateStack.test.js` — acceptance suite.
+- Design doc: `docs/LazyRebatePool-DESIGN.md`.
 
-**Effort to add:** Adding a `stakerRebatePercentage` knob on
-VIPSubscription + the corresponding "route to staking reward
-pool" call would add ~30-50 lines of contract code + a
-staking-side reception path. The staking contract (LAZY-Farms
-`LazyNFTStaking`) is in a sibling repo and would need its own
-change to accept the rebate.
+The shipped design defers the LazyNFTStaking-side coupling. Rebate
+distribution happens off-chain via mirror-node event scan +
+TWAP compute; on-chain side is generic Merkle airdrop. No
+cross-repo changes needed.
 
-**Why deferred:** The shipped split is operational with the
-binary burn knob. The 3-way split is a tokenomic enhancement,
-not a v0.3 blocker. Revisit when the staking-side flow can
-be coordinated with LAZY-Farms.
+**Deployed:** awaits team rollout. The contracts default to:
+- `rebateBps = 1000` (10%) but `rebatePool = address(0)` →
+  inert at deploy.
+- `teamBps = 0` and `teamWallet = address(0)` → inert at
+  deploy.
+- After contracts deploy: owner calls `LazyRebatePool.associateLazy()`,
+  then `VIPSubscription.setRebatePool(rebatePoolAddress)` to
+  activate the rebate flow.
 
 ### Gap 2 — Richer tier enum adoption in LazyLotto
 
@@ -188,12 +202,13 @@ intended security behavior. It's just a live timer ticking down.
 
 ## Summary
 
-**Substantially complete.** All DELTA v3 in-scope items
+**Complete on the contract surface.** All DELTA v3 in-scope items
 shipped (or intentionally reversed for better outcomes during
-implementation). Two minor gaps remain in-repo (staker rebate
-flow, richer-tier-enum-adoption-by-lotto), one external
-dependency (lotto scanner code change), and one operational
-timer (LST↔BCF auth timelock).
+implementation). The previously-flagged staker-rebate gap closed
+2026-05-27 with the LazyRebatePool + LSHRebateMultipliers
+contracts + the VIPSubscription 3-sink patch. Remaining items
+are operational (LST↔BCF timelock, scanner cutover in lotto repo,
+rebate pool team-side rollout).
 
 The "Decisions to make together" table is fully resolved —
 every numbered decision has a corresponding live-state entry,
