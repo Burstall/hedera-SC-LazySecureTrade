@@ -7,14 +7,20 @@
 > implementation, and the small set of items still open or
 > awaiting external repos.
 >
-> **As of:** 2026-05-27, branch tip `5cb168b`.
+> **As of:** 2026-05-29, branch tip `630e872`.
 >
-> **TL;DR:** Substantially complete. Two minor gaps in this
-> repo (subscription staker-rebate flow not implemented;
-> "richer tier" enum for LazyLotto remains optional) plus one
-> external dependency (LazyLotto scanner cutover code lives in
-> `hedera-SC-lazy-lotto`). Everything load-bearing for the v0.3
-> mainnet target is shipped.
+> **TL;DR:** Contract scope complete. The staker-rebate gap is
+> now closed end-to-end — not just the contracts, but the full
+> ops loop is testnet-validated (canonical deploy, VIP wire-up,
+> compute script implemented, **first epoch settled on-chain**,
+> end-to-end purchase tests). Remaining items are all
+> operational, not architectural: (1) the testnet LST↔BCF
+> authorization grant is past its timelock but **not yet
+> applied** — one permissionless call; (2) LazyLotto scanner
+> cutover code lives in `hedera-SC-lazy-lotto` (handoff prompt
+> now shipped); (3) the "richer tier" enum for LazyLotto remains
+> an optional product decision. Everything load-bearing for the
+> v0.3 mainnet target is shipped + validated.
 
 ---
 
@@ -67,7 +73,7 @@
 | Q | DELTA recommendation | Live state |
 |---|---|---|
 | Q1 | Agent fees subscription-funded, NOT per-trade | **SHIPPED AS DESIGNED** — no per-trade agent fees. Subscription tier gates agent activity. |
-| Q2 | Subscription $LAZY split: 40% burn / 35% staker rebate / 25% treasury, all owner-tunable | **PARTIAL** — `VIPSubscription.burnPercentage` (default 50%) controls burn portion; remainder retained on LGS (treasury). **The 35% staker-rebate path is NOT implemented.** Currently the split is binary: burn fraction + LGS retention. See "Gaps" below. |
+| Q2 | Subscription $LAZY split: 40% burn / 35% staker rebate / 25% treasury, all owner-tunable | **SHIPPED + TESTNET-VALIDATED** — `VIPSubscription` 3-sink split: `burnPercentage` (burn) + `rebateBps`→`rebatePool` (staker rebate) + `teamBps`→`teamWallet` (treasury/team), all owner-tunable. End-to-end tested (V7.1-V7.3) with byte-exact slice assertions. See Gap 1 (closed) below. |
 | Q3 | Layering: HBAR platform fee (tiered by LSH) + $LAZY listing cost (tiered) + subscription (new sink) + EA cut + mission fees | **SHIPPED AS DESIGNED** — all five sinks exist in the live contracts. Trade fees tier through LSHTierLib; subscription tiers through VIPSubscription; auction protocol fee tiers via `_resolveSellerTier`; mission fees are LAZY-Farms scope. |
 | Q4 | "Stakers trade free for their agents" via `_resolveOwnerOf` shim | **SHIPPED AS `_resolveBeneficialOwner`** in LST + EA + BCF. Pattern: stash address → human address via `BCF.stashOwnerOf`. The function is the cross-cutting concern documented in [`docs/blog/technical/11-beneficial-owner-resolution.md`](blog/technical/11-beneficial-owner-resolution.md). |
 
@@ -85,7 +91,7 @@
 | 6 | Per-agent envelopes same release as registry? | Same release, pending Option A/B verification | **DONE** — envelopes shipped alongside the registry split. |
 | 6a | Envelopes location: BCF or stash? | Stash (B) with library; verify size first | **DONE — Option B as recommended.** Library probe passed; AgentEnvelopeLib statically linked; stash impl 23.260 KiB (under ceiling). |
 | 7 | Agent fee model: per-trade or subscription? | Subscription | **DONE** — subscription-funded. |
-| 8 | Subscription split 40/35/25? | Yes with owner-tunable knobs | **PARTIAL** — burn knob exists (`setBurnPercentage`); staker-rebate path missing. See "Gaps." |
+| 8 | Subscription split 40/35/25? | Yes with owner-tunable knobs | **DONE** — 3-sink split shipped + testnet-validated. `setBurnPercentage` / `setRebateBps` / `setTeamBps` + `setRebatePool` / `setTeamWallet`. See Gap 1 (closed). |
 | 9 | "Stakers trade free for agents" via `_resolveOwnerOf` shim? | Yes | **DONE** — shipped as `_resolveBeneficialOwner`. |
 | 10 | BCF events emit `agentReasoningTopicId`? | Yes | **DONE** — `BidCreated` / `BidCancelled` / `BidExecuted` / `ArbitrageExecuted` all carry the field. |
 | 11 | EA reserve + anti-snipe? | Yes to both | **DONE** — `reservePrice` + `antiSnipeWindow` + `antiSnipeExtension` + `maxCloseAt` all implemented. |
@@ -103,7 +109,7 @@
 |---|---|---|
 | 1 | Empirical probes (envelope library size, registry storage, EIP-1153) | **DONE** — CREATE2 probe at `scripts/testing/create2Probe.js`; AgentEnvelopeLib size verified in `hardhat-contract-sizer` output; EIP-1153 confirmed supported but not adopted. |
 | 2 | VIPRegistry v0.1 (standalone, no dependencies) | **DONE** as the LSHTierLib + VIPSubscription split. |
-| 3 | v0.3 mainnet release (BCF + stash + envelopes + registry + agentReasoningTopicId + audit) | **TESTNET-VALIDATED**; awaiting mainnet activation. Outstanding gates: BCF↔LST authorization timelock elapses 2026-05-28T18:30:36Z; LazyLotto scanner cutover; final pre-mainnet checklist (working plan). |
+| 3 | v0.3 mainnet release (BCF + stash + envelopes + registry + agentReasoningTopicId + audit) | **TESTNET-VALIDATED**; awaiting mainnet activation. Outstanding gates: BCF↔LST testnet grant elapsed but **not yet applied** (needs `executeFactoryAuthorization`); LazyLotto scanner cutover; final pre-mainnet checklist (working plan). |
 | 4 | Marketplace SDK v0.1 | **DONE** at v0.1.0 on npm. |
 | 5 | EnglishAuction contract | **DONE** — shipped alongside v0.3. |
 | 6 | LazyLotto migration to registry | **PENDING IN OTHER REPO** — lotto code change owned by `hedera-SC-lazy-lotto`. |
@@ -142,14 +148,31 @@ distribution happens off-chain via mirror-node event scan +
 TWAP compute; on-chain side is generic Merkle airdrop. No
 cross-repo changes needed.
 
-**Deployed:** awaits team rollout. The contracts default to:
-- `rebateBps = 1000` (10%) but `rebatePool = address(0)` →
-  inert at deploy.
-- `teamBps = 0` and `teamWallet = address(0)` → inert at
-  deploy.
-- After contracts deploy: owner calls `LazyRebatePool.associateLazy()`,
-  then `VIPSubscription.setRebatePool(rebatePoolAddress)` to
-  activate the rebate flow.
+**Testnet rollout — DONE 2026-05-29.** The full ops loop is
+deployed, wired, and validated end-to-end:
+- `LSHRebateMultipliers` deployed `0.0.9077153` (immutables +
+  multiplier table verified via mirror).
+- `LazyRebatePool` deployed `0.0.9077172`, `associateLazy()`
+  called (LAZY-associated, signer = operator for testnet).
+- Fresh `VIPSubscription` `0.0.9077208` (supersedes the
+  pre-rebate `0.0.9043912`), wired via
+  `scripts/interactions/wireVipRebate.js`:
+  `setRebatePool` + `setRebateBps(1000)` (10%) +
+  `setTeamWallet(operator)` + `setTeamBps(0)`.
+- `scripts/ops/computeRebateEpoch.js` implemented + validated
+  against real staking history (`0.0.8019442`): 31 events /
+  155 NFTs / 2 eligible users.
+- **First epoch settled on-chain** — `currentEpoch=1`, Merkle
+  root byte-exact match, `totalAllocated=999` confirmed via
+  mirror. `scripts/interactions/fundRebatePool.js` is the
+  operator top-up path.
+- `test/VIPSubscription.test.js` V7.1-V7.3 — 3-sink purchase
+  flow end-to-end, byte-exact slice assertions, 19/19.
+
+**Mainnet rollout — PENDING.** Re-run the same deploy + wire
+scripts against mainnet; rotate the rebate-pool **signer key off
+operator** before go-live (testnet uses operator as signer for
+convenience). Tracked in working plan pre-mainnet checklist.
 
 ### Gap 2 — Richer tier enum adoption in LazyLotto
 
@@ -172,11 +195,17 @@ via `BCF.stashOwnerOf` so lotto credits route to the beneficial
 owner, not the stash address.
 
 **Live state:** documentation complete (`docs/v0.3-OPS-RUNBOOK.md` §3
-includes worked pseudocode + pre-mainnet verification
-checklist). Code change lives in `hedera-SC-lazy-lotto`. Required
-before BCF mainnet activation per the verification checklist.
+includes worked pseudocode + pre-mainnet verification checklist),
+**plus a self-contained handoff prompt**
+(`docs/LOTTO-SCANNER-CUTOVER-PROMPT.md`) to drop into
+`hedera-SC-lazy-lotto` as `CLAUDE.md` — a cold Claude session can
+make the change from it. The handoff corrected a stale event-shape
+note: `TradeCompleted` is `(seller, buyer, token, serial, nonce)` —
+no `tradeId`/`hbarPaid`/`lazyPaid`. Code change lives in
+`hedera-SC-lazy-lotto`. Required before BCF mainnet activation per
+the verification checklist.
 
-**Status:** doc-ready; code-pending.
+**Status:** doc-ready + handoff-prompt-ready; code-pending.
 
 ---
 
@@ -184,19 +213,24 @@ before BCF mainnet activation per the verification checklist.
 
 One outstanding item from the v0.3 push-to-mainnet path:
 
-### LST↔BCF authorization timelock
+### LST↔BCF authorization timelock — ⚠ ACTION REQUIRED
 
-**Status:** BCF `0.0.9062601` has a 48h-timelocked grant queued
-on LST `0.0.9057802` that unlocks at **2026-05-28T18:30:36Z**
-(~24h after this doc was written). After that, anyone calls
-`LST.executeFactoryAuthorization(0x...8a48c9)` (permissionless)
-to apply the grant.
+**Status (verified on-chain 2026-05-29 via
+`scripts/testing/diagAuthorizeFactory.js`):** the 48h timelock
+**has elapsed** (ETA was 2026-05-28T18:30:36Z) but the grant is
+**NOT yet applied** — `authorizedFactories[BCF] == false`,
+`pendingFactoryAuthEta[BCF]` still set and past.
 
-Until then, stash-initiated trade listings revert
-`UnauthorizedFactory`. Bid + arb paths are unaffected.
+**To apply (permissionless, anyone):**
+```
+LST.executeFactoryAuthorization("0x00000000000000000000000000000000008a48c9")
+```
+(BCF `0.0.9062601` on LST `0.0.9057802`.)
 
-This is **not a gap in the design** — the 48h timelock is the
-intended security behavior. It's just a live timer ticking down.
+Until applied, stash-initiated trade listings revert
+`UnauthorizedFactory`. Bid + arb paths are unaffected. This is
+**not a design gap** — the timelock is intended security behavior;
+it's a queued grant waiting for its execute call.
 
 ---
 
@@ -204,11 +238,16 @@ intended security behavior. It's just a live timer ticking down.
 
 **Complete on the contract surface.** All DELTA v3 in-scope items
 shipped (or intentionally reversed for better outcomes during
-implementation). The previously-flagged staker-rebate gap closed
-2026-05-27 with the LazyRebatePool + LSHRebateMultipliers
-contracts + the VIPSubscription 3-sink patch. Remaining items
-are operational (LST↔BCF timelock, scanner cutover in lotto repo,
-rebate pool team-side rollout).
+implementation). The previously-flagged staker-rebate gap is now
+closed end-to-end — contracts + ops scripts + first-epoch on-chain
+settle + 19/19 end-to-end tests, all testnet-validated as of
+2026-05-29. Remaining items are operational:
+- **LST↔BCF testnet grant not yet applied** — timelock elapsed,
+  needs one `executeFactoryAuthorization` call (see above).
+- **Scanner cutover** in `hedera-SC-lazy-lotto` — doc + handoff
+  prompt ready; code pending.
+- **Rebate mainnet rollout** — re-run deploy/wire scripts on
+  mainnet + rotate signer key off operator.
 
 The "Decisions to make together" table is fully resolved —
 every numbered decision has a corresponding live-state entry,
