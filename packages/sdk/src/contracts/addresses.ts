@@ -24,6 +24,16 @@ export interface MarketplaceAddresses {
     bidderFactory: ContractAddress | null;
     englishAuction: ContractAddress | null;
     vipSubscription: ContractAddress | null;
+    /**
+     * Staker-rebate stack (v0.3). The pool receives the rebate slice of
+     * each subscription purchase; the multipliers contract is a pure-view
+     * weight reference. Addresses are listed here for discovery/display;
+     * their ABIs + ethers Interfaces + typed structs land in SDK 0.2.0
+     * (driven by the frontend claim UI). Subscription-side rebate config
+     * lives on `vipSubscription` and is already covered by its ABI.
+     */
+    lazyRebatePool: ContractAddress | null;
+    lshRebateMultipliers: ContractAddress | null;
 }
 
 /**
@@ -48,11 +58,15 @@ function addr(hederaId: string): ContractAddress {
 }
 
 const TESTNET: MarketplaceAddresses = {
-    lazySecureTrade: addr('0.0.9052246'),
-    bidderImpl: addr('0.0.9052248'),
-    bidderFactory: addr('0.0.9052252'),
+    // Refreshed 2026-05-29 (SDK 0.1.1). Prior values pointed at the
+    // 2026-05-2x deploys; these track the current v0.3 testnet stack.
+    lazySecureTrade: addr('0.0.9057802'),
+    bidderImpl: addr('0.0.9062594'),
+    bidderFactory: addr('0.0.9062601'),
     englishAuction: addr('0.0.9052454'),
-    vipSubscription: addr('0.0.9043912'),
+    vipSubscription: addr('0.0.9077208'), // rebate-patched (3-sink split)
+    lazyRebatePool: addr('0.0.9077172'),
+    lshRebateMultipliers: addr('0.0.9077153'),
 };
 
 const MAINNET: MarketplaceAddresses = {
@@ -61,6 +75,8 @@ const MAINNET: MarketplaceAddresses = {
     bidderFactory: null,
     englishAuction: null,
     vipSubscription: null,
+    lazyRebatePool: null,
+    lshRebateMultipliers: null,
 };
 
 const PREVIEWNET: MarketplaceAddresses = {
@@ -69,6 +85,8 @@ const PREVIEWNET: MarketplaceAddresses = {
     bidderFactory: null,
     englishAuction: null,
     vipSubscription: null,
+    lazyRebatePool: null,
+    lshRebateMultipliers: null,
 };
 
 export const ADDRESSES: Record<HederaNetwork, MarketplaceAddresses> = {
