@@ -199,10 +199,15 @@ async function parseErrorTransactionId(envOrClient, transactionId, iface) {
  * @param {String} data command and parameters encoded as a string
  * @param {AccountId} from
  * @param {Boolean} estimate gas estimate
- * @param {Number} gas gas limit
+ * @param {Number} gas gas limit — this is the eth_call SIMULATION ceiling,
+ *        not a billed amount (read-only calls cost no HBAR). Defaults to the
+ *        Hedera mirror-node eth_call cap (15M) so heavy view functions
+ *        (e.g. paginated scans over large arrays) don't spuriously fail with
+ *        INSUFFICIENT_GAS. A low ceiling here surfaces as an HTTP 400 from
+ *        the mirror node, NOT a contract revert — easy to misread as a flake.
  * @returns {String} encoded result
  */
-async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 300_000, value = 0) {
+async function readOnlyEVMFromMirrorNode(env, contractId, data, from, estimate = true, gas = 15_000_000, value = 0) {
 	const baseUrl = getBaseURL(env);
 
 	const body = {
