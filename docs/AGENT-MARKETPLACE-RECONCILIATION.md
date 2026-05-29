@@ -14,9 +14,9 @@
 > ops loop is testnet-validated (canonical deploy, VIP wire-up,
 > compute script implemented, **first epoch settled on-chain**,
 > end-to-end purchase tests). Remaining items are all
-> operational, not architectural: (1) the testnet LST↔BCF
-> authorization grant is past its timelock but **not yet
-> applied** — one permissionless call; (2) LazyLotto scanner
+> operational, not architectural: (1) ~~testnet LST↔BCF grant~~
+> **applied 2026-05-29** (`authorizedFactories[BCF]==true`);
+> (2) LazyLotto scanner
 > cutover code lives in `hedera-SC-lazy-lotto` (handoff prompt
 > now shipped); (3) the "richer tier" enum for LazyLotto remains
 > an optional product decision. Everything load-bearing for the
@@ -109,7 +109,7 @@
 |---|---|---|
 | 1 | Empirical probes (envelope library size, registry storage, EIP-1153) | **DONE** — CREATE2 probe at `scripts/testing/create2Probe.js`; AgentEnvelopeLib size verified in `hardhat-contract-sizer` output; EIP-1153 confirmed supported but not adopted. |
 | 2 | VIPRegistry v0.1 (standalone, no dependencies) | **DONE** as the LSHTierLib + VIPSubscription split. |
-| 3 | v0.3 mainnet release (BCF + stash + envelopes + registry + agentReasoningTopicId + audit) | **TESTNET-VALIDATED**; awaiting mainnet activation. Outstanding gates: BCF↔LST testnet grant elapsed but **not yet applied** (needs `executeFactoryAuthorization`); LazyLotto scanner cutover; final pre-mainnet checklist (working plan). |
+| 3 | v0.3 mainnet release (BCF + stash + envelopes + registry + agentReasoningTopicId + audit) | **TESTNET-VALIDATED**; awaiting mainnet activation. BCF↔LST testnet grant **applied 2026-05-29**. Outstanding gates: LazyLotto scanner cutover; final pre-mainnet checklist (working plan). |
 | 4 | Marketplace SDK v0.1 | **DONE** at v0.1.0 on npm. |
 | 5 | EnglishAuction contract | **DONE** — shipped alongside v0.3. |
 | 6 | LazyLotto migration to registry | **PENDING IN OTHER REPO** — lotto code change owned by `hedera-SC-lazy-lotto`. |
@@ -213,24 +213,20 @@ the verification checklist.
 
 One outstanding item from the v0.3 push-to-mainnet path:
 
-### LST↔BCF authorization timelock — ⚠ ACTION REQUIRED
+### LST↔BCF authorization timelock — ✅ APPLIED (testnet)
 
-**Status (verified on-chain 2026-05-29 via
-`scripts/testing/diagAuthorizeFactory.js`):** the 48h timelock
-**has elapsed** (ETA was 2026-05-28T18:30:36Z) but the grant is
-**NOT yet applied** — `authorizedFactories[BCF] == false`,
-`pendingFactoryAuthEta[BCF]` still set and past.
+**Status (applied + verified on-chain 2026-05-29 via
+`scripts/testing/diagAuthorizeFactory.js`):** the 48h-timelocked
+grant was executed —
+`LST.executeFactoryAuthorization(0x...8a48c9)` returned SUCCESS.
+Post-state confirmed: `authorizedFactories[BCF] == true`,
+`pendingFactoryAuthEta[BCF] == 0` (cleared). Stash-initiated trade
+listings on testnet are now unblocked.
 
-**To apply (permissionless, anyone):**
-```
-LST.executeFactoryAuthorization("0x00000000000000000000000000000000008a48c9")
-```
-(BCF `0.0.9062601` on LST `0.0.9057802`.)
-
-Until applied, stash-initiated trade listings revert
-`UnauthorizedFactory`. Bid + arb paths are unaffected. This is
-**not a design gap** — the timelock is intended security behavior;
-it's a queued grant waiting for its execute call.
+For **mainnet**: the same grant must be performed on the mainnet
+LST↔BCF pair. Fresh LST first-time authorization is INSTANT (no
+timelock); only subsequent re-authorizations are 48h-timelocked.
+See ops runbook §1 post-deploy wiring order.
 
 ---
 
@@ -242,12 +238,14 @@ implementation). The previously-flagged staker-rebate gap is now
 closed end-to-end — contracts + ops scripts + first-epoch on-chain
 settle + 19/19 end-to-end tests, all testnet-validated as of
 2026-05-29. Remaining items are operational:
-- **LST↔BCF testnet grant not yet applied** — timelock elapsed,
-  needs one `executeFactoryAuthorization` call (see above).
+- ~~LST↔BCF testnet grant~~ **APPLIED 2026-05-29** —
+  `authorizedFactories[BCF]==true`, pending ETA cleared.
 - **Scanner cutover** in `hedera-SC-lazy-lotto` — doc + handoff
   prompt ready; code pending.
 - **Rebate mainnet rollout** — re-run deploy/wire scripts on
   mainnet + rotate signer key off operator.
+- **Mainnet activation** itself — fresh deploys + the pre-mainnet
+  checklist sign-off (working plan).
 
 The "Decisions to make together" table is fully resolved —
 every numbered decision has a corresponding live-state entry,
