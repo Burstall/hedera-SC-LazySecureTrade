@@ -11,6 +11,8 @@ import BidderContractFactoryAbi from '../../abi/BidderContractFactory.json';
 import BidderContractAbi from '../../abi/BidderContract.json';
 import EnglishAuctionAbi from '../../abi/EnglishAuction.json';
 import VIPSubscriptionAbi from '../../abi/VIPSubscription.json';
+import LazyRebatePoolAbi from '../../abi/LazyRebatePool.json';
+import LSHRebateMultipliersAbi from '../../abi/LSHRebateMultipliers.json';
 
 export {
     LazySecureTradeAbi,
@@ -18,6 +20,8 @@ export {
     BidderContractAbi,
     EnglishAuctionAbi,
     VIPSubscriptionAbi,
+    LazyRebatePoolAbi,
+    LSHRebateMultipliersAbi,
 };
 
 export const ABIS = {
@@ -26,6 +30,8 @@ export const ABIS = {
     BidderContract: BidderContractAbi,
     EnglishAuction: EnglishAuctionAbi,
     VIPSubscription: VIPSubscriptionAbi,
+    LazyRebatePool: LazyRebatePoolAbi,
+    LSHRebateMultipliers: LSHRebateMultipliersAbi,
 } as const;
 
 export type ContractName = keyof typeof ABIS;

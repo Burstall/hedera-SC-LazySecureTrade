@@ -297,3 +297,22 @@ export interface AuctionParams {
     antiSnipeWindow: number;
     antiSnipeExtension: number;
 }
+
+/**
+ * Per-epoch allocation state for the staker $LAZY rebate pool.
+ *
+ * Source: contracts/LazyRebatePool.sol#Epoch — the decoded shape of the
+ * public `epochs(uint256)` mapping getter.
+ *
+ * `merkleRoot == 0x000…0` means the epoch is unsettled. Leaves are
+ * `keccak256(abi.encodePacked(user, amount))`; `settledAt` is a unix
+ * second timestamp and the claim window is
+ * `settledAt + epochClaimWindowSeconds`. Use bigint for the uint256
+ * fields when decoding via ethers v6.
+ */
+export interface RebateEpoch {
+    merkleRoot: string;
+    totalAllocated: bigint;
+    totalClaimed: bigint;
+    settledAt: bigint;
+}

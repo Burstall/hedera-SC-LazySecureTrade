@@ -8,7 +8,7 @@
  *   - log decoding (`iface.parseLog({ topics, data })`).
  *
  * Instances are constructed lazily so consumers who only need one
- * contract don't pay the parsing cost for all five.
+ * contract don't pay the parsing cost for all seven.
  */
 
 import { Interface } from 'ethers';
@@ -18,6 +18,8 @@ import {
     BidderContractAbi,
     EnglishAuctionAbi,
     VIPSubscriptionAbi,
+    LazyRebatePoolAbi,
+    LSHRebateMultipliersAbi,
 } from '../abi';
 
 let _lst: Interface | null = null;
@@ -25,6 +27,8 @@ let _bcf: Interface | null = null;
 let _stash: Interface | null = null;
 let _ea: Interface | null = null;
 let _vip: Interface | null = null;
+let _rebatePool: Interface | null = null;
+let _rebateMultipliers: Interface | null = null;
 
 export function lazySecureTradeInterface(): Interface {
     if (!_lst) _lst = new Interface(LazySecureTradeAbi as never);
@@ -51,10 +55,24 @@ export function vipSubscriptionInterface(): Interface {
     return _vip;
 }
 
+export function lazyRebatePoolInterface(): Interface {
+    if (!_rebatePool) _rebatePool = new Interface(LazyRebatePoolAbi as never);
+    return _rebatePool;
+}
+
+export function lshRebateMultipliersInterface(): Interface {
+    if (!_rebateMultipliers) {
+        _rebateMultipliers = new Interface(LSHRebateMultipliersAbi as never);
+    }
+    return _rebateMultipliers;
+}
+
 export const INTERFACES = {
     LazySecureTrade: lazySecureTradeInterface,
     BidderContractFactory: bidderContractFactoryInterface,
     BidderContract: bidderContractInterface,
     EnglishAuction: englishAuctionInterface,
     VIPSubscription: vipSubscriptionInterface,
+    LazyRebatePool: lazyRebatePoolInterface,
+    LSHRebateMultipliers: lshRebateMultipliersInterface,
 } as const;

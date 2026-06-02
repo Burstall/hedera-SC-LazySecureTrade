@@ -16,6 +16,8 @@ const CONTRACTS = [
     'BidderContract',
     'EnglishAuction',
     'VIPSubscription',
+    'LazyRebatePool',
+    'LSHRebateMultipliers',
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');

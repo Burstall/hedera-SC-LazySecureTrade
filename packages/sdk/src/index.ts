@@ -5,10 +5,12 @@
  * LazySecureTrade (LST), BidderContractFactory + BidderContract (stash),
  * EnglishAuction, VIPSubscription.
  *
- * v0.1 — transport primitives only (ABIs, addresses, ethers Interfaces,
- * typed enums + structs, AgentAuth helper). Write-path TransactionRequest
- * builders and mirror-node read helpers land in v0.2 alongside the
- * agent runtime — see README for the full deferred list.
+ * v0.2 — transport primitives only (ABIs, addresses, ethers Interfaces,
+ * typed enums + structs, AgentAuth helper), now spanning the full v0.3
+ * contract surface including the staker-rebate stack (LazyRebatePool +
+ * LSHRebateMultipliers). Write-path TransactionRequest builders and
+ * mirror-node read helpers land in a later release alongside the agent
+ * runtime — see README for the full deferred list.
  *
  * @example
  * ```typescript
@@ -34,6 +36,8 @@ export {
     BidderContractAbi,
     EnglishAuctionAbi,
     VIPSubscriptionAbi,
+    LazyRebatePoolAbi,
+    LSHRebateMultipliersAbi,
 } from './abi';
 export type { ContractName } from './abi';
 
@@ -57,6 +61,8 @@ export {
     bidderContractInterface,
     englishAuctionInterface,
     vipSubscriptionInterface,
+    lazyRebatePoolInterface,
+    lshRebateMultipliersInterface,
 } from './contracts/interfaces';
 
 // AgentAuth helpers
@@ -89,4 +95,5 @@ export type {
     RoyaltyInfo,
     AuctionSnapshot,
     AuctionParams,
+    RebateEpoch,
 } from './types';

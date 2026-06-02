@@ -27,10 +27,11 @@ export interface MarketplaceAddresses {
     /**
      * Staker-rebate stack (v0.3). The pool receives the rebate slice of
      * each subscription purchase; the multipliers contract is a pure-view
-     * weight reference. Addresses are listed here for discovery/display;
-     * their ABIs + ethers Interfaces + typed structs land in SDK 0.2.0
-     * (driven by the frontend claim UI). Subscription-side rebate config
-     * lives on `vipSubscription` and is already covered by its ABI.
+     * weight reference. As of SDK 0.2.0 both ship full ABIs + ethers
+     * Interfaces (`lazyRebatePoolInterface` / `lshRebateMultipliersInterface`)
+     * plus the `RebateEpoch` struct for the frontend claim UI.
+     * Subscription-side rebate config lives on `vipSubscription` and is
+     * already covered by its ABI.
      */
     lazyRebatePool: ContractAddress | null;
     lshRebateMultipliers: ContractAddress | null;

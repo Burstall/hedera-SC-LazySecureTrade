@@ -11,30 +11,44 @@ having to copy ABIs around or hand-roll enums.
 
 ## Scope
 
-This is the **v0.1** release. Scope is intentionally narrow: ship the
-transport primitives an external agent runtime needs to start, defer
-everything that depends on a real agent runtime to exist first.
+This is the **v0.2** release. It still ships transport primitives only —
+ABIs, addresses, ethers `Interface`s, typed enums/structs, and the
+`AgentAuth` helper — but now covers the **full v0.3 contract surface**,
+including the staker-rebate stack (`LazyRebatePool` +
+`LSHRebateMultipliers`) that 0.1.x listed by address but did not yet
+expose an ABI for.
 
-### In v0.1
+### In v0.2
 
 | Surface | What's exported |
 |---|---|
-| ABIs | `LazySecureTrade`, `BidderContractFactory`, `BidderContract` (stash), `EnglishAuction`, `VIPSubscription` — bundled under `./abi/*` and re-exported as JS arrays |
-| Addresses | `ADDRESSES` registry per network (`mainnet` / `testnet` / `previewnet`), with both Hedera id (`0.0.X`) and EVM long-zero address for each contract |
-| Ethers `Interface` factories | One per contract, lazily constructed — use for calldata encoding, return-data decoding, event log parsing |
+| ABIs | `LazySecureTrade`, `BidderContractFactory`, `BidderContract` (stash), `EnglishAuction`, `VIPSubscription`, **`LazyRebatePool`**, **`LSHRebateMultipliers`** — bundled under `./abi/*` and re-exported as JS arrays |
+| Addresses | `ADDRESSES` registry per network (`mainnet` / `testnet` / `previewnet`), with both Hedera id (`0.0.X`) and EVM long-zero address for each contract (rebate stack included) |
+| Ethers `Interface` factories | One per contract (seven total), lazily constructed — use for calldata encoding, return-data decoding, event log parsing |
 | `AgentAuth` tuple | `EMPTY_AUTH`, `buildAgentAuth(...)`, `AGENT_AUTH_TUPLE_TYPE` — TS port of the `utils/agentAuth.js` helper from the contract repo |
 | Typed enums | `BidStatus`, `BidValidityCode`, `AuctionState`, `PaymentToken`, `ActionType`, `AuthFailCode`, `VipTier`, `LshTier` — numeric values verified against the Solidity sources |
-| Typed structs | `BidDetails`, `AgentEnvelope`, `EnvelopeParams`, `TierLimits`, `Trade`, `TokenSerialPrice`, `AuctionItem`, `RoyaltyInfo`, `AuctionSnapshot`, `AuctionParams` |
+| Typed structs | `BidDetails`, `AgentEnvelope`, `EnvelopeParams`, `TierLimits`, `Trade`, `TokenSerialPrice`, `AuctionItem`, `RoyaltyInfo`, `AuctionSnapshot`, `AuctionParams`, **`RebateEpoch`** |
 
-### Deferred to v0.2
+### New in v0.2
+
+- **Rebate stack ABIs + Interfaces** — `LazyRebatePoolAbi` /
+  `LSHRebateMultipliersAbi`, plus `lazyRebatePoolInterface()` /
+  `lshRebateMultipliersInterface()`. Everything a claim UI needs to
+  encode `claim(epoch, amount, proof)`, decode `epochs(...)` /
+  `poolBalance()` / `getMultiplier(...)`, and parse `EpochSettled` /
+  `RebateClaimed` / `EpochRecycled` events.
+- **`RebateEpoch` struct** — decoded shape of the `epochs(uint256)`
+  getter (`merkleRoot`, `totalAllocated`, `totalClaimed`, `settledAt`).
+
+### Still deferred (later release)
 
 - **Write-path `TransactionRequest` builders** — pre-populated tx objects
   for the common flows (create/cancel bid, execute against bid, create
-  auction, place auction bid, settle, create envelope). Deferred so the
-  agent runtime drives the exact shape it needs.
+  auction, place auction bid, settle, create envelope). Consumers build
+  their tx/calldata layer on top of the `Interface` factories for now.
 - **Mirror-node read helpers** — typed wrappers around
   `mirrornode.hedera.com` for bid registry queries, auction snapshots,
-  envelope reads, stash discovery. Deferred for the same reason.
+  envelope reads, stash discovery.
 - **Event decoders** — convenience `findLastEventByName` /
   `getDecodedEventsFromMirror` ports of the contract-repo test helpers.
 - **Network registry for mainnet** — placeholder `null` until the v0.3
@@ -132,6 +146,36 @@ const iface = bidderContractFactoryInterface();
 const calldata = iface.encodeFunctionData('createBid', [bidDetails, EMPTY_AUTH]);
 ```
 
+### Claim a staker rebate
+
+The Merkle root, per-user `amount`, and `proof` come from the off-chain
+settlement output (`scripts/ops/computeRebateEpoch.js` in the contract
+repo). The SDK gives you the address, ABI, and Interface to encode the
+on-chain claim and read the pool.
+
+```typescript
+import {
+    getAddresses,
+    lazyRebatePoolInterface,
+    type RebateEpoch,
+} from '@lazysuperheroes/marketplace-sdk';
+
+const { lazyRebatePool } = getAddresses('testnet');
+const iface = lazyRebatePoolInterface();
+
+// encode the claim
+const calldata = iface.encodeFunctionData('claim', [epoch, amount, proof]);
+
+// decode an `epochs(epoch)` mirror read into a typed struct
+const [merkleRoot, totalAllocated, totalClaimed, settledAt] =
+    iface.decodeFunctionResult('epochs', returnData);
+const ep: RebateEpoch = { merkleRoot, totalAllocated, totalClaimed, settledAt };
+```
+
+`LSHRebateMultipliers` is pure-view — use `lshRebateMultipliersInterface()`
+to encode `getMultiplier(token, serial)` / `minPerUnitValue(poolAmount)`
+when displaying a stash's rebate weight.
+
 ---
 
 ## AgentAuth model — important
@@ -185,7 +229,7 @@ yarn dev                # tsup --watch
 
 `prebuild` runs `copy-abi` automatically, so `yarn build` is a
 single-command "fresh ABIs + clean compile". The build will fail loudly
-if any of the 5 artifacts is missing — run `yarn hardhat compile` in the
+if any of the 7 artifacts is missing — run `yarn hardhat compile` in the
 repo root first.
 
 ---
@@ -194,7 +238,11 @@ repo root first.
 
 SDK versioning will track contract releases once mainnet ships. For now:
 
-- **0.1.x** — pre-mainnet, testnet addresses only, transport primitives.
-- **0.2.x** — adds write-path builders + mirror helpers when the agent
+- **0.1.x** — pre-mainnet, testnet addresses only, transport primitives
+  for the core five contracts.
+- **0.2.x** — full v0.3 contract surface, including the staker-rebate
+  stack (`LazyRebatePool` + `LSHRebateMultipliers`) ABIs, Interfaces, and
+  the `RebateEpoch` struct. Still transport-only.
+- **0.3.x** — write-path builders + mirror helpers when the agent
   runtime lands.
 - **1.0.0** — first release with populated mainnet addresses.
