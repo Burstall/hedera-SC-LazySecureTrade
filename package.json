@@ -8,7 +8,11 @@
     "test-bidder": "npx hardhat test test/BidderContractFactory.test.js",
     "test-trade": "npx hardhat test test/LazySecureTrade.test.js",
     "test-lazy": "npx hardhat test test/LAZYTokenCreator.test.js",
-    "test-delegate": "npx hardhat test test/LazyDelegateRegistry.test.js"
+    "test-delegate": "npx hardhat test test/LazyDelegateRegistry.test.js",
+    "verify": "node scripts/deployments/verifyContract.js",
+    "verify-harness": "node scripts/testing/verifyHarness.js",
+    "audit-stashes": "node scripts/testing/auditStashes.js",
+    "resolve-stash": "node scripts/interactions/resolveStash.js"
   },
   "author": "Stowerling <stowerling@hbarbarians.co.uk>",
   "contributors": [
@@ -16,6 +20,7 @@
   ],
   "license": "ISC",
   "devDependencies": {
+    "@lazysuperheroes/hedera-verify": "^0.2.0",
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.2",
     "@nomicfoundation/hardhat-ethers": "^3.0.4",
     "@nomicfoundation/hardhat-network-helpers": "^1.0.9",

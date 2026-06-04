@@ -8,6 +8,7 @@ const {
 	ContractFunctionParameters,
 } = require('@hashgraph/sdk');
 const { contractDeployFunction } = require('../../utils/solidityHelpers');
+const { verifyContract } = require('../../utils/sourcifyVerify');
 require('dotenv').config();
 
 async function main() {
@@ -99,7 +100,10 @@ async function main() {
 	);
 	const bidderContractByteCode = bidderContractJson.bytecode;
 
-	const bidderContractImplId = await contractDeployFunction(
+	// contractDeployFunction returns [ContractId, evmAddressString] — destructure
+	// the ID so the .toString()/.toSolidityAddress() calls below operate on a
+	// real ContractId rather than the array.
+	const [bidderContractImplId] = await contractDeployFunction(
 		client,
 		bidderContractByteCode,
 		1500000,
@@ -122,7 +126,7 @@ async function main() {
 		.addAddress(ldrAddress)
 		.addAddress(bidderContractImplId.toSolidityAddress());
 
-	const factoryContractId = await contractDeployFunction(
+	const [factoryContractId] = await contractDeployFunction(
 		client,
 		factoryByteCode,
 		1500000,
@@ -163,6 +167,30 @@ async function main() {
 	console.log('\n📝 Agent envelope tier table (factory OWNER must execute):');
 	console.log('  BCF.setAgentTierLimits(Tier, TierLimits) — once per tier (instant first call).');
 	console.log('  See docs/v0.3-OPS-RUNBOOK.md §9 for the default table + adjustment runbook.');
+
+	// Optional runtime verification on Sourcify (opt-in via VERIFY_ON_DEPLOY).
+	// Verifies both the implementation and the factory. We wait + retry because
+	// a freshly created contract takes a few seconds to be indexed by the
+	// mirror node / Sourcify's RPC before its bytecode is fetchable.
+	if (process.env.VERIFY_ON_DEPLOY === 'true' || process.env.VERIFY_ON_DEPLOY === '1') {
+		console.log('\n- VERIFY_ON_DEPLOY set — verifying on Sourcify...');
+		await verifyContract({
+			contractName: 'BidderContract',
+			env,
+			contractId: bidderContractImplId,
+			initialDelayMs: 10000,
+			attempts: 4,
+			retryDelayMs: 8000,
+		});
+		await verifyContract({
+			contractName: 'BidderContractFactory',
+			env,
+			contractId: factoryContractId,
+			initialDelayMs: 2000,
+			attempts: 4,
+			retryDelayMs: 8000,
+		});
+	}
 
 	await client.close();
 	process.exit(0);

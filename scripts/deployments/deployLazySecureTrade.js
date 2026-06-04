@@ -10,6 +10,7 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { verifyContract } = require('../../utils/sourcifyVerify');
 // const { hethers } = require('@hashgraph/hethers');
 require('dotenv').config();
 
@@ -342,6 +343,22 @@ const main = async () => {
 	}
 
 	console.log('Lazy Secure Trade added to Lazy Gas Station:', rslt[2].transactionId.toString());
+
+	// Optional runtime verification on Sourcify (opt-in via VERIFY_ON_DEPLOY).
+	// We wait + retry because the mirror node and Sourcify's RPC need a few
+	// seconds to index a freshly created contract before its bytecode is
+	// fetchable for matching.
+	if (process.env.VERIFY_ON_DEPLOY === 'true' || process.env.VERIFY_ON_DEPLOY === '1') {
+		console.log('\n- VERIFY_ON_DEPLOY set — verifying LazySecureTrade on Sourcify...');
+		await verifyContract({
+			contractName,
+			env,
+			contractId: lstContractId,
+			initialDelayMs: 10000,
+			attempts: 4,
+			retryDelayMs: 8000,
+		});
+	}
 
 };
 
