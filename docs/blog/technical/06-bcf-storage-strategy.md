@@ -303,12 +303,12 @@ healthy marketplace is much smaller than cumulative volume.
 ## Reference
 
 - BCF's `_closeBid`:
-  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
+  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/BidderContractFactory.sol).
   Search for `function _closeBid`.
 - The design pivot's historical record:
-  [`docs/archive/v0.3-REMAINING-ITEMS.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/archive/v0.3-REMAINING-ITEMS.md)
+  [`docs/archive/v0.3-REMAINING-ITEMS.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/archive/v0.3-REMAINING-ITEMS.md)
   "State Build-Up — RESOLVED" section.
 - The event-stream schema:
-  [`contracts/interfaces/IBidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/interfaces/IBidderContractFactory.sol).
+  [`contracts/interfaces/IBidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/interfaces/IBidderContractFactory.sol).
 - Indexer schema:
-  [`docs/DIRECTUS-MIGRATION-v0.3.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/DIRECTUS-MIGRATION-v0.3.md).
+  [`docs/DIRECTUS-MIGRATION-v0.3.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/DIRECTUS-MIGRATION-v0.3.md).

@@ -259,8 +259,8 @@ headroom. If you can't fit, split into multiple transactions.
   network spec; the value is enforced at the
   network-services layer, not in EVM bytecode.
 - LST's per-trade budget is captured in
-  [`docs/AGENT-MARKETPLACE-DELTA.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-MARKETPLACE-DELTA.md)
+  [`docs/AGENT-MARKETPLACE-DELTA.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/AGENT-MARKETPLACE-DELTA.md)
   "Constraint 3 — Hedera-native budget math."
 - The CUSTODY_HOP design is in
-  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/TokenStakerV2.sol)
+  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/TokenStakerV2.sol)
   — specifically `moveNFTs`.

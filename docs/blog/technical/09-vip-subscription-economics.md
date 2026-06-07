@@ -262,12 +262,12 @@ They have to renew to AUTHORIZE more or refresh expired ones.
 ## Reference
 
 - The contract is at
-  [`contracts/VIPSubscription.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/VIPSubscription.sol).
+  [`contracts/VIPSubscription.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/VIPSubscription.sol).
 - The 16-test acceptance suite:
-  [`test/VIPSubscription.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/VIPSubscription.test.js).
+  [`test/VIPSubscription.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/VIPSubscription.test.js).
 - The original design rationale (including the loaner-attack
   discussion):
-  [`docs/VIPSubscription-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/VIPSubscription-DESIGN.md).
+  [`docs/VIPSubscription-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/VIPSubscription-DESIGN.md).
 - The tier-table → agent slot/cap mapping is locked in
-  [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-WORKING-PLAN.md)
+  [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/v0.3-WORKING-PLAN.md)
   under "Locked default tier table."

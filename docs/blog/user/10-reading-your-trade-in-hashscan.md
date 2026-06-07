@@ -283,4 +283,4 @@ audit trail when you need it.
 - The mirror node REST API (for programmatic access):
   https://docs.hedera.com/hedera/mirrornode/mirror-node-api
 - The contract that does the 2-step custody hop:
-  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/TokenStakerV2.sol).
+  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/TokenStakerV2.sol).

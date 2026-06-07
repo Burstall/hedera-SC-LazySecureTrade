@@ -250,7 +250,7 @@ against $LAZY's market.
 ## Reference
 
 - The tier table is locked in
-  [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-WORKING-PLAN.md)
+  [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/v0.3-WORKING-PLAN.md)
   "Locked default tier table."
 - The agent envelope mechanics:
   [Agent envelopes — your AI trader, your rules](03-agent-envelopes-plain-english.md).

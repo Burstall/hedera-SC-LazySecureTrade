@@ -158,7 +158,7 @@ See you at launch.
 
 ## Reference
 
-- Live state: [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-WORKING-PLAN.md)
+- Live state: [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/v0.3-WORKING-PLAN.md)
 - Marketplace overview for newcomers: [What is LazySecureTrade?](01-what-is-lazysecuretrade.md)
 - For developers wanting to build on it:
   [Building a SNIPER agent in ~80 lines](../technical/01-building-a-sniper-agent.md)

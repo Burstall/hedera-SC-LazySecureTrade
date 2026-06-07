@@ -196,7 +196,7 @@ For the technical mechanics:
   covers the subcall budgeting that makes the 2-step pattern
   economical.
 - The custody-hop pattern is implemented in
-  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/TokenStakerV2.sol)
+  [`contracts/TokenStakerV2.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/TokenStakerV2.sol)
   — specifically `moveNFTs` and its `WITHDRAWAL` mode.
 - The 1-tinybar value lives at
   `TokenStakerV2.CUSTODY_HOP_TINYBAR = 1`. It's a constant

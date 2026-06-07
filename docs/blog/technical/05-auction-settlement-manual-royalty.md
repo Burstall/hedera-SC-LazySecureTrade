@@ -117,7 +117,7 @@ function _readRoyaltySchedule(address token) internal returns (RoyaltyInfo[] mem
 ```
 
 The full implementation is in
-[`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol)
+[`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/EnglishAuction.sol)
 under `_payRoyalties` and `_resolveRoyaltySchedule`.
 
 ## Caching to save subcalls
@@ -201,7 +201,7 @@ The winner has to have granted EA an HBAR allowance ≥ 1 tinybar
 before settle. EA's frontend does this as a one-time setup; for
 stash-mediated wins, the stash auto-grants the allowance to EA
 via the same HIP-906 pattern LST uses (see
-[`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/BCF-StashAllowances-DESIGN.md)).
+[`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/BCF-StashAllowances-DESIGN.md)).
 
 ## Edge cases worth knowing
 
@@ -277,17 +277,17 @@ A settlement-keeper agent is a different shape than a
 SNIPER. It doesn't need an envelope on a user's stash — it just
 needs an account with gas money and a mirror-node subscription
 to detect auctions in `Closed` state. See
-[`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-RUNTIME-BOOTSTRAP.md)
+[`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/AGENT-RUNTIME-BOOTSTRAP.md)
 "Open questions" for the discussion of running keepers alongside
 user-facing agents.
 
 ## Reference
 
 - The settlement implementation is at
-  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol)
+  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/EnglishAuction.sol)
   — search for `function settle`.
 - The 20/20 acceptance suite is at
-  [`test/EnglishAuction.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/EnglishAuction.test.js).
+  [`test/EnglishAuction.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/EnglishAuction.test.js).
 - The royalty-schedule-caching design rationale is in
-  [`docs/EnglishAuction-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/EnglishAuction-DESIGN.md)
+  [`docs/EnglishAuction-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/EnglishAuction-DESIGN.md)
   "Pre-implementation probe checklist" item 3 (resolved).

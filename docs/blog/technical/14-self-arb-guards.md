@@ -249,15 +249,15 @@ wash-prevention work; the split is a back-stop.
 ## Reference
 
 - The 3-condition guard lives in
-  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
+  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/BidderContractFactory.sol).
   Search for `SelfTradeBlocked`.
 - The companion
   [Beneficial-owner resolution](./11-beneficial-owner-resolution.md)
   post explains the resolution function in depth.
 - The `BCF` test suite covers all three permutations — search
   the
-  [BCF test suite](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/BidderContractFactory.test.js)
+  [BCF test suite](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/BidderContractFactory.test.js)
   for `SelfTradeBlocked` to see the assertions.
 - The agent-mediated arbitrage path is tested in
-  [`test/AgentEnvelopeFull.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/AgentEnvelopeFull.test.js)
+  [`test/AgentEnvelopeFull.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/AgentEnvelopeFull.test.js)
   under AE10.3.

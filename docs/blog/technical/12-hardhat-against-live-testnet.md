@@ -351,10 +351,10 @@ For everything that touches HTS, the answer is "real testnet."
 ## Reference
 
 - The test helper library lives at
-  [`utils/solidityHelpers.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/utils/solidityHelpers.js)
+  [`utils/solidityHelpers.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/utils/solidityHelpers.js)
   (contract execution + mirror querying).
 - The scaffold pattern is in
-  [`test/scaffold.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/scaffold.js)
+  [`test/scaffold.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/scaffold.js)
   (agent test suite — illustrative).
 - An example test file:
-  [`test/AgentEnvelopeFull.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/AgentEnvelopeFull.test.js).
+  [`test/AgentEnvelopeFull.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/AgentEnvelopeFull.test.js).

@@ -225,10 +225,10 @@ worth showing in marketing.
 ## Reference
 
 - The anti-snipe logic is at
-  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol).
+  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/contracts/EnglishAuction.sol).
   Search for `_maybeExtendCloseAt`.
 - Tests covering window edge cases are in
-  [`test/EnglishAuction.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/EnglishAuction.test.js).
+  [`test/EnglishAuction.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/test/EnglishAuction.test.js).
 - The design discussion is in
-  [`docs/EnglishAuction-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/EnglishAuction-DESIGN.md)
+  [`docs/EnglishAuction-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/main/docs/EnglishAuction-DESIGN.md)
   — search for "anti-snipe."
