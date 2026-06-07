@@ -2,6 +2,32 @@
 
 All notable changes to `@lazysuperheroes/marketplace-sdk`.
 
+## 0.2.0 — 2026-06-02
+
+### Added
+- **Staker-rebate stack — full transport surface.** The ABIs, ethers
+  `Interface` factories, and typed struct deferred from 0.1.1 now ship:
+  - `LazyRebatePoolAbi` and `LSHRebateMultipliersAbi` exported from `./abi`
+    — the SDK now bundles all 7 v0.3 contract ABIs.
+  - `lazyRebatePoolInterface()` and `lshRebateMultipliersInterface()`
+    Interface factories.
+  - `RebateEpoch` type — the decoded shape of
+    `LazyRebatePool.epochs(uint256)` (`merkleRoot`, `totalAllocated`,
+    `totalClaimed`, `settledAt`) for the frontend claim UI. Leaves are
+    `keccak256(abi.encodePacked(user, amount))`; an all-zero `merkleRoot`
+    means the epoch is unsettled.
+
+### Changed
+- `lazyRebatePool` and `lshRebateMultipliers` are now first-class fields in
+  the `MarketplaceAddresses` registry (testnet populated; mainnet/previewnet
+  `null` pending deploy). In 0.1.1 these were addresses-only, with their
+  ABIs/Interfaces/struct deferred.
+
+### Notes
+- Scope is still **transport-only**. Write-path `TransactionRequest` builders
+  and mirror-node read helpers remain deferred to a later release alongside
+  the agent runtime — see the README deferred list.
+
 ## 0.1.1 — 2026-05-29
 
 ### Fixed
