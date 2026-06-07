@@ -19,6 +19,9 @@
     "Baptiste <lazysuperheroes@protonmail.com>"
   ],
   "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
   "devDependencies": {
     "@lazysuperheroes/hedera-verify": "^0.2.0",
     "@nomicfoundation/hardhat-chai-matchers": "^2.0.2",
