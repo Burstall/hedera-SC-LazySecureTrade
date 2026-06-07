@@ -290,11 +290,11 @@ That's the skeleton. ~80 lines counting helpers.
 ## Where the code lives
 
 The reference scaffolding is in
-[`test/AgentEnvelopeFull.test.js`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/test/AgentEnvelopeFull.test.js)
+[`test/AgentEnvelopeFull.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/AgentEnvelopeFull.test.js)
 in the contracts repo. The agent provisioning helper in
-[`test/scaffold.js`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/test/scaffold.js)
+[`test/scaffold.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/scaffold.js)
 is the canonical pattern. The probe at
-[`scripts/testing/agentAliasProbe.js`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/scripts/testing/agentAliasProbe.js)
+[`scripts/testing/agentAliasProbe.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/scripts/testing/agentAliasProbe.js)
 proves the alias-key auto-create + AccountInfoQuery resolve flow
 end-to-end for ~3 HBAR.
 
@@ -305,5 +305,5 @@ yarn add @lazysuperheroes/marketplace-sdk ethers@^6 @hashgraph/sdk@^2.50
 yarn add @hashgraph/hedera-agent-kit   # optional; needed for HCS-10
 ```
 
-And read [`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-RUNTIME-BOOTSTRAP.md)
+And read [`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-RUNTIME-BOOTSTRAP.md)
 for the broader runtime context.

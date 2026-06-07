@@ -283,11 +283,11 @@ for "specific recipients in specific contexts."
 ## Reference
 
 - The pull-payment queues live in
-  [`contracts/EnglishAuction.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol).
+  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol).
   Search for `claimableHbar` / `claimableLazy` / `function
   claim`.
 - The arbitrage profit queue:
-  [`contracts/BidderContractFactory.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
+  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
   Search for `pendingArbProfit` / `claimArbProfit`.
 - The CEI pattern is OpenZeppelin's standard guidance; their
   [`ReentrancyGuard`](https://docs.openzeppelin.com/contracts/4.x/api/security#ReentrancyGuard)

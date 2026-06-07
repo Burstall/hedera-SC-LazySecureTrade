@@ -281,6 +281,6 @@ the budget you set; you can sleep through the auction sniping.
 ## Reference
 
 - The contract surface for envelopes:
-  [`contracts/interfaces/IAgentEnvelope.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/interfaces/IAgentEnvelope.sol).
+  [`contracts/interfaces/IAgentEnvelope.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/interfaces/IAgentEnvelope.sol).
 - The runtime bootstrap doc:
-  [`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-RUNTIME-BOOTSTRAP.md).
+  [`docs/AGENT-RUNTIME-BOOTSTRAP.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-RUNTIME-BOOTSTRAP.md).

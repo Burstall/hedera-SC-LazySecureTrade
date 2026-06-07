@@ -250,17 +250,17 @@ contract-as-buyer-or-seller integration on Hedera:
 All six are implemented in `BidderContract.sol`. The full
 design rationale (and a bug catalog for the 5 issues this
 analysis surfaced) is in
-[`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/BCF-StashAllowances-DESIGN.md).
+[`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/BCF-StashAllowances-DESIGN.md).
 
 ## Reference
 
 - The contract surface lives at
-  [`contracts/BidderContract.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContract.sol).
+  [`contracts/BidderContract.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContract.sol).
   Search for `approveHbarTo`, `approveNFTTo`, `_hbarApprove`,
   `_ensureHbarAllowanceForCustodyHop`.
 - HIP-906 (the Hedera Account Service contract): search for
   HIP-906 at hips.hedera.com.
 - The empirical probe that surfaced the HTS-precompile
   contract-owner revert: search the
-  [BCF test suite](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/test/BidderContractFactory.test.js)
+  [BCF test suite](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/BidderContractFactory.test.js)
   for P5.8.

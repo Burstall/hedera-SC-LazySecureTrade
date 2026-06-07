@@ -263,16 +263,16 @@ then deploy when ready. No "deploy first, fund second" two-step.
 ## Reference
 
 - The BCF's `getStashAddress` is at
-  [`contracts/BidderContractFactory.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
+  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol).
 - The salt prefix `STASH_SALT_VERSION = "LST_STASH_v1"` is a
   constant in the same file.
 - OpenZeppelin's `Clones.predictDeterministicAddress` is the
   canonical impl; ethers v6's `getCreate2Address` matches the
   on-chain semantics exactly.
 - The CREATE2 probe at
-  [`contracts/test/CREATE2Probe.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/test/CREATE2Probe.sol)
+  [`contracts/test/CREATE2Probe.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/test/CREATE2Probe.sol)
   empirically validates Hedera's CREATE2 implementation against
   EVM equivalence — Hedera has surprised us before, so we test
   against the spec rather than trusting it.
 - The empirical test driver:
-  [`scripts/testing/create2Probe.js`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/scripts/testing/create2Probe.js).
+  [`scripts/testing/create2Probe.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/scripts/testing/create2Probe.js).

@@ -271,19 +271,19 @@ paths exist.
 ## Reference
 
 - The `_resolveBeneficialOwner` function lives in both
-  [`contracts/LazySecureTrade.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/LazySecureTrade.sol)
+  [`contracts/LazySecureTrade.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/LazySecureTrade.sol)
   and
-  [`contracts/EnglishAuction.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol).
+  [`contracts/EnglishAuction.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/EnglishAuction.sol).
   Both contracts implement the same shape against their own
   `bcf` pointer.
 - The `stashOwnerOf` mapping is in
-  [`contracts/BidderContractFactory.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol)
+  [`contracts/BidderContractFactory.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContractFactory.sol)
   (search for `stashOwnerOf`).
 - The original Bug 3 / Bug 4 analysis is in
-  [`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/BCF-StashAllowances-DESIGN.md)
+  [`docs/BCF-StashAllowances-DESIGN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/BCF-StashAllowances-DESIGN.md)
   "Bug 3: stash-listed trades partially lose LSH fee
   discounts."
 - The LazyTradeLotto scanner-side cutover (where this matters
   off-chain) is documented in
-  [`docs/v0.3-OPS-RUNBOOK.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-OPS-RUNBOOK.md)
+  [`docs/v0.3-OPS-RUNBOOK.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-OPS-RUNBOOK.md)
   §3.

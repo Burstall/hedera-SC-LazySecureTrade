@@ -128,7 +128,7 @@ The roadmap, roughly ordered:
 
 ## How to follow along
 
-The contracts repo is open source: `Burstall/hedera-SC-LazySecureTrade`
+The contracts repo is open source: `lazysuperheroes/hedera-SC-LazySecureTrade`
 on GitHub. The `v0.3` branch is the mainnet candidate; the
 working plan (`docs/v0.3-WORKING-PLAN.md`) tracks the live
 state.
@@ -158,7 +158,7 @@ See you at launch.
 
 ## Reference
 
-- Live state: [`docs/v0.3-WORKING-PLAN.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-WORKING-PLAN.md)
+- Live state: [`docs/v0.3-WORKING-PLAN.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/v0.3-WORKING-PLAN.md)
 - Marketplace overview for newcomers: [What is LazySecureTrade?](01-what-is-lazysecuretrade.md)
 - For developers wanting to build on it:
   [Building a SNIPER agent in ~80 lines](../technical/01-building-a-sniper-agent.md)

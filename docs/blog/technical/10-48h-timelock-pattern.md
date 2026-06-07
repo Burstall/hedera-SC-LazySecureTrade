@@ -282,9 +282,9 @@ only layer.
   section. Grep for `TIMELOCK_WINDOW` or `FACTORY_AUTH_TIMELOCK`
   or `AGENT_TIER_TIMELOCK`.
 - The Owner Administration Model is documented in
-  [`SECURITY.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/SECURITY.md).
+  [`SECURITY.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/SECURITY.md).
 - The acceptance tests for the timelock paths are in
-  [`test/BidderContractFactory.test.js`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/test/BidderContractFactory.test.js)
+  [`test/BidderContractFactory.test.js`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/test/BidderContractFactory.test.js)
   (P5.26–P5.32 cover `authorizeFactory` specifically).
 - The 3-mode `authorizeFactory` design ships as the H3
   finding fix; see commit `bb1980e` in the history.

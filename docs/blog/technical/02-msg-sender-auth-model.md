@@ -208,13 +208,13 @@ When in Hedera, do as Hedera does. Delete the ceremony.
 ## Reference
 
 - The auth-model NatSpec lives at
-  [`contracts/interfaces/IAgentEnvelope.sol:14-25`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/interfaces/IAgentEnvelope.sol).
+  [`contracts/interfaces/IAgentEnvelope.sol:14-25`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/interfaces/IAgentEnvelope.sol).
 - The owner-or-agent check is at
-  [`contracts/BidderContract.sol:_ownerOrAgentMsgSender`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContract.sol).
+  [`contracts/BidderContract.sol:_ownerOrAgentMsgSender`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/BidderContract.sol).
 - The library that enforces budget + permissions is
-  [`contracts/libraries/AgentEnvelopeLib.sol`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/contracts/libraries/AgentEnvelopeLib.sol).
+  [`contracts/libraries/AgentEnvelopeLib.sol`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/contracts/libraries/AgentEnvelopeLib.sol).
 - The decision-context trail is in
-  [`docs/AGENT-MARKETPLACE-DELTA.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-MARKETPLACE-DELTA.md)
+  [`docs/AGENT-MARKETPLACE-DELTA.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/docs/AGENT-MARKETPLACE-DELTA.md)
   under the "Resulting architectural decisions" section, item 4
   (annotated REVERSED — the original design proposed signed-proofs
   as an optional hot path; msg.sender-only replaced it entirely).

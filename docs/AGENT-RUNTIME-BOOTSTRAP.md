@@ -390,7 +390,7 @@ logging trace yet — that's a valid sentinel.
 
 ## Reference materials (in the contracts repo)
 
-All in `github.com/Burstall/hedera-SC-LazySecureTrade` on the `v0.3` branch.
+All in `github.com/lazysuperheroes/hedera-SC-LazySecureTrade` on the `v0.3` branch.
 
 ### Architecture + design
 

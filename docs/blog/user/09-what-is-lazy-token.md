@@ -200,7 +200,7 @@ LAZY through normal market channels and use it on LST.
 
 - The fee-free LAZY trade path is documented as a "convention"
   in
-  [`CLAUDE.md`](https://github.com/Burstall/hedera-SC-LazySecureTrade/blob/v0.3/CLAUDE.md):
+  [`CLAUDE.md`](https://github.com/lazysuperheroes/hedera-SC-LazySecureTrade/blob/v0.3/CLAUDE.md):
   "Never introduce $LAZY fees on LAZY-denominated trades —
   it's a deliberate tokenomics choice."
 - The LSH-holder listing-fee waiver and the LSH tier discounts
