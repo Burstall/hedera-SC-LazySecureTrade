@@ -934,7 +934,7 @@ contract LazySecureTrade is
     }
 
     /***
-     * @notice Create an atomic batch trade (1-32 NFTs) with per-serial pricing
+     * @notice Create an atomic batch trade (1-22 NFTs) with per-serial pricing
      * @param _tokens Array of unique token addresses (no duplicates)
      * @param _serials Array of serial arrays - each index corresponds to token at same index
      * @param _tinybarPrices Array of tinybar price arrays - each serial gets individual price
@@ -1605,7 +1605,7 @@ contract LazySecureTrade is
         } else if (_itemCount <= 12) {
             return lazyCostForTrade * 3; // 3x base cost
         } else {
-            return lazyCostForTrade * 5; // 5x base cost (13-32 items)
+            return lazyCostForTrade * 5; // 5x base cost (13-22 items)
         }
     }
 
