@@ -1,3 +1,7 @@
+> **📦 ARCHIVED — completed v0.2 test plan.** Superseded by the live
+> Hardhat suites in [`test/`](../../test/) and the v0.3 plan in
+> [`docs/v0.3-AE-TEST-PLAN.md`](../v0.3-AE-TEST-PLAN.md). Kept for history.
+
 # 🧪 **LazySecureTrade v0.2 Enhanced Testing Plan**
 
 ## **📋 Overview**

@@ -1,3 +1,8 @@
+> **📦 ARCHIVED — one-off handoff prompt.** This was a self-contained
+> prompt to be dropped into the `hedera-SC-lazy-lotto` repo. It lives
+> here only for history; operational procedure now lives in
+> [`docs/v0.3-OPS-RUNBOOK.md`](../v0.3-OPS-RUNBOOK.md).
+
 # LazyTradeLotto Scanner Cutover — Handoff Prompt
 
 > **Drop this file into the root of the `hedera-SC-lazy-lotto` repo as

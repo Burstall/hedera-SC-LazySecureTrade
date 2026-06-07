@@ -2,13 +2,18 @@
 
 ## Overview
 
-This document provides a comprehensive security analysis of the LazySecureTrade contract, covering all major security vectors and the contract's defense mechanisms. The analysis was conducted after contract optimization to meet EVM size limits while maintaining security integrity.
+This document provides a comprehensive security analysis of the LazySecureTrade
+marketplace contract suite (LST core plus the v0.3 additions: BidderContractFactory
++ per-user stash, EnglishAuction, VIPSubscription, and the rebate stack), covering
+all major security vectors and the contracts' defense mechanisms. The original
+analysis (v0.2) was conducted after contract optimization to meet EVM size limits
+while maintaining security integrity, and has been extended for v0.3.
 
 **Final Security Rating: A+ (Excellent)**
 
 ## Contract Information
 
-- **Contract Size**: 23.959 KiB (under 24.576 KiB EVM limit)
+- **Contract Size (LazySecureTrade)**: 23.96 KiB (under the 24.576 KiB EVM limit; all contracts pass the strict size gate)
 - **Solidity Version**: 0.8.18 with optimizer enabled (200 runs)
 - **Architecture**: Inherits from OpenZeppelin's Ownable, ReentrancyGuard, and custom TokenStaker
 - **Primary Function**: Decentralized NFT trading platform with batch operations and platform fees
@@ -31,7 +36,7 @@ This document provides a comprehensive security analysis of the LazySecureTrade 
 - **Atomic Batch Operations**: All-or-nothing execution prevents partial failures
 - **LSH Token Integration**: Tiered fee discounts based on token ownership
 - **Gas Limit Management**: Conservative limits to prevent DoS attacks
-- **Emergency Functions**: Owner-controlled sunset mechanisms
+- **Stash Sovereignty & Escape Hatches**: Per-user stash rescue functions (`rescueHbar`/`rescueLazy`/`rescueNFT`) and one-way `detachFromFactory()` ensure users are never trapped (see "Stash Sovereignty" below)
 
 ## Royalty Handling — 2-Step Transfer & Custody Hop Semantics
 
@@ -199,9 +204,9 @@ function updateFeeRates(...) external onlyOwner {
 - **Pricing Validation**: XOR pricing (HBAR or LAZY, not both) for batch trades
 
 #### Batch Size Limits
-- **Individual Trades**: 32 trade limit for gas management
-- **Batch Trades**: 22 item limit for atomic operations
-- **Execution Batches**: 5 trade limit considering subcall complexity
+- **Multiple-Trade Creation** (`createMultipleTrades`): 22 trade limit for gas management
+- **Batch Trades** (`createBatchTrade`): 22 item limit for atomic operations
+- **Execution Batches** (`executeTrades`): 5 trade limit considering subcall complexity
 
 ### 6. Economic Attack Vectors
 
@@ -366,7 +371,9 @@ works*.**
 - **Parameter Updates**: Use timelocks for critical parameter changes
   (see "Owner Administration Model" above for the on-chain vs
   operational-layer split)
-- **Emergency Procedures**: Document sunset and recovery procedures
+- **Emergency Procedures**: Document the stash detach/rescue migration runbook
+  (see "Stash Sovereignty — Emergency Escape Hatches" above) and the EnglishAuction
+  `setPaused` kill switch
 
 ### 2. User Education
 - **Gas Costs**: Educate users about token association costs
@@ -395,5 +402,5 @@ The contract is recommended for production deployment with the current security 
 
 ---
 
-*Security analysis conducted September 2025*  
-*Contract version: v0.2 (23.959 KiB optimized)*
+*Security analysis originally conducted September 2025 (v0.2); extended for v0.3 — BidderContractFactory + stash, EnglishAuction, VIPSubscription, and the rebate stack.*  
+*LazySecureTrade size: 23.96 KiB (under the 24.576 KiB EVM limit).*

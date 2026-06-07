@@ -53,7 +53,7 @@ BidderContractFactory          (central router / CLOB)
 - **Open-market trades** (`buyer == address(0)`) cost `lazyCostForTrade` in $LAZY (drawn via `LazyGasStation.drawLazyFrom` with `lazyBurnPercentage` burned). LSH Gen1/Gen2 holders are exempt via `areAdvancedTradesFree()`. Closed trades (specific buyer) are free to list.
 - **Platform fees** are HBAR-only and applied at execution, not creation. Tiered discounts via LSH tokens: Gen1 = 100% off (free), Mutant = 75% off, Gen2 = 50% off, none = 1% base. **$LAZY trades are always fee-free** — this is an intentional utility boost for $LAZY and must be preserved.
 - **LSH delegation counts** — delegated tokens tracked via `LazyDelegateRegistry` confer the same fee tier as owned tokens.
-- **Batch trades** (`createBatchTrade`) are atomic and capped at 22 items. **Multiple trade execution** (`executeTrades`) is also atomic and capped at ~20 trades for subcall-limit safety. These are two *different* APIs — don't conflate them.
+- **Batch trades** (`createBatchTrade`) are atomic and capped at 22 items. **Multiple trade execution** (`executeTrades`) is also atomic and capped at 5 trades for subcall-limit safety (`createMultipleTrades`, the bulk *creation* API, is capped at 22). These are two *different* APIs — don't conflate them.
 - **Authorized factories** (`authorizedFactories[factory] = true`, owner-gated) can call `createTradeOnBehalf()` to list trades on behalf of a seller, bypassing the $LAZY listing cost. This is the v0.3 integration hook for `BidderContractFactory`.
 
 ### v0.3 Bidder architecture — stash per user, CLOB-style bidding, arbitrage

@@ -149,11 +149,14 @@ amortized + ~12 setup overhead ≈ 42. Leaves a slim margin.
 We picked 22 specifically to keep ~8 subcalls of headroom for
 edge cases (unexpected royalty branches, LAZY draws on the path).
 
-**`executeTrades` capped at ~20 trades.** Different code path
-than `createBatchTrade` — it's a wrapper that calls
-`executeTrade` repeatedly. Each inner call has its own subcall
-budget within the parent budget, so the effective limit is
-~22 items × ~2 subcalls of routing overhead per inner call.
+**`executeTrades` capped at 5 trades.** Different code path than
+`createBatchTrade` — it's a wrapper that calls `executeTrade`
+repeatedly, and each inner trade does a full 2-step NFT custody
+hop (seller → contract → buyer = 2 transfers) plus an optional
+LAZY payment leg and seller ownership/approval checks. That's far
+more subcall-dense per item than a batch *listing*, so the cap is
+much tighter: 5 trades keeps the worst case comfortably under the
+50-subcall ceiling.
 
 **Validated-association removal.** We used to have a helper that
 verified the token was associated before each transfer in a

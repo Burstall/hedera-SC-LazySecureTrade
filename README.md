@@ -79,7 +79,7 @@ Create atomic batch trades where all NFTs transfer together or the entire transa
 
 ## Multiple Trades & Batch Execution
 Create and execute multiple individual trades efficiently:
-- `createMultipleTrades()`: Create up to 32 individual trades
+- `createMultipleTrades()`: Create up to 22 individual trades
 - `executeTrades()`: Execute multiple existing trades atomically
 - `cancelMultipleTrades()`: Cancel multiple trades in one transaction
 - **Atomic Execution**: All requested trades execute or entire transaction reverts
@@ -337,8 +337,8 @@ To prevent gas exhaustion and subcall limit breaches:
 **Recommended Limits:**
 - **New Token Associations**: 5-8 tokens maximum per transaction
 - **Batch Trades**: 22 items maximum (contract enforced)
-- **Multiple Trade Creation**: 32 trades maximum (contract enforced)
-- **Multiple Trade Execution**: 20 trades maximum (contract enforced for subcall management)
+- **Multiple Trade Creation**: 22 trades maximum (contract enforced)
+- **Multiple Trade Execution**: 5 trades maximum (contract enforced for subcall management)
 
 **Conservative Approach:**
 - Limit new associations to 5 tokens per batch for safety margin
@@ -438,17 +438,30 @@ showGasEstimate(gasEstimate, newAssociations);
 ## Contract Deployment Notes
 
 ### Size Considerations
-- **Current Size**: ~27.6 KiB (includes full platform fee system and batch operations)
-- **Previous Size**: 29.14 KiB (before optimizations) → **1.54 KiB saved** through code optimizations
-- **EVM Spurious Dragon Limit**: Exceeds 24.576 KiB limit but under continuous optimization
-- **Hedera Compatible**: Deploys successfully on Hedera despite size
-- **EVM Mainnet**: May not deploy on strict EVM mainnets without further optimization
-- **Recent Optimizations**: Removed contract sunset mechanism, consolidated LSH checking logic, removed redundant `transferHbar()` method
+All contracts compile **under the 24,576-byte (24.576 KiB) EVM contract-size
+limit**. This is enforced strictly at compile time (`contractSizer.strict = true`
+in `hardhat.config.js` — compilation fails if any contract exceeds it).
+
+Representative deployed sizes (run `npx hardhat size-contracts` for live figures):
+
+| Contract | Deployed size |
+|---|---|
+| `LazySecureTrade` | ~23.96 KiB |
+| `EnglishAuction` | ~23.85 KiB |
+| `BidderContract` (stash) | ~23.26 KiB |
+| `BidderContractFactory` | ~18.37 KiB |
+| `LazyRebatePool` | ~6.91 KiB |
+| `LSHRebateMultipliers` | ~1.93 KiB |
+
+`LazySecureTrade` is the tightest against the limit — adding storage, events, or
+logic to it will likely break the size gate. Prefer moving new functionality into
+`BidderContractFactory` or a helper contract.
 
 ### Network Compatibility
-- ✅ **Hedera Mainnet/Testnet**: Full compatibility
-- ✅ **Hedera EVM**: Full compatibility  
-- ⚠️ **Ethereum Mainnet**: Size limit exceeded
-- ⚠️ **Other EVM Networks**: Check individual size limits
+- ✅ **Hedera Mainnet / Testnet / Previewnet**: Full compatibility (primary target)
+- ✅ **Hedera EVM**: Full compatibility
+- ⚠️ **Other EVM networks**: These contracts depend on the Hedera Token Service
+  precompile (`0x167`) and HTS-specific semantics (royalties, association). They
+  are Hedera-specific and are not intended to deploy on non-Hedera EVM chains.
 
 ```
