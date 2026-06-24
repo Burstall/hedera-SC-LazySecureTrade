@@ -2,6 +2,27 @@
 
 All notable changes to `@lazysuperheroes/marketplace-sdk`.
 
+## 0.2.1 — 2026-06-24
+
+### Added
+- **`LazyGasStation` ABI + Interface — for revert decoding.** LazyGasStation
+  is a shared dependency (not a marketplace contract), but LST and the
+  bidder factory fan into it for `$LAZY` draws and HBAR refills, so a revert
+  there bubbles up a LazyGasStation custom error that the marketplace ABIs
+  alone cannot resolve. Now bundled so consumers can name them:
+  - `LazyGasStationAbi` exported from `./abi` (and `ABIS.LazyGasStation`).
+  - `lazyGasStationInterface()` Interface factory (and
+    `INTERFACES.LazyGasStation`) — use `parseError(revertData)` to resolve
+    the 11 custom errors (`InsufficientAllowance`, `PayoutFailed`,
+    `NetPayoutFailed`, `AssociationFailed`, `BurnFailed`, etc.).
+  - Bundled `abi/LazyGasStation.json` (the SDK now ships 8 ABIs).
+
+### Notes
+- Additive and transport-only — no address-registry entry (error decoding
+  needs only the Interface, not a deployed address) and no change to any
+  existing export. Stays in the `0.2.x` line; `0.3.x` remains reserved for
+  the write-path builders + mirror helpers.
+
 ## 0.2.0 — 2026-06-02
 
 ### Added

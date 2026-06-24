@@ -22,14 +22,23 @@ expose an ABI for.
 
 | Surface | What's exported |
 |---|---|
-| ABIs | `LazySecureTrade`, `BidderContractFactory`, `BidderContract` (stash), `EnglishAuction`, `VIPSubscription`, **`LazyRebatePool`**, **`LSHRebateMultipliers`** — bundled under `./abi/*` and re-exported as JS arrays |
-| Addresses | `ADDRESSES` registry per network (`mainnet` / `testnet` / `previewnet`), with both Hedera id (`0.0.X`) and EVM long-zero address for each contract (rebate stack included) |
-| Ethers `Interface` factories | One per contract (seven total), lazily constructed — use for calldata encoding, return-data decoding, event log parsing |
+| ABIs | `LazySecureTrade`, `BidderContractFactory`, `BidderContract` (stash), `EnglishAuction`, `VIPSubscription`, `LazyRebatePool`, `LSHRebateMultipliers`, **`LazyGasStation`** (dependency, for revert decoding) — bundled under `./abi/*` and re-exported as JS arrays |
+| Addresses | `ADDRESSES` registry per network (`mainnet` / `testnet` / `previewnet`), with both Hedera id (`0.0.X`) and EVM long-zero address for each contract (rebate stack included; LazyGasStation is ABI-only — no address entry) |
+| Ethers `Interface` factories | One per ABI (eight total), lazily constructed — use for calldata encoding, return-data decoding, event log parsing, and `parseError` revert decoding |
 | `AgentAuth` tuple | `EMPTY_AUTH`, `buildAgentAuth(...)`, `AGENT_AUTH_TUPLE_TYPE` — TS port of the `utils/agentAuth.js` helper from the contract repo |
 | Typed enums | `BidStatus`, `BidValidityCode`, `AuctionState`, `PaymentToken`, `ActionType`, `AuthFailCode`, `VipTier`, `LshTier` — numeric values verified against the Solidity sources |
 | Typed structs | `BidDetails`, `AgentEnvelope`, `EnvelopeParams`, `TierLimits`, `Trade`, `TokenSerialPrice`, `AuctionItem`, `RoyaltyInfo`, `AuctionSnapshot`, `AuctionParams`, **`RebateEpoch`** |
 
-### New in v0.2
+### New in v0.2.1
+
+- **`LazyGasStation` ABI + Interface for revert decoding** —
+  `LazyGasStationAbi` / `lazyGasStationInterface()`. LST and the bidder
+  factory fan into LazyGasStation for `$LAZY` draws and HBAR refills, so a
+  revert there surfaces a LazyGasStation custom error the marketplace ABIs
+  can't name. Bundled ABI-only (no address entry) — see "Decode a revert"
+  below.
+
+### New in v0.2.0
 
 - **Rebate stack ABIs + Interfaces** — `LazyRebatePoolAbi` /
   `LSHRebateMultipliersAbi`, plus `lazyRebatePoolInterface()` /
@@ -137,6 +146,28 @@ if (log?.name === 'BidExecuted') {
 }
 ```
 
+### Decode a revert (including LazyGasStation errors)
+
+When a trade or bid execution reverts, the error selector may belong to the
+marketplace contract **or** to LazyGasStation, which LST/the factory call
+into for `$LAZY` draws and HBAR refills. Try the marketplace Interface
+first, then fall back to the gas-station Interface:
+
+```typescript
+import {
+    lazySecureTradeInterface,
+    lazyGasStationInterface,
+} from '@lazysuperheroes/marketplace-sdk';
+
+function decodeRevert(revertData: string) {
+    for (const iface of [lazySecureTradeInterface(), lazyGasStationInterface()]) {
+        const err = iface.parseError(revertData);
+        if (err) return err; // e.g. { name: 'InsufficientAllowance', args: [...] }
+    }
+    return null; // unknown selector
+}
+```
+
 ### Owner-path call (no agent envelope)
 
 ```typescript
@@ -229,7 +260,7 @@ yarn dev                # tsup --watch
 
 `prebuild` runs `copy-abi` automatically, so `yarn build` is a
 single-command "fresh ABIs + clean compile". The build will fail loudly
-if any of the 7 artifacts is missing — run `yarn hardhat compile` in the
+if any of the 8 artifacts is missing — run `yarn hardhat compile` in the
 repo root first.
 
 ---
@@ -242,7 +273,8 @@ SDK versioning will track contract releases once mainnet ships. For now:
   for the core five contracts.
 - **0.2.x** — full v0.3 contract surface, including the staker-rebate
   stack (`LazyRebatePool` + `LSHRebateMultipliers`) ABIs, Interfaces, and
-  the `RebateEpoch` struct. Still transport-only.
+  the `RebateEpoch` struct. 0.2.1 adds the `LazyGasStation` dependency ABI
+  for revert decoding. Still transport-only.
 - **0.3.x** — write-path builders + mirror helpers when the agent
   runtime lands.
 - **1.0.0** — first release with populated mainnet addresses.

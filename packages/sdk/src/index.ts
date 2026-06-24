@@ -38,6 +38,7 @@ export {
     VIPSubscriptionAbi,
     LazyRebatePoolAbi,
     LSHRebateMultipliersAbi,
+    LazyGasStationAbi,
 } from './abi';
 export type { ContractName } from './abi';
 
@@ -63,6 +64,7 @@ export {
     vipSubscriptionInterface,
     lazyRebatePoolInterface,
     lshRebateMultipliersInterface,
+    lazyGasStationInterface,
 } from './contracts/interfaces';
 
 // AgentAuth helpers

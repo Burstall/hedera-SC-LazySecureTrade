@@ -13,6 +13,11 @@ import EnglishAuctionAbi from '../../abi/EnglishAuction.json';
 import VIPSubscriptionAbi from '../../abi/VIPSubscription.json';
 import LazyRebatePoolAbi from '../../abi/LazyRebatePool.json';
 import LSHRebateMultipliersAbi from '../../abi/LSHRebateMultipliers.json';
+// Shared dependency (not a marketplace contract). Bundled so consumers can
+// decode the LazyGasStation custom errors that surface when LST/factory
+// flows fan into it (drawLazyFrom, refills). See interfaces.ts for the
+// `parseError` decode path.
+import LazyGasStationAbi from '../../abi/LazyGasStation.json';
 
 export {
     LazySecureTradeAbi,
@@ -22,6 +27,7 @@ export {
     VIPSubscriptionAbi,
     LazyRebatePoolAbi,
     LSHRebateMultipliersAbi,
+    LazyGasStationAbi,
 };
 
 export const ABIS = {
@@ -32,6 +38,7 @@ export const ABIS = {
     VIPSubscription: VIPSubscriptionAbi,
     LazyRebatePool: LazyRebatePoolAbi,
     LSHRebateMultipliers: LSHRebateMultipliersAbi,
+    LazyGasStation: LazyGasStationAbi,
 } as const;
 
 export type ContractName = keyof typeof ABIS;

@@ -20,6 +20,7 @@ import {
     VIPSubscriptionAbi,
     LazyRebatePoolAbi,
     LSHRebateMultipliersAbi,
+    LazyGasStationAbi,
 } from '../abi';
 
 let _lst: Interface | null = null;
@@ -29,6 +30,7 @@ let _ea: Interface | null = null;
 let _vip: Interface | null = null;
 let _rebatePool: Interface | null = null;
 let _rebateMultipliers: Interface | null = null;
+let _gasStation: Interface | null = null;
 
 export function lazySecureTradeInterface(): Interface {
     if (!_lst) _lst = new Interface(LazySecureTradeAbi as never);
@@ -67,6 +69,19 @@ export function lshRebateMultipliersInterface(): Interface {
     return _rebateMultipliers;
 }
 
+/**
+ * Shared-dependency Interface. LazyGasStation is not a marketplace contract,
+ * but LST/factory flows fan into it (drawLazyFrom, refills) and a revert
+ * there bubbles up a LazyGasStation custom error. Use this to decode such
+ * reverts: `lazyGasStationInterface().parseError(revertData)` resolves names
+ * like `InsufficientAllowance` / `PayoutFailed` that the marketplace ABIs
+ * alone cannot.
+ */
+export function lazyGasStationInterface(): Interface {
+    if (!_gasStation) _gasStation = new Interface(LazyGasStationAbi as never);
+    return _gasStation;
+}
+
 export const INTERFACES = {
     LazySecureTrade: lazySecureTradeInterface,
     BidderContractFactory: bidderContractFactoryInterface,
@@ -75,4 +90,5 @@ export const INTERFACES = {
     VIPSubscription: vipSubscriptionInterface,
     LazyRebatePool: lazyRebatePoolInterface,
     LSHRebateMultipliers: lshRebateMultipliersInterface,
+    LazyGasStation: lazyGasStationInterface,
 } as const;

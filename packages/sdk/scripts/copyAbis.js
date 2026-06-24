@@ -18,6 +18,11 @@ const CONTRACTS = [
     'VIPSubscription',
     'LazyRebatePool',
     'LSHRebateMultipliers',
+    // Not a marketplace contract — a shared dependency. LST/factory flows
+    // fan into LazyGasStation (drawLazyFrom, refills), so its custom errors
+    // surface in reverts that consumers otherwise can't decode. Bundled
+    // for error look-throughs only (no address-registry entry).
+    'LazyGasStation',
 ];
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
