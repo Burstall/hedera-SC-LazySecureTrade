@@ -1,11 +1,37 @@
 const ethers = require('ethers');
 const axios = require('axios');
 const dotenv = require('dotenv');
-const { ContractCallQuery, Client, TransactionRecordQuery, ContractExecuteTransaction, ContractCreateFlow } = require('@hashgraph/sdk');
+const { ContractCallQuery, Client, TransactionRecordQuery, ContractExecuteTransaction, ContractCreateFlow, Hbar } = require('@hashgraph/sdk');
 const { getBaseURL } = require('./hederaMirrorHelpers');
 dotenv.config();
 
 const SLEEP_TIME = process.env.SLEEP_TIME ?? 5000;
+
+/**
+ * Resolve a max-transaction-fee ceiling that survives the SDK's int32 guard.
+ *
+ * Hedera fees are USD-denominated, so a falling HBAR price inflates the HBAR
+ * needed to cover a fee and the SDK's small default cap (2 HBAR) gets rejected
+ * with INSUFFICIENT_TX_FEE — typically on ContractCreateFlow's FileAppend
+ * (~5 HBAR/chunk) or a large ContractCreate (~16-40 HBAR) at low HBAR prices.
+ *
+ * Raising the cap is safe (only the real fee is charged), BUT
+ * `Client.setDefaultMaxTransactionFee` validates via a 32-bit `toInt()`, so any
+ * amount whose tinybar value overflows int32 (the ~21.47 HBAR bands) throws
+ * "must be non-negative" even though the stored value would be correct. 50 HBAR
+ * lands in a valid band and yields a true 50 HBAR ceiling — comfortably above
+ * measured deploy fees. Override via MAX_TX_FEE_HBAR; a bad-band override falls
+ * back to 50 rather than crashing the deploy.
+ */
+function resolveMaxTxFeeHbar() {
+	const want = Number(process.env.MAX_TX_FEE_HBAR) || 50;
+	const fee = new Hbar(want);
+	if (fee.toTinybars().toInt() < 0) {
+		console.log(`WARN: MAX_TX_FEE_HBAR=${want} overflows the SDK int32 fee guard; using 50 HBAR.`);
+		return new Hbar(50);
+	}
+	return fee;
+}
 
 /**
  * Generic setter
@@ -314,12 +340,11 @@ async function contractExecuteFunction(contractId, iface, client, gasLim, fcnNam
 			.setGas(resolvedGas)
 			.setFunctionParameters(Buffer.from(encodedCommand.slice(2), 'hex'))
 			.setPayableAmount(amountHbar)
-			// Cover the worst-case gas-price × gas-limit + msg.value.
-			// Hedera testnet's precheck rejects with INSUFFICIENT_PAYER_BALANCE
-			// when the declared maxTransactionFee can't cover the worst-case
-			// fee — even if the account has plenty of HBAR. 50 HBAR is well
-			// above any plausible single-tx fee.
-			.setMaxTransactionFee(new (require('@hashgraph/sdk').Hbar)(50))
+			// Cover the worst-case gas-price × gas-limit + msg.value. The
+			// precheck rejects when maxTransactionFee can't cover the fee even
+			// if the account has plenty of HBAR; fees are USD-denominated so a
+			// low HBAR price inflates the HBAR needed. See resolveMaxTxFeeHbar.
+			.setMaxTransactionFee(resolveMaxTxFeeHbar())
 			.execute(client);
 	}
 	catch (err) {
@@ -410,6 +435,11 @@ function linkBytecode(bytecode, libNameArray, libAddressArray) {
  * @returns {[ContractId, ContractAddress]} an array of the contractId and contractAddress as a string
  */
 async function contractDeployFunction(client, bytecode, gasLim = 800_000, params = null) {
+	// ContractCreateFlow runs FileCreate + FileAppend + ContractCreate, each
+	// capped by the client's default max tx fee (the flow exposes no per-tx
+	// fee setter). The SDK's 2 HBAR default is rejected with INSUFFICIENT_TX_FEE
+	// when HBAR is cheap; see resolveMaxTxFeeHbar for the int32-guard caveat.
+	client.setDefaultMaxTransactionFee(resolveMaxTxFeeHbar());
 	const contractCreateTx = new ContractCreateFlow()
 		.setBytecode(bytecode)
 		.setGas(gasLim);

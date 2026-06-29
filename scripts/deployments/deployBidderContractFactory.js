@@ -106,7 +106,9 @@ async function main() {
 	const [bidderContractImplId] = await contractDeployFunction(
 		client,
 		bidderContractByteCode,
-		1500000,
+		// BidderContract is ~23 KiB; code deposit alone (~200 gas/byte) is
+		// ~4.6M gas, so the old 1.5M limit fails with INSUFFICIENT_GAS.
+		6_500_000,
 		new ContractFunctionParameters(),
 	);
 
@@ -129,7 +131,9 @@ async function main() {
 	const [factoryContractId] = await contractDeployFunction(
 		client,
 		factoryByteCode,
-		1500000,
+		// BidderContractFactory is ~18 KiB; 1.5M gas is too low for the code
+		// deposit + constructor, so bump it (matches the impl headroom above).
+		6_000_000,
 		constructorParams,
 	);
 
