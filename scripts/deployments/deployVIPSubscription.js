@@ -69,13 +69,33 @@ require('dotenv').config();
 	);
 	console.log('✅ VIPSubscription registered as LGS contract user');
 
+	// Optionally register the x402 system wallet now (otherwise run
+	// scripts/interactions/setSystemWallet.js later). Accepts a Hedera
+	// account id ("0.0.x") or an EVM address ("0x..").
+	if (process.env.VIP_SYSTEM_WALLET) {
+		const raw = process.env.VIP_SYSTEM_WALLET;
+		const systemWalletEvm = raw.startsWith('0x')
+			? ethers.getAddress(raw)
+			: ethers.getAddress('0x' + AccountId.fromString(raw).toSolidityAddress());
+		await contractExecuteFunction(
+			vipId, vipIface, client, 200_000, 'setSystemWallet', [systemWalletEvm],
+		);
+		console.log(`✅ systemWallet set: ${systemWalletEvm}`);
+	}
+
 	console.log('\n📝 Add to .env:');
 	console.log(`VIP_SUBSCRIPTION_CONTRACT_ID=${vipId.toString()}`);
 	console.log('\n📝 Post-deploy wiring (owner must execute):');
 	console.log('  setMonthlyPrice(Tier, lazyAmount) for each paid tier');
 	console.log('  setDiscount(lshToken, Tier, discountBps, allowedSerials) per (token, tier)');
+	console.log('  setSystemWallet(backendWallet) — enables the x402 grant rail');
+	console.log('     (skipped here unless VIP_SYSTEM_WALLET is set; or run');
+	console.log('      scripts/interactions/setSystemWallet.js)');
 	console.log('  Optionally tune: setAnnualPrepayDiscountBps, setMaxCombinedDiscountBps,');
 	console.log('                   setBurnPercentage, setCooldownSeconds, setMaxActiveDurationMonths');
+	console.log('\n📝 Repoint consumers at the new VIP address (they hold mutable pointers):');
+	console.log('  EnglishAuction.setVipSubscription(<new VIP EVM addr>)');
+	console.log('  any wired BidderContract stash → setVipSubscription(<new VIP EVM addr>)');
 
 	void vipIface;
 	process.exit(0);

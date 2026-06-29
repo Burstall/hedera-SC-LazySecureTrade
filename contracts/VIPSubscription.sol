@@ -128,6 +128,29 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     address public teamWallet;
 
     // ============================================
+    // x402 convenience-rail grant
+    // ============================================
+
+    /// @notice Limited-privilege backend wallet allowed to grant
+    ///         subscriptions WITHOUT $LAZY (the x402 convenience rail —
+    ///         payment is settled off-chain in HBAR/USDC, then the tier
+    ///         is granted on-chain so `getTierFor`/`subscriptionOf`
+    ///         stay the single source of truth). Can ONLY call
+    ///         `grantSubscription` — no owner powers, no fund access.
+    ///         A leaked key can mint VIP time (capped at
+    ///         MAX_GRANT_MONTHS per grant, replay-guarded per `ref`)
+    ///         but cannot drain funds. Owner-settable; `address(0)`
+    ///         disables the system-grant path entirely.
+    address public systemWallet;
+
+    /// @notice Replay / idempotency guard for system grants. The off-
+    ///         chain payment reference (`ref`, e.g.
+    ///         `keccak256(x402 payment tx id)`) is consumed on first
+    ///         use; a second grant with the same `ref` reverts —
+    ///         belt-and-braces against a backend retry double-submit.
+    mapping(bytes32 => bool) public consumedRefs;
+
+    // ============================================
     // Immutables
     // ============================================
 
@@ -250,6 +273,24 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     /// @notice Emitted when the team wallet address is updated.
     event TeamWalletChanged(address indexed newWallet);
 
+    /// @notice Emitted when the system (x402 grant) wallet is updated.
+    event SystemWalletChanged(address indexed newWallet);
+
+    /// @notice Emitted on a system/owner tier grant (no $LAZY consumed).
+    ///         `ref` correlates to the off-chain payment for
+    ///         reconciliation; `grantor` is the caller (owner or
+    ///         systemWallet). Because the grant reverts rather than
+    ///         downgrades, the granted `tier` is always the tier that
+    ///         takes effect.
+    event SubscriptionGrantedBySystem(
+        address indexed user,
+        Tier indexed tier,
+        bytes32 indexed ref,
+        uint16 monthsAdded,
+        uint64 newExpiresAt,
+        address grantor
+    );
+
     // ============================================
     // Errors
     // ============================================
@@ -269,6 +310,8 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     error SerialCooldownActive(address token, uint256 serial, uint64 lockedUntil);
     error RebateBpsExceedsCap(uint16 requested, uint16 cap);
     error TeamBpsExceedsCap(uint16 requested, uint16 cap);
+    error NotAuthorizedGrantor(address caller);
+    error RefAlreadyConsumed(bytes32 ref);
 
     // ============================================
     // Constructor
@@ -299,6 +342,22 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
         // rebatePool + teamWallet stay address(0) at deploy. Owner
         // sets them post-deploy once the rebate pool contract is up
         // and the team multisig is associated with LAZY.
+        // systemWallet stays address(0) — the x402 grant path is
+        // disabled until the owner registers the backend wallet.
+    }
+
+    // ============================================
+    // Modifiers
+    // ============================================
+
+    /// @dev Gate for `grantSubscription`: the owner (multisig) or the
+    ///      limited x402 backend wallet. `systemWallet == address(0)`
+    ///      means only the owner qualifies (system path disabled).
+    modifier onlyOwnerOrSystem() {
+        if (msg.sender != owner() && msg.sender != systemWallet) {
+            revert NotAuthorizedGrantor(msg.sender);
+        }
+        _;
     }
 
     // ============================================
@@ -596,6 +655,85 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
             expiresAt: newExpiresAt
         });
         emit SubscriptionExtendedByAdmin(user, months, newExpiresAt, msg.sender);
+    }
+
+    /// @notice Register (or rotate) the limited x402 backend wallet
+    ///         authorized to call `grantSubscription`. Pass
+    ///         `address(0)` to disable the system-grant path (e.g.
+    ///         during a key-rotation or incident). Owner-only.
+    function setSystemWallet(address wallet) external onlyOwner {
+        systemWallet = wallet;
+        emit SystemWalletChanged(wallet);
+    }
+
+    /**
+     * @notice Grant a SPECIFIC tier for `months` without charging $LAZY
+     *         — the x402 convenience rail. Payment is verified off-chain
+     *         in HBAR/USDC; the $LAZY backing the grant is bought
+     *         asynchronously by the treasury and is NOT this contract's
+     *         concern (the grant consumes no $LAZY and touches no LGS).
+     *         Callable by the owner (multisig) or the registered
+     *         `systemWallet` backend.
+     *
+     * @dev    Tier-transition rules mirror `purchaseSubscription` so the
+     *         paid and granted paths agree:
+     *           - none / expired     → new sub at `tier`, `now + months`.
+     *           - active, same tier  → extension (`expiresAt += months`).
+     *           - active, lower tier → upgrade-in-place at `tier`,
+     *             `now + months` (existing time forfeited).
+     *           - active, higher tier → `CannotDowngradeActiveSubscription`
+     *             (never silently downgrade; the backend reads the tier
+     *             before accepting a lower-tier payment).
+     *
+     *         Idempotency: `ref` (e.g. `keccak256(payment tx id)`) is
+     *         consumed on first use and replays revert. Capped at
+     *         `MAX_GRANT_MONTHS` per call; `maxActiveDurationMonths`
+     *         does NOT apply (matching `extendSubscription` — admin/
+     *         system grants are not bound by the user-purchase cap).
+     *
+     * @param user   Beneficiary (non-zero).
+     * @param tier   Paid tier (Bronze..Platinum; `Free` reverts).
+     * @param months 30-day months to grant (1..MAX_GRANT_MONTHS).
+     * @param ref    Opaque correlation id for the off-chain payment.
+     *               Must be unique per grant; emitted + consumed for
+     *               audit and replay protection.
+     */
+    function grantSubscription(
+        address user,
+        Tier tier,
+        uint16 months,
+        bytes32 ref
+    ) external onlyOwnerOrSystem {
+        if (user == address(0)) revert ZeroAddress();
+        if (tier == Tier.Free) revert InvalidTier();
+        if (months == 0) revert ZeroMonths();
+        if (months > MAX_GRANT_MONTHS) revert GrantTooLong(months, MAX_GRANT_MONTHS);
+        if (consumedRefs[ref]) revert RefAlreadyConsumed(ref);
+
+        consumedRefs[ref] = true;
+
+        Subscription memory s = subscriptions[user];
+        bool active = s.expiresAt > block.timestamp;
+        uint64 addSeconds = uint64(months) * MONTH_SECONDS;
+
+        uint64 newExpiresAt;
+        if (!active) {
+            // Fresh / expired → new sub at the granted tier.
+            newExpiresAt = uint64(block.timestamp) + addSeconds;
+        } else if (s.tier == tier) {
+            // Same tier → extend.
+            newExpiresAt = s.expiresAt + addSeconds;
+        } else if (s.tier < tier) {
+            // Lower active + granting higher → upgrade-in-place
+            // (existing time forfeited, mirrors purchaseSubscription).
+            newExpiresAt = uint64(block.timestamp) + addSeconds;
+        } else {
+            // Higher active + granting lower → never downgrade.
+            revert CannotDowngradeActiveSubscription(s.tier, tier);
+        }
+
+        subscriptions[user] = Subscription({ tier: tier, expiresAt: newExpiresAt });
+        emit SubscriptionGrantedBySystem(user, tier, ref, months, newExpiresAt, msg.sender);
     }
 
     function setMonthlyPrice(Tier tier, uint256 lazyAmount) external onlyOwner {

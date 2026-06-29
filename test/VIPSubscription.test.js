@@ -8,6 +8,8 @@
 //   - Max-discount cap
 //   - Tier upgrade rules (extension, upgrade-in-place, downgrade-blocked)
 //   - Admin paths (setDiscount, extendSubscription)
+//   - System grant (x402 rail): setSystemWallet + grantSubscription
+//     (owner & system caller, tier transitions, ref replay guard)
 //   - Read API (getTierFor, subscriptionOf, expired-returns-Free)
 
 const fs = require('fs');
@@ -97,6 +99,10 @@ describe('VIPSubscription tests', function () {
 			: ENV === 'preview' ? Client.forPreviewnet()
 				: Client.forTestnet();
 		client.setOperator(operatorId, operatorKey);
+		// Raise the default max tx fee so ContractCreateFlow's FileAppend
+		// (bytecode upload) isn't rejected with INSUFFICIENT_TX_FEE on the
+		// current testnet fee schedule. Mirrors EnglishAuction.test.js.
+		client.setDefaultMaxTransactionFee(new Hbar(50));
 
 		// Resolve cached dependencies from .env
 		lazyTokenId = TokenId.fromString(process.env.LAZY_TOKEN_ID);
@@ -423,6 +429,165 @@ describe('VIPSubscription tests', function () {
 			);
 			expectRevertNamed(result, 'InvalidConfigBps');
 			console.log('V5.3: invalid bps rejected');
+		});
+	});
+
+	// ============================================
+	// VS — System grant (x402 convenience rail)
+	// ============================================
+	describe('System grant (x402 convenience rail)', function () {
+		const MONTH = 2_592_000; // 30 days in seconds
+		// aliceId is assigned in before(); deref lazily, not at describe-load.
+		const aliceEvm = () => '0x' + aliceId.toSolidityAddress();
+		const freshUser = () => ethers.Wallet.createRandom().address;
+		const freshRef = () => ethers.hexlify(ethers.randomBytes(32));
+
+		async function grant(caller, callerKey, user, tier, months, ref, expectError = false) {
+			client.setOperator(caller, callerKey);
+			const res = await contractExecuteFunction(
+				vipId, vipIface, client, 300_000,
+				'grantSubscription', [user, tier, months, ref], 0, expectError,
+			);
+			client.setOperator(operatorId, operatorKey);
+			return res;
+		}
+
+		it('VS.1: owner grants Bronze 2mo to a fresh user → tier active, no LAZY consumed', async function () {
+			const user = freshUser();
+			const preOpLazy = await checkMirrorBalance(ENV, operatorId, lazyTokenId) ?? 0;
+			const nowSec = Math.floor(Date.now() / 1000);
+
+			const [rx] = await grant(operatorId, operatorKey, user, Tier.Bronze, 2, freshRef());
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const tier = await mirrorQuery(vipId, vipIface, 'getTierFor', [user]);
+			expect(Number(tier[0])).to.equal(Tier.Bronze);
+
+			const sub = await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]);
+			const exp = Number(sub[0].expiresAt);
+			expect(Math.abs(exp - (nowSec + 2 * MONTH))).to.be.lessThan(300);
+
+			const postOpLazy = await checkMirrorBalance(ENV, operatorId, lazyTokenId) ?? 0;
+			expect(postOpLazy).to.equal(preOpLazy);
+			console.log('VS.1: owner granted Bronze 2mo, 0 LAZY consumed');
+		});
+
+		it('VS.2: unauthorized caller (systemWallet unset) → NotAuthorizedGrantor', async function () {
+			const result = await grant(aliceId, alicePK, freshUser(), Tier.Gold, 1, freshRef(), true);
+			expectRevertNamed(result, 'NotAuthorizedGrantor');
+			console.log('VS.2: non-owner non-system rejected');
+		});
+
+		it('VS.3: owner sets systemWallet → system wallet grants Platinum 1mo', async function () {
+			const [setRx] = await contractExecuteFunction(
+				vipId, vipIface, client, 200_000,
+				'setSystemWallet', [aliceEvm()],
+			);
+			expect(setRx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const onChain = await mirrorQuery(vipId, vipIface, 'systemWallet', []);
+			expect(onChain[0].toLowerCase()).to.equal(aliceEvm().toLowerCase());
+
+			const user = freshUser();
+			const nowSec = Math.floor(Date.now() / 1000);
+			const [rx] = await grant(aliceId, alicePK, user, Tier.Platinum, 1, freshRef());
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const tier = await mirrorQuery(vipId, vipIface, 'getTierFor', [user]);
+			expect(Number(tier[0])).to.equal(Tier.Platinum);
+			const sub = await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]);
+			expect(Math.abs(Number(sub[0].expiresAt) - (nowSec + MONTH))).to.be.lessThan(300);
+			console.log('VS.3: systemWallet granted Platinum 1mo');
+		});
+
+		it('VS.4: grant Tier.Free reverts InvalidTier', async function () {
+			const result = await grant(operatorId, operatorKey, freshUser(), Tier.Free, 1, freshRef(), true);
+			expectRevertNamed(result, 'InvalidTier');
+		});
+
+		it('VS.5: grant 0 months reverts ZeroMonths', async function () {
+			const result = await grant(operatorId, operatorKey, freshUser(), Tier.Bronze, 0, freshRef(), true);
+			expectRevertNamed(result, 'ZeroMonths');
+		});
+
+		it('VS.6: grant > MAX_GRANT_MONTHS reverts GrantTooLong', async function () {
+			const result = await grant(operatorId, operatorKey, freshUser(), Tier.Bronze, 13, freshRef(), true);
+			expectRevertNamed(result, 'GrantTooLong');
+		});
+
+		it('VS.7: same-tier grant extends expiresAt', async function () {
+			const user = freshUser();
+			const [r1] = await grant(operatorId, operatorKey, user, Tier.Gold, 1, freshRef());
+			expect(r1.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+			const exp0 = Number((await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]))[0].expiresAt);
+
+			const [r2] = await grant(operatorId, operatorKey, user, Tier.Gold, 1, freshRef());
+			expect(r2.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+			const exp1 = Number((await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]))[0].expiresAt);
+
+			expect(exp1 - exp0).to.be.greaterThan(MONTH - 100);
+			expect(exp1 - exp0).to.be.lessThan(MONTH + 100);
+			console.log('VS.7: same-tier grant extended +30d');
+		});
+
+		it('VS.8: lower active + higher grant → upgrade-in-place (existing time forfeited)', async function () {
+			const user = freshUser();
+			const [r1] = await grant(operatorId, operatorKey, user, Tier.Gold, 2, freshRef());
+			expect(r1.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+			const exp0 = Number((await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]))[0].expiresAt);
+
+			const [r2] = await grant(operatorId, operatorKey, user, Tier.Platinum, 1, freshRef());
+			expect(r2.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+			const sub = await mirrorQuery(vipId, vipIface, 'subscriptionOf', [user]);
+			expect(Number(sub[0].tier)).to.equal(Tier.Platinum);
+			// upgrade-in-place forfeits the existing 2-month window → new
+			// expiry (now + 1mo) is EARLIER than the prior (now + 2mo).
+			expect(Number(sub[0].expiresAt)).to.be.lessThan(exp0);
+			console.log('VS.8: upgrade-in-place forfeited prior time');
+		});
+
+		it('VS.9: higher active + lower grant → CannotDowngradeActiveSubscription', async function () {
+			const user = freshUser();
+			const [r1] = await grant(operatorId, operatorKey, user, Tier.Platinum, 1, freshRef());
+			expect(r1.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const result = await grant(operatorId, operatorKey, user, Tier.Bronze, 1, freshRef(), true);
+			expectRevertNamed(result, 'CannotDowngradeActiveSubscription');
+			console.log('VS.9: downgrade grant rejected');
+		});
+
+		it('VS.10: replaying a consumed ref reverts RefAlreadyConsumed', async function () {
+			const user = freshUser();
+			const ref = freshRef();
+			const [r1] = await grant(operatorId, operatorKey, user, Tier.Silver, 1, ref);
+			expect(r1.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			// Same ref again — would otherwise be a valid same-tier extension.
+			const result = await grant(operatorId, operatorKey, user, Tier.Silver, 1, ref, true);
+			expectRevertNamed(result, 'RefAlreadyConsumed');
+			console.log('VS.10: ref replay rejected');
+		});
+
+		it('VS.11: setSystemWallet(0) disables the system-grant path', async function () {
+			const [setRx] = await contractExecuteFunction(
+				vipId, vipIface, client, 200_000,
+				'setSystemWallet', ['0x' + '0'.repeat(40)],
+			);
+			expect(setRx.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
+			const result = await grant(aliceId, alicePK, freshUser(), Tier.Gold, 1, freshRef(), true);
+			expectRevertNamed(result, 'NotAuthorizedGrantor');
+			console.log('VS.11: system path disabled after setSystemWallet(0)');
 		});
 	});
 
