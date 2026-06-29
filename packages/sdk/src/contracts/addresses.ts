@@ -59,15 +59,16 @@ function addr(hederaId: string): ContractAddress {
 }
 
 const TESTNET: MarketplaceAddresses = {
-    // Refreshed 2026-05-29 (SDK 0.1.1). Prior values pointed at the
-    // 2026-05-2x deploys; these track the current v0.3 testnet stack.
-    lazySecureTrade: addr('0.0.9057802'),
-    bidderImpl: addr('0.0.9062594'),
-    bidderFactory: addr('0.0.9062601'),
-    englishAuction: addr('0.0.9052454'),
-    vipSubscription: addr('0.0.9077208'), // rebate-patched (3-sink split)
-    lazyRebatePool: addr('0.0.9077172'),
-    lshRebateMultipliers: addr('0.0.9077153'),
+    // Refreshed 2026-06-29 (SDK 0.2.2): full stack redeployed under the
+    // refresh operator 0.0.7934339 (the prior stack was 0.0.8891352-owned).
+    // VIPSubscription here is the x402-grant build.
+    lazySecureTrade: addr('0.0.9367217'),
+    bidderImpl: addr('0.0.9367257'),
+    bidderFactory: addr('0.0.9367262'),
+    englishAuction: addr('0.0.9367272'),
+    vipSubscription: addr('0.0.9367578'),
+    lazyRebatePool: addr('0.0.9367573'),
+    lshRebateMultipliers: addr('0.0.9367358'),
 };
 
 const MAINNET: MarketplaceAddresses = {

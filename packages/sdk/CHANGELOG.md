@@ -2,6 +2,40 @@
 
 All notable changes to `@lazysuperheroes/marketplace-sdk`.
 
+## 0.2.2 — 2026-06-28
+
+### Added
+- **`VIPSubscription` x402 grant surface.** The bundled `VIPSubscription`
+  ABI now carries the system-granted tier-override members used by the
+  x402 convenience rail (pay HBAR/USDC off-chain, grant the paid tier
+  on-chain so `getTierFor`/`subscriptionOf` stay the single source of
+  truth — no off-chain overlay):
+  - `grantSubscription(address user, uint8 tier, uint16 months, bytes32 ref)`
+    — grant a specific tier WITHOUT `$LAZY`, callable by the owner or the
+    registered `systemWallet`. Mirrors `purchaseSubscription` transitions
+    (new / extend / upgrade-in-place / revert-on-downgrade). `ref` is a
+    single-use idempotency key.
+  - `setSystemWallet(address)` + the `systemWallet()` and
+    `consumedRefs(bytes32)` views.
+  - New events/errors: `SubscriptionGrantedBySystem`, `SystemWalletChanged`,
+    `NotAuthorizedGrantor`, `RefAlreadyConsumed` (decodable via
+    `vipSubscriptionInterface().parseError(...)`).
+
+### Changed
+- **Testnet address registry refreshed** — the full marketplace stack was
+  redeployed under a single operator (`0.0.7934339`); the prior testnet
+  stack was owned by a different bootstrap operator. New testnet ids:
+  `lazySecureTrade 0.0.9367217`, `bidderImpl 0.0.9367257`,
+  `bidderFactory 0.0.9367262`, `englishAuction 0.0.9367272`,
+  `vipSubscription 0.0.9367578` (x402-grant build), `lazyRebatePool 0.0.9367573`,
+  `lshRebateMultipliers 0.0.9367358`. Mainnet/previewnet remain `null`.
+
+### Notes
+- Transport-only and additive — no new exports, no struct changes.
+  `VIPSubscription` is a non-proxy contract, so the grant members ship in a
+  fresh deploy; consumers like `EnglishAuction` hold a mutable pointer and
+  were repointed, not redeployed. Mainnet is unaffected (still `null`).
+
 ## 0.2.1 — 2026-06-24
 
 ### Added

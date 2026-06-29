@@ -1,6 +1,6 @@
 {
   "name": "@lazysuperheroes/marketplace-sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "TypeScript SDK for the LazySecureTrade marketplace (LST + BidderContractFactory + EnglishAuction + VIPSubscription + LazyRebatePool + LSHRebateMultipliers, plus the LazyGasStation dependency ABI for revert decoding) on Hedera",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
