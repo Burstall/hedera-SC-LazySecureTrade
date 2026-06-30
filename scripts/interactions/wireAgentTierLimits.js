@@ -31,7 +31,11 @@ const TIER = { Free: 0, Bronze: 1, Silver: 2, Gold: 3, Platinum: 4 };
 // Locked default table from docs/v0.3-WORKING-PLAN.md.
 // uint96 fields cap at 7.9e28 — comfortably above any real cap.
 function hbarTinybars(h) { return Number(new Hbar(h, HbarUnit.Hbar).toTinybars()); }
-function lazyBaseUnits(units) { return (BigInt(units) * 10n ** 8n).toString(); }
+// $LAZY base units must honour the token's ACTUAL decimals (1 on Hedera
+// testnet + mainnet). Hardcoding 8 set every LAZY cap ~10^7x too high —
+// effectively no cap, defeating the per-envelope budget guard.
+const LAZY_DECIMALS = BigInt(process.env.LAZY_DECIMALS ?? 1);
+function lazyBaseUnits(units) { return (BigInt(units) * 10n ** LAZY_DECIMALS).toString(); }
 
 const ONE_YEAR = 365 * 24 * 60 * 60;
 
