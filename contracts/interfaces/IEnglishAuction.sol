@@ -199,14 +199,6 @@ interface IEnglishAuction {
         uint256 amount
     );
 
-    /// @notice Emitted when a winner pulls a stuck-NFT-delivery bundle
-    ///         via `claimAuctionNFT` after the original settle hit a
-    ///         `cryptoTransfer` revert (e.g., recipient not associated).
-    event AuctionNFTClaimed(
-        bytes32 indexed auctionId,
-        address indexed winner
-    );
-
     // ============================================
     // Read API
     // ============================================
@@ -246,6 +238,4 @@ interface IEnglishAuction {
     function settle(bytes32 auctionId) external;
 
     function claim(PaymentToken payment) external;
-
-    function claimAuctionNFT(bytes32 auctionId) external;
 }

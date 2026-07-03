@@ -60,6 +60,14 @@ contract LazyRebatePool is Ownable, ReentrancyGuard, HederaTokenService {
     ///         "no epoch has settled yet."
     uint256 public currentEpoch;
 
+    /// @notice LAZY reserved by settled-but-unclaimed allocations across all
+    ///         live epochs. `settleEpoch` allocates only against the balance
+    ///         NOT already reserved, so overlapping epochs can never commit
+    ///         more claims than the pool holds (finding F). Reduced on claim
+    ///         (LAZY leaves the pool) and on recycleExpiredEpoch (unclaimed
+    ///         freed). Invariant: totalOutstanding <= LAZY balance.
+    uint256 public totalOutstanding;
+
     /// @notice Claim window after settlement, in seconds. Default 365 days.
     ///         Tunable within [30 days, 1095 days]. After this window
     ///         elapses on a given epoch, anyone can call
@@ -259,9 +267,14 @@ contract LazyRebatePool is Ownable, ReentrancyGuard, HederaTokenService {
         nonReentrant
     {
         uint256 balance = IERC20(LAZY_TOKEN).balanceOf(address(this));
-        if (totalAllocated > balance) {
-            revert AllocationExceedsBalance(totalAllocated, balance);
+        // Finding F: allocate only against the balance NOT already reserved by
+        // prior still-claimable epochs, so overlapping epochs cannot over-commit
+        // the pool and strand later claimers.
+        uint256 available = balance - totalOutstanding; // invariant: balance >= totalOutstanding
+        if (totalAllocated > available) {
+            revert AllocationExceedsBalance(totalAllocated, available);
         }
+        totalOutstanding += totalAllocated;
 
         uint256 nextEpoch = currentEpoch + 1;
         epochs[nextEpoch] = Epoch({
@@ -306,6 +319,7 @@ contract LazyRebatePool is Ownable, ReentrancyGuard, HederaTokenService {
 
         claimed[epoch][msg.sender] = true;
         e.totalClaimed += amount;
+        totalOutstanding -= amount; // finding F: claimed LAZY leaves the pool
 
         if (!IERC20(LAZY_TOKEN).transfer(msg.sender, amount)) revert TransferFailed();
         emit RebateClaimed(epoch, msg.sender, amount);
@@ -328,6 +342,7 @@ contract LazyRebatePool is Ownable, ReentrancyGuard, HederaTokenService {
         uint256 unclaimed = e.totalAllocated - e.totalClaimed;
         if (unclaimed == 0) return;
         e.totalAllocated = e.totalClaimed; // zero-out the unclaimed portion
+        totalOutstanding -= unclaimed; // finding F: free the reserved-but-unclaimed
         emit EpochRecycled(epoch, unclaimed);
     }
 

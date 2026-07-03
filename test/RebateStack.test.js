@@ -180,9 +180,20 @@ describe('Rebate stack tests', function () {
 		);
 		console.log('LazyRebatePool deployed:', rebatePoolId.toString());
 
+		// Let the mirror node ingest the freshly-deployed contract BEFORE the
+		// first estimated call. contractExecuteFunction gas-estimates via the
+		// mirror node's eth_estimateGas; if queried in the seconds right after
+		// deploy (pre-ingestion) it returns a garbage-low number (~22k for this
+		// associateLazy — vs the accurate ~811k once ingested), which then
+		// overrides the fallback and trips INSUFFICIENT_GAS. One MIRROR_DELAY
+		// is enough for contract-entity ingestion (empirically ~2-4s).
+		await sleep(MIRROR_DELAY);
+
 		// Associate LAZY on the rebate pool (one-shot admin step).
 		// flagError=true so revert reasons surface in stdout. Previously
 		// silent-failure here led to confusing downstream R-test failures.
+		// 1.5M is only the FALLBACK — post-ingestion the mirror estimate
+		// (~811k × 1.3 ≈ 1.05M) is used.
 		const assocResp = await contractExecuteFunction(
 			rebatePoolId, rebatePoolIface, client, 1_500_000,
 			'associateLazy', [], 0, true,

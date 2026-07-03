@@ -1914,6 +1914,14 @@ contract LazySecureTrade is
      * @param hbarUsed The amount of HBAR that was actually used
      */
     function _refundExcessHbar(uint256 hbarUsed) internal {
+        // Enforce that the buyer actually covered the HBAR leg. The batch
+        // paths (executeTrades, executeBatchTrade) call _executeTrade with
+        // _checkFunds=false, so this is the ONLY msg.value gate they hit.
+        // Runs after the trade loop, so a revert unwinds the whole batch —
+        // otherwise sellers are paid from the contract's own HBAR while the
+        // buyer underpays (see security audit finding A). Harmless for the
+        // single-trade path, which already enforced msg.value >= price.
+        if (msg.value < hbarUsed) revert InsufficientPayment();
         if (msg.value > hbarUsed) {
             Address.sendValue(payable(msg.sender), msg.value - hbarUsed);
         }

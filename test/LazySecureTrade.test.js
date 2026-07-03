@@ -401,7 +401,11 @@ describe('Deployment', () => {
 			.addAddress(StkNFTC_TokenId.toSolidityAddress())
 			.addAddress(StkNFTC_TokenId.toSolidityAddress())
 			.addUint256(LAZY_COST_FOR_TRADE)
-			.addUint256(LAZY_BURN_PERCENT);
+			.addUint256(LAZY_BURN_PERCENT)
+			// _lazyNFTStaking — opt out (address(0)); the constructor gained
+			// this 9th param with the LSHTierLib/staking work and this test
+			// was never updated, so the deploy reverted (bare arg-decode revert).
+			.addAddress('0000000000000000000000000000000000000000');
 
 		[lstContractId, lstContractAddress] = await contractDeployFunction(
 			client,
@@ -842,10 +846,10 @@ describe.skip('Secure Trades are go...', () => {
 
 		const bobTrade = userTradesResult[0][0];
 
-		// make sure the token is not in getTokenTrades for StkNFTA
+		// make sure the token is not in getTradesForToken for StkNFTA
 		encodedCommand = lazySecureTradeIface.encodeFunctionData(
-			'getTokenTrades',
-			[StkNFTA_TokenId.toSolidityAddress()],
+			'getTradesForToken',
+			[StkNFTA_TokenId.toSolidityAddress(), 0, 100],
 		);
 
 		const tokenTrades = await readOnlyEVMFromMirrorNode(
@@ -857,7 +861,7 @@ describe.skip('Secure Trades are go...', () => {
 		);
 
 		const tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-			'getTokenTrades',
+			'getTradesForToken',
 			tokenTrades,
 		);
 
@@ -1252,10 +1256,10 @@ describe.skip('Secure Trades are go...', () => {
 		// let mirror node catch up
 		await sleep(5500);
 
-		// expect to see this in the getTokenTrades method
+		// expect to see this in the getTradesForToken method
 		let encodedCommand = lazySecureTradeIface.encodeFunctionData(
-			'getTokenTrades',
-			[StkNFTA_TokenId.toSolidityAddress()],
+			'getTradesForToken',
+			[StkNFTA_TokenId.toSolidityAddress(), 0, 100],
 		);
 
 		let tokenTrades = await readOnlyEVMFromMirrorNode(
@@ -1267,12 +1271,12 @@ describe.skip('Secure Trades are go...', () => {
 		);
 
 		let tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-			'getTokenTrades',
+			'getTradesForToken',
 			tokenTrades,
 		);
 
 		if (tokenTradesResult[0].length != 1) {
-			console.log('ERROR: Trade not found in getTokenTrades:', tokenTradesResult);
+			console.log('ERROR: Trade not found in getTradesForToken:', tokenTradesResult);
 			fail();
 		}
 
@@ -1368,10 +1372,10 @@ describe.skip('Secure Trades are go...', () => {
 		// let mirror node catch up
 		await sleep(5000);
 
-		// check getTokenTrades for StkNFTC expect 0
+		// check getTradesForToken for StkNFTC expect 0
 		encodedCommand = lazySecureTradeIface.encodeFunctionData(
-			'getTokenTrades',
-			[StkNFTA_TokenId.toSolidityAddress()],
+			'getTradesForToken',
+			[StkNFTA_TokenId.toSolidityAddress(), 0, 100],
 		);
 
 		tokenTrades = await readOnlyEVMFromMirrorNode(
@@ -1383,7 +1387,7 @@ describe.skip('Secure Trades are go...', () => {
 		);
 
 		tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-			'getTokenTrades',
+			'getTradesForToken',
 			tokenTrades,
 		);
 
@@ -1494,10 +1498,10 @@ describe.skip('Secure Trades are go...', () => {
 
 		expect(userTradesResult[0].length).to.be.equal(0);
 
-		// query trades available for getTokenTrades for StkNFTA
+		// query trades available for getTradesForToken for StkNFTA
 		encodedCommand = lazySecureTradeIface.encodeFunctionData(
-			'getTokenTrades',
-			[StkNFTA_TokenId.toSolidityAddress()],
+			'getTradesForToken',
+			[StkNFTA_TokenId.toSolidityAddress(), 0, 100],
 		);
 
 		const tokenTrades = await readOnlyEVMFromMirrorNode(
@@ -1509,7 +1513,7 @@ describe.skip('Secure Trades are go...', () => {
 		);
 
 		const tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-			'getTokenTrades',
+			'getTradesForToken',
 			tokenTrades,
 		);
 
@@ -2363,7 +2367,18 @@ describe('v0.2 Phase 1: Platform Fee System Tests', () => {
 			);
 			const feesBefore = platformInfoBefore[4];
 
-			const expectedFee = Math.floor((tradePrice * 100) / 10000);
+			// Derive the expected platform fee from the contract's OWN
+			// seller-fee-rate for the actual seller (operator here) rather than
+			// a stale hardcoded 1%. The rate is 0 for a Gen1/LSH-holding seller
+			// and the fee is also 0 when the traded token is itself an LSH token
+			// — so a hardcoded 10 drifts. Traded token (StkNFTA) is not LSH.
+			const _feeRateRaw = await readOnlyEVMFromMirrorNode(
+				env, lstContractId,
+				lazySecureTradeIface.encodeFunctionData('calculateSellerFeeRate', [operatorId.toSolidityAddress()]),
+				operatorId, false,
+			);
+			const _sellerFeeRate = Number(lazySecureTradeIface.decodeFunctionResult('calculateSellerFeeRate', _feeRateRaw)[0]);
+			const expectedFee = Math.floor((tradePrice * _sellerFeeRate) / 10000);
 
 			// Alice must set tinybar allowance of 1 tinybar per item to
 			// the Lazy Secure Trade contract to enable the unstake
@@ -3157,28 +3172,15 @@ describe('v0.2 Phase 2: Batch Operations & Multi-Token Tests', () => {
 			const createdTradeIds = userTradesResult[0].slice(-6);
 			console.log('Trade IDs created for limit test:', createdTradeIds);
 
-			// get the trade details & total price from the contract for verification via mirror node using getTrades()
+			// get the trade details & total price by looping getTrade() per id.
+			// (The batch getTrades(bytes32[]) getter was removed; only the
+			// single getTrade(bytes32) remains — test updated to match.)
 			let totalTinybarPrice = 0;
-			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
-				'getTrades',
-				[createdTradeIds],
-			);
-
-			const tradesData = await readOnlyEVMFromMirrorNode(
-				env,
-				lstContractId,
-				encodedCommand,
-				operatorId,
-				false,
-			);
-
-			const tradesDataResult = lazySecureTradeIface.decodeFunctionResult(
-				'getTrades',
-				tradesData,
-			);
-
-			for (let i = 0; i < tradesDataResult[0].length; i++) {
-				totalTinybarPrice += Number(tradesDataResult[0][i][4]);
+			for (const tId of createdTradeIds) {
+				const enc = lazySecureTradeIface.encodeFunctionData('getTrade', [tId]);
+				const raw = await readOnlyEVMFromMirrorNode(env, lstContractId, enc, operatorId, false);
+				const t = lazySecureTradeIface.decodeFunctionResult('getTrade', raw);
+				totalTinybarPrice += Number(t[0][4]);
 			}
 			console.log('Total HBAR price for 6 trades:', new Hbar(totalTinybarPrice, HbarUnit.Tinybar).toString());
 
@@ -3777,8 +3779,8 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 		it('Should query token-specific trades', async () => {
 			// Query trades for StkNFTB token
 			const encodedCommand = lazySecureTradeIface.encodeFunctionData(
-				'getTokenTrades',
-				[StkNFTB_TokenId.toSolidityAddress()],
+				'getTradesForToken',
+				[StkNFTB_TokenId.toSolidityAddress(), 0, 100],
 			);
 
 			const tokenTradesData = await readOnlyEVMFromMirrorNode(
@@ -3790,7 +3792,7 @@ describe('v0.2 Phase 3: Trade Management & Query Operations', () => {
 			);
 
 			const tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-				'getTokenTrades',
+				'getTradesForToken',
 				tokenTradesData,
 			);
 
@@ -3883,6 +3885,11 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 	before('Phase 4 setup', async () => {
 		client.setOperator(operatorId, operatorKey);
 		console.log('🚀 Phase 4: Error Handling & Edge Cases');
+
+		// Alice is the StkNFTD treasury/payer below and may have run low on
+		// HBAR across Phases 1-3; top her up so the mint doesn't fail with
+		// INSUFFICIENT_PAYER_BALANCE.
+		await sendHbar(client, operatorId, aliceId, 50, HbarUnit.Hbar);
 
 		// Create StkNFTD specifically for 32-NFT batch testing to ensure fresh supply
 		console.log('Creating StkNFTD collection for 32-NFT batch testing...');
@@ -4259,6 +4266,13 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 				Number(lazyPrice),
 			);
 
+			// Top up Alice (the buyer) before the 22-item batch — executeBatchTrade
+			// at 2.75M gas is HBAR-heavy and the earlier Phase-4 tests may have
+			// drained her, causing INSUFFICIENT_PAYER_BALANCE.
+			client.setOperator(operatorId, operatorKey);
+			await sendHbar(client, operatorId, aliceId, 100, HbarUnit.Hbar);
+			client.setOperator(aliceId, alicePK);
+
 			// Execute the large batch to test Hedera subcall limits
 			const startTime = Date.now();
 			const result = await contractExecuteFunction(
@@ -4578,8 +4592,8 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 
 			// Test token-specific trade mappings
 			const encodedTokenTrades = lazySecureTradeIface.encodeFunctionData(
-				'getTokenTrades',
-				[StkNFTB_TokenId.toSolidityAddress()],
+				'getTradesForToken',
+				[StkNFTB_TokenId.toSolidityAddress(), 0, 100],
 			);
 
 			const tokenTradesData = await readOnlyEVMFromMirrorNode(
@@ -4591,7 +4605,7 @@ describe('v0.2 Phase 4: Error Handling & Edge Cases', () => {
 			);
 
 			const tokenTradesResult = lazySecureTradeIface.decodeFunctionResult(
-				'getTokenTrades',
+				'getTradesForToken',
 				tokenTradesData,
 			);
 

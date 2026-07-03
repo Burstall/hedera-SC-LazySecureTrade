@@ -99,14 +99,11 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     address public englishAuction;
     uint256[15] private __gap;
 
-    /// @notice Maximum percentage of stash HBAR balance that can be
-    ///         pulled by the factory in a single `arbitrageSettle`
-    ///         call, expressed in basis points (10_000 = 100%).
-    ///         Defense-in-depth: even if the factory has a bug and
-    ///         computes an incorrect settlement amount, this cap
-    ///         limits the per-tx blast radius. Hardcoded so no admin
-    ///         key can weaken it.
-    uint256 public constant ARB_SETTLE_MAX_BPS = 7500; // 75%
+    // NOTE: ARB_SETTLE_MAX_BPS (a 75% per-call pull cap) was removed — it was
+    // computed against the POST-trade balance, so it reverted every legitimate
+    // arbitrage (finding C), and a per-call % cap can't protect against a
+    // compromised factory anyway (see arbitrageSettle). Rogue-factory
+    // protection is detachFromFactory + rescueHbar/Lazy/NFT.
 
     /// @notice Lazy-refill ceiling for the stash → LST HBAR allowance
     ///         that covers the custody-hop tinybar on `executeTrade`.
@@ -136,9 +133,6 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
     uint256 public constant WITHDRAW_MIN_BALANCE_FLOOR = 100_000_000; // 1 HBAR
 
     /// @notice Basis-points denominator (100% = 10_000 bp).
-    ///         Co-located with `ARB_SETTLE_MAX_BPS` so the BPS math
-    ///         in `arbitrageSettle` reads in named units instead of
-    ///         the bare `/ 10_000` literal.
     uint256 internal constant MAX_BPS = 10_000;
 
     /// @notice Hedera Account Service system contract address (HIP-906).
@@ -388,24 +382,23 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         uint256 hbarAmount,
         uint256 lazyAmount
     ) external onlyFactory nonReentrant {
+        // Finding C: the old ARB_SETTLE_MAX_BPS (75%) cap was computed against
+        // the stash's POST-trade balance, which for a normally-funded stash
+        // equals the spread itself — so every legitimate arbitrage reverted
+        // (spread > 75% of spread is always true). A per-call % cap cannot be
+        // both functional here (a legit spread is up to 100% of the post-trade
+        // balance) AND protect against a compromised factory (it is onlyFactory
+        // code either way). The real backstop against a rogue factory is the
+        // stash's own detachFromFactory + rescueHbar/Lazy/NFT sovereignty. The
+        // transfers below revert (TransferFailed) if the stash lacks the funds,
+        // so no separate balance cap is needed — you can never pull more than
+        // the stash holds.
         if (hbarAmount > 0) {
-            // Defense-in-depth: reject if the factory tries to pull
-            // more than 75% of the stash's current HBAR balance in a
-            // single call. A legitimate arbitrage of a 100 HBAR bid
-            // against a 50 HBAR trade produces a 50 HBAR spread — at
-            // most ~50% of the pre-trade balance. The 75% cap gives
-            // headroom for edge cases while limiting blast radius.
-            uint256 cap = (address(this).balance * ARB_SETTLE_MAX_BPS) / MAX_BPS;
-            if (hbarAmount > cap) revert InsufficientBalance();
             (bool ok, ) = payable(factory).call{value: hbarAmount}("");
             if (!ok) revert TransferFailed();
         }
 
         if (lazyAmount > 0) {
-            // Same BPS cap as HBAR — prevents full LAZY drain in a single
-            // call if the factory ever routes LAZY through arbitrage.
-            uint256 lazyCap = (IERC20(lazyToken).balanceOf(address(this)) * ARB_SETTLE_MAX_BPS) / MAX_BPS;
-            if (lazyAmount > lazyCap) revert InsufficientBalance();
             bool ok = IERC20(lazyToken).transfer(factory, lazyAmount);
             if (!ok) revert TransferFailed();
         }

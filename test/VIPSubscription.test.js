@@ -665,11 +665,20 @@ describe('VIPSubscription tests', function () {
 			);
 			console.log('V7 LazyRebatePool deployed:', rebatePoolId.toString());
 
+			// Let the mirror node ingest the freshly-deployed pool BEFORE the
+			// estimated associateLazy call. The mirror eth_estimateGas returns a
+			// garbage-low number (~22k vs the accurate ~811k) if queried in the
+			// seconds right after deploy (pre-ingestion), which then overrides
+			// the fallback and trips INSUFFICIENT_GAS. See RebateStack.test.js
+			// for the empirical probe.
+			await sleep(MIRROR_DELAY);
+
 			// --- LAZY-associate the pool so LGS.payoutLazy can land.
 			//     flagError=true so revert reasons surface (silent failures
 			//     here produce confusing downstream "no reason" reverts in
 			//     LGS.payoutLazy when the pool transfer destination is
-			//     non-associated).
+			//     non-associated). 1.5M is only the FALLBACK — post-ingestion
+			//     the mirror estimate (~811k × 1.3 ≈ 1.05M) is used.
 			const assocResp = await contractExecuteFunction(
 				rebatePoolId, rebatePoolIface, client, 1_500_000,
 				'associateLazy', [], 0, true,

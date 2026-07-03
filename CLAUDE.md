@@ -65,7 +65,7 @@ Per-user contracts are called **stashes**. Factory code still uses `BidderContra
 - **Stash sovereignty**: every stash exposes `rescueHbar`, `rescueLazy`, `rescueNFT` (emergency escape hatches) and `detachFromFactory()` (one-way factory severance). After detach, the stash becomes a pure vault — withdrawals work, factory-mediated flows don't.
 - **Arbitrage flow**: `executeArbitrage(bidId, tradeId, minProfit)` matches a resting bid against an open-market LST ask. Self-arbitrage is blocked (`msg.sender ∉ {bid.user, trade.seller}`, `bid.user != trade.seller`). Profit accrues to `pendingArbProfit[arbitrageur]` + `pendingProtocolProfit`, claimable via separate functions. The arb/protocol split (`arbitragePayoutBps`, default 50/50) is adjustable with a 48h inline timelock.
 - **No MEV defense needed**: Hedera consensus orders by timestamp — no mempool, no front-running, no sandwich attacks.
-- **Scoped factory→stash fund path**: `factoryWithdrawHbar/Lazy` (the old blanket-drain paths) are removed. The only path for the factory to touch stash funds is `arbitrageSettle(bidId, tradeId, amount)`, bounded by `ARB_SETTLE_MAX_BPS = 7500` (75% per-tx cap).
+- **Scoped factory→stash fund path**: `factoryWithdrawHbar/Lazy` (the old blanket-drain paths) are removed. The only path for the factory to touch stash funds is `arbitrageSettle(bidId, tradeId, amount)`. (The former `ARB_SETTLE_MAX_BPS = 7500` 75% per-tx cap was **removed** — audit finding C: it was evaluated against the *post-trade* stash balance, which equals the spread for a normally-funded stash, so it reverted *every* legitimate arbitrage; and a per-call % cap can't protect against a compromised factory anyway since it's `onlyFactory` code either way. The stash's real backstop against a rogue factory is its `detachFromFactory` + `rescueHbar/Lazy/NFT` sovereignty. See `docs/SECURITY-AUDIT-2026-07-01.md`.)
 - **Bid state machine**: `BidStatus` enum (`None/Active/Cancelled/Executed/Expired`) with `_closeBid` transition helper. **Hard-delete on close**: `_closeBid` does `delete bidRegistry[bidId]` so post-close storage reads return a zeroed struct. The bid lifecycle events (`BidCreated`/`BidCancelled`/`BidExecuted`/`BidExpired`/`ArbitrageExecuted`) are the canonical history layer for off-chain consumers. Active bids are removed from discovery arrays via O(1) swap-pop (stored indexes).
 - **BidDetails.minAcceptablePrice**: bidder-set floor for arbitrage — protects against surprise-cheap trade matches (e.g., junk NFT at 1 tinybar under the same collection).
 - **`isBidValid` returns `(bool, BidValidityCode)` enum** — not strings. Stable programmatic API, no heap allocations.
@@ -104,6 +104,32 @@ v0.2 migrated to custom errors (see `Custom-Errors-Migration.md`). Several were 
 - `docs/v0.3-integration-guide.md` — human-readable integration guide for v0.3 stash/bid/arbitrage flows.
 - `docs/CLAUDE-FRONTEND-CONTEXT.md` — context file for Claude Code sessions building the DApp frontend.
 - `contracts/test/` — CREATE2 probe contracts for empirical Hedera EVM validation (not production code).
+
+## Security audit (2026-07-01) — applied fixes
+
+A multi-agent adversarial audit (`docs/SECURITY-AUDIT-2026-07-01.md`; re-run via the
+`lst-security-audit` workflow in `.claude/workflows/`) surfaced these, all now fixed:
+
+- **A (Critical, LST):** `executeTrades` / `executeBatchTrade` skipped the `msg.value`
+  check (they pass `_checkFunds=false`), so a buyer could take NFTs while the contract
+  paid sellers from its own HBAR. Fixed: `_refundExcessHbar` now reverts on shortfall.
+- **B (High, EnglishAuction):** settlement underflowed (`sellerProceeds = bid − fee −
+  bounty − Σroyalty`) when a bundle's royalties exceeded the bid → permanent lock. Fixed:
+  royalties are capped at the funds remaining after fee+bounty.
+- **C (Med, BidderContract):** the `ARB_SETTLE_MAX_BPS` 75% cap was measured on the
+  *post-trade* balance and reverted every arbitrage. Removed (see the v0.3 note above).
+- **D (Low, VIPSubscription):** `purchaseSubscription`/`priceFor` now reject a tier whose
+  `monthlyPriceLazy` is unset (0) — closes a pre-pricing free-mint.
+- **E (Med, EnglishAuction):** `withdrawProtocolFee` is now bounded to
+  `protocolFeesAccrued` per rail so it can't reach user escrow.
+- **F (Med, LazyRebatePool):** `settleEpoch` now reserves prior epochs' unclaimed
+  allocations (`totalOutstanding`) so overlapping epochs can't over-commit the pool.
+- **G (VIPSubscription):** `MAX_ALLOWED_COMBINED_DISCOUNT_BPS` raised 5000→9000 to match
+  the constructor default (they contradicted).
+- **H (Low, BidderContractFactory):** added permissionless `pruneUnfundedBid` so unfunded
+  no-expiry bids can't bloat the discovery arrays forever.
+- **I:** non-issue (auction `settle` is re-callable after an unassociated-recipient
+  revert — the recovery path is re-settling, not the removed `claimAuctionNFT` stub).
 
 ## Conventions
 

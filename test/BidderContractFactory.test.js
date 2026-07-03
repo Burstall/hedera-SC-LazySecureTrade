@@ -1097,7 +1097,12 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// decoded function result, a 1-element Result in this case) and
 			// threw RangeError once the call started actually succeeding.
 			const [rx, , record] = await contractExecuteFunction(
-				bidderFactoryId, bidderFactoryIface, client, 2_000_000,
+				// 2.5M gas: the createTradeOnBehalf + executeTrade (2-step NFT
+				// transfer + HBAR payment) path needs ~2.5M — the two later
+				// executeAgainstBid tests (LAZY-bid, LSH-bid) already use this
+				// budget and pass; this one was left at 2M and OOG'd (bare
+				// revert, errorData=0x).
+				bidderFactoryId, bidderFactoryIface, client, 2_500_000,
 				'executeAgainstBid',
 				[execBidId, nftTokenId.toSolidityAddress(), execSerial, ethers.ZeroAddress, EMPTY_AUTH],
 			);
@@ -1654,14 +1659,14 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
-	// P5.1 — arbitrageSettle scoped fund path + 75% cap
+	// P5.1 — arbitrageSettle scoped fund path (75% cap removed — audit C)
 	// (highest-security v0.3 surface)
 	// ============================================
 	describe('arbitrageSettle (scoped fund path)', function () {
 		// arbitrageSettle is called by the FACTORY into the stash; it should
 		// not be callable by the stash owner or any third party. The factory
 		// invokes it as part of executeArbitrage, so the happy path is already
-		// exercised. Here we verify the cap + direct-call protection.
+		// exercised. Here we verify direct-call protection + cap removal (audit C).
 		it('P5.1a: should reject direct calls from non-factory accounts', async function () {
 			// Operator (not factory) tries to call arbitrageSettle on Bob's stash
 			const result = await contractExecuteFunction(
@@ -1683,26 +1688,23 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			console.log('P5.1a: arbitrageSettle rejected non-factory caller with OnlyFactory');
 		});
 
-		it('P5.1b: cap on settlement amount (ARB_SETTLE_MAX_BPS = 7500 = 75%)', async function () {
-			// We can't call arbitrageSettle directly (P5.1a proved that). The cap
-			// fires inside executeArbitrage when the spread + bid would force the
-			// factory to pull more than 75% of the stash's balance. Build that
-			// scenario:
-			//
-			// - Stash holds X HBAR
-			// - Bid is X HBAR (the stash needs to settle the full bid amount)
-			// - Ask is far below X
-			//
-			// If bid.hbarAmount > stash.balance * 7500 / 10000, settle should
-			// revert. Easier to verify: read the constant from the contract.
-			// ARB_SETTLE_MAX_BPS is a public constant on BidderContract (the
-			// stash), not on the factory — read it from any stash instance.
-			const capRes = await mirrorQuery(bobStashId, bidderContractIface, 'ARB_SETTLE_MAX_BPS', []);
-			expect(Number(capRes[0])).to.equal(7500);
-			console.log('P5.1b: ARB_SETTLE_MAX_BPS confirmed at 7500 (75%) via mirror read');
-			// Note: full revert-path verification would require a stash with
-			// a precisely calibrated balance vs bid amount. The happy path in
-			// the Arbitrage describe already exercises the under-cap flow.
+		it('P5.1b: ARB_SETTLE_MAX_BPS cap removed (audit finding C)', async function () {
+			// Audit finding C: the 75% ARB_SETTLE_MAX_BPS cap was evaluated
+			// against the POST-trade stash balance — which equals the spread for
+			// a normally-funded stash — so it reverted EVERY legitimate
+			// arbitrage. It was removed. arbitrageSettle is now bounded only by
+			// the stash's real balance (reverts TransferFailed on shortfall),
+			// and the stash's true backstop against a rogue factory is
+			// detachFromFactory + rescueHbar/Lazy/NFT, not a per-call % cap
+			// (which is onlyFactory code either way). Guard the removal: the
+			// constant must not reappear on the ABI. The full-spread settle path
+			// is exercised by the 'Arbitrage' describe above (StashArbSettled +
+			// pendingArbProfit).
+			const hasCap = bidderContractIface.fragments.some(
+				(fr) => fr.type === 'function' && fr.name === 'ARB_SETTLE_MAX_BPS',
+			);
+			expect(hasCap, 'ARB_SETTLE_MAX_BPS should have been removed by audit fix C').to.be.false;
+			console.log('P5.1b: confirmed ARB_SETTLE_MAX_BPS cap removed (audit finding C)');
 		});
 	});
 

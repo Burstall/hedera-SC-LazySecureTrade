@@ -188,9 +188,12 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     ///         arbitrary token decimals).
     uint256 internal constant MIN_MONTHLY_PRICE = 1;
 
-    /// @notice Hard upper bound on `maxCombinedDiscountBps`. Stops a
-    ///         compromised admin from enabling a 100%-off path.
-    uint16 internal constant MAX_ALLOWED_COMBINED_DISCOUNT_BPS = 5_000;
+    /// @notice Hard upper bound on `maxCombinedDiscountBps`. Set to 90% to
+    ///         match the constructor default and the intended holdings +
+    ///         prepay discount design (finding G — previously 5_000, which
+    ///         the constructor's 9_000 default already violated). Still
+    ///         blocks a compromised admin from enabling a 100%-off path.
+    uint16 internal constant MAX_ALLOWED_COMBINED_DISCOUNT_BPS = 9_000;
 
     /// @notice Hard upper bound on `rebateBps`. Caps the rebate slice
     ///         at 50% of subscription revenue.
@@ -312,6 +315,7 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     error TeamBpsExceedsCap(uint16 requested, uint16 cap);
     error NotAuthorizedGrantor(address caller);
     error RefAlreadyConsumed(bytes32 ref);
+    error TierNotPriced(Tier tier);
 
     // ============================================
     // Constructor
@@ -405,6 +409,7 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
         if (tier == Tier.Free) revert InvalidTier();
         if (months == 0) revert ZeroMonths();
         if (payer == address(0)) revert ZeroAddress();
+        if (monthlyPriceLazy[tier] == 0) revert TierNotPriced(tier);
 
         uint16 holdingsBps = _resolveHoldingsDiscount(payer, tier, proofs);
         effectiveDiscountBps = _capCombined(holdingsBps, months);
@@ -447,6 +452,11 @@ contract VIPSubscription is IVIPSubscription, Ownable, ReentrancyGuard {
     ) external nonReentrant {
         if (tier == Tier.Free) revert InvalidTier();
         if (months == 0) revert ZeroMonths();
+        // Finding D: reject a purchase for a tier whose price was never set.
+        // monthlyPriceLazy defaults to 0, and setMonthlyPrice enforces a >=1
+        // floor, so 0 == unset. Without this, basePrice=0 -> finalPrice=0 and
+        // the caller mints a paid tier for free in the pre-pricing window.
+        if (monthlyPriceLazy[tier] == 0) revert TierNotPriced(tier);
 
         Subscription memory existing = subscriptions[msg.sender];
         bool active = existing.expiresAt > block.timestamp;

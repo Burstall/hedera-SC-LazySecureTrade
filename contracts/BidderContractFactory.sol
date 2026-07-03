@@ -368,6 +368,7 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///         source status (e.g., trying to execute an already-
     ///         cancelled bid).
     error BidNotActive();
+    error BidStillFunded();
 
     // ============================================
     // Constructor
@@ -720,6 +721,30 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
             bytes32(uint256(uint160(auth.agentKey))),
             auth.reasoningTopicId
         );
+    }
+
+    /**
+     * @notice Permissionlessly prune an Active bid whose stash no longer holds
+     *         the funds to honor it. Finding H: unfunded, no-expiry bids would
+     *         otherwise bloat the discovery arrays forever (`cleanupExpiredBids`
+     *         only removes EXPIRED bids, and a no-expiry bid never expires).
+     *         Anyone can reclaim the state; a still-funded bid cannot be pruned.
+     * @param bidId Bid to prune.
+     */
+    function pruneUnfundedBid(bytes32 bidId) external nonReentrant {
+        BidDetails storage bid = bidRegistry[bidId];
+        if (bid.status == BidStatus.None) revert BidNotFound();
+        if (bid.status != BidStatus.Active) revert BidNotActive();
+
+        bool unfunded =
+            (bid.hbarAmount > 0 && bid.stash.balance < bid.hbarAmount) ||
+            (bid.lazyAmount > 0 && IERC20(LAZY_TOKEN).balanceOf(bid.stash) < bid.lazyAmount);
+        if (!unfunded) revert BidStillFunded();
+
+        address bidUser = bid.user;
+        address bidToken = bid.token;
+        _closeBid(bidId);
+        emit BidExpired(bidId, bidUser, bidToken, bytes32(0), bytes32(0));
     }
 
     // ============================================

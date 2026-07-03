@@ -332,8 +332,13 @@ trade after seeing the change):
 
 **Profit withdrawals** (owner-side accumulated funds, not user funds):
 - LST: `withdrawPlatformFees`, `retrieveLazy`
-- BCF: `withdrawProtocolProfit`
-- EnglishAuction: `withdrawProtocolFees`
+- BCF: `withdrawProtocolProfit` (bounded by `pendingProtocolProfit`)
+- EnglishAuction: `withdrawProtocolFee` — **bounded to `protocolFeesAccrued`
+  per payment rail** (audit finding E). Settlement now accumulates the
+  protocol fee it retains, and the withdrawal reverts (`ExceedsAccruedFees`)
+  above that, so it can never reach live bid escrow or queued refunds. This
+  enforces the "not user funds" invariant on-chain (previously it was an
+  operational assumption only). See `docs/SECURITY-AUDIT-2026-07-01.md`.
 
 **Parameter / configuration setters** (small numeric tweaks, no
 trust-rotation):

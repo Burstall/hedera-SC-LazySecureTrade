@@ -119,6 +119,13 @@ contract EnglishAuction is
     ///         Pulled via `claim(PaymentToken.LAZY)`.
     mapping(address => uint256) public claimableLazy;
 
+    /// @notice Protocol fees actually retained at settlement, per rail.
+    ///         `withdrawProtocolFee` is bounded to these so the owner can
+    ///         never withdraw commingled user escrow / queued refunds
+    ///         (finding E). Internal to save bytecode; track via the
+    ///         AuctionSettled(protocolFee) + ProtocolFeeWithdrawn events.
+    mapping(PaymentToken => uint256) internal protocolFeesAccrued;
+
     /// @notice Tokens this contract has been associated with (lazy
     ///         association on first encounter, mirrors LST pattern).
     EnumerableSet.AddressSet internal associatedTokens;
@@ -227,13 +234,13 @@ contract EnglishAuction is
     error BidBelowMinimum(uint96 attempted, uint96 minimum, uint96 currentHigh, uint16 stepBps);
     error WrongPaymentValue(uint256 sent, uint256 expected);
     error NothingToClaim();
+    error ExceedsAccruedFees();
     error PaginationLimitTooLarge(uint16 max);
     error PausedExecution();
     error SellerNotOwnerOfNFT(address token, uint256 serial);
     error NoPendingChange();
     error TimelockNotElapsed();
     // HTSCallFailed(int256 code, bytes4 op) is inherited from TokenStakerV2.
-    error BundleNotAwaitingClaim();
     error NotWinner();
 
     // ============================================
@@ -637,17 +644,27 @@ contract EnglishAuction is
         if (success) {
             uint96 protocolFee = _computeProtocolFee(winningBid, sellerTier);
             uint96 bounty = uint96((uint256(winningBid) * settlementBountyBps) / MAX_BPS);
+            // Finding B: royalties draw from the pool left after fee + bounty
+            // (both < 15% of the bid) and are capped at what remains, so a
+            // high-royalty bundle (Σ royalty bps can exceed 100%) can never
+            // underflow the seller's cut and brick settlement. sellerProceeds
+            // doubles as the running remainder, ending as the seller's take.
+            uint96 sellerProceeds = winningBid - protocolFee - bounty;
             uint96 totalRoyalty;
             for (uint256 i; i < royaltiesCopy.length; ) {
-                RoyaltyInfo memory r = royaltiesCopy[i];
-                uint96 royaltyAmount = uint96((uint256(winningBid) * r.bps) / MAX_BPS);
-                if (royaltyAmount > 0) {
-                    _payOrQueue(r.collector, payment, royaltyAmount);
-                    totalRoyalty += royaltyAmount;
+                uint96 amt = uint96((uint256(winningBid) * royaltiesCopy[i].bps) / MAX_BPS);
+                if (amt > sellerProceeds) amt = sellerProceeds;
+                if (amt > 0) {
+                    _payOrQueue(royaltiesCopy[i].collector, payment, amt);
+                    totalRoyalty += amt;
+                    sellerProceeds -= amt;
                 }
                 unchecked { ++i; }
             }
-            uint96 sellerProceeds = winningBid - protocolFee - bounty - totalRoyalty;
+
+            // Finding E: track retained protocol fees so withdrawProtocolFee
+            // stays bounded and can never touch user escrow.
+            protocolFeesAccrued[payment] += protocolFee;
 
             _payOrQueue(seller, payment, sellerProceeds);
             if (bounty > 0) _queueRefund(settler, payment, bounty);
@@ -701,15 +718,10 @@ contract EnglishAuction is
         }
     }
 
-    /// @notice STUB — bundle-awaiting-claim path was removed to stay
-    ///         under the 24 KiB bytecode ceiling. If a recipient's
-    ///         settle reverts (e.g., unassociated with one of the
-    ///         bundle tokens), they must associate and re-call settle.
-    ///         EVM atomicity guarantees no partial state in the
-    ///         meantime.
-    function claimAuctionNFT(bytes32) external pure {
-        revert BundleNotAwaitingClaim();
-    }
+    // NOTE: the claimAuctionNFT stub (a pure revert) was removed to reclaim
+    // bytecode. If a recipient's settle reverts (e.g., unassociated with a
+    // bundle token), EVM atomicity leaves no partial state — they associate
+    // the token and re-call settle. (Audit finding I: non-issue by design.)
 
     // ============================================
     // Admin (instant)
@@ -782,6 +794,10 @@ contract EnglishAuction is
         uint256 amount
     ) external onlyOwner nonReentrant {
         if (to == address(0)) revert InvalidAddress();
+        // Finding E: bound to fees actually accrued at settlement and debit
+        // before the transfer (CEI) so user escrow can never be withdrawn.
+        if (amount > protocolFeesAccrued[payment]) revert ExceedsAccruedFees();
+        protocolFeesAccrued[payment] -= amount;
         if (payment == PaymentToken.HBAR) {
             (bool ok, ) = payable(to).call{value: amount}("");
             if (!ok) revert HTSCallFailed(0, "WD");
