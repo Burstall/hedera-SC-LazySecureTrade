@@ -3151,6 +3151,272 @@ describe('BidderContractFactory v0.3 Tests', function () {
 	});
 
 	// ============================================
+	// F-1 — Agent listing price floors (audit finding F-1)
+	// The floor STATE + guards live on the factory; the agent-path
+	// ENFORCEMENT (below-floor revert on a live agent envelope) is covered
+	// end-to-end in AgentEnvelopeFull. Here we cover the factory config
+	// surface + the fail-closed (unset-floor) default.
+	// ============================================
+	describe('F-1 — Agent listing floors', function () {
+		it('F1.1: stash owner sets floors; agentListingFloorOf reflects them', async function () {
+			const minT = Number(new Hbar(5, HbarUnit.Hbar).toTinybars());
+			const minL = 2500;
+			client.setOperator(bobId, bobPK);
+			const [rx] = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'setAgentListingFloors', [minT, minL],
+			);
+			expect(rx.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			const f = await mirrorQuery(
+				bidderFactoryId, bidderFactoryIface, 'agentListingFloorOf', [bobStashAddress],
+			);
+			expect(Number(f.minTinybar ?? f[0])).to.equal(minT);
+			expect(Number(f.minLazy ?? f[1])).to.equal(minL);
+			console.log('F1.1: floors stored —', minT, 'tinybar /', minL, 'LAZY');
+		});
+
+		it('F1.2: setAgentListingFloors from a non-stash-owner reverts NoStashForUser', async function () {
+			// Operator holds no stash → userToStash[operator] == 0.
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'setAgentListingFloors', [1, 1], 0, true,
+			);
+			expectRevertNamed(result, 'NoStashForUser');
+			console.log('F1.2: non-stash-owner setAgentListingFloors blocked (NoStashForUser)');
+		});
+
+		it('F1.3: assertAgentAuctionAllowed reverts AgentListingBelowFloor on an unset rail', async function () {
+			// msg.sender = operator (no floor set → rail floor 0). A zero
+			// floor means agent listings on that rail are disabled, so any
+			// price is rejected — the safe-by-default behaviour.
+			const result = await contractExecuteFunction(
+				bidderFactoryId, bidderFactoryIface, client, 200_000,
+				'assertAgentAuctionAllowed', [false, 1, 0], 0, true,
+			);
+			expectRevertNamed(result, 'AgentListingBelowFloor');
+			console.log('F1.3: unset-rail agent auction listing rejected (AgentListingBelowFloor)');
+		});
+	});
+
+	// ============================================
+	// F-2 / F-3 — Stash ↔ EnglishAuction integration (audit findings F-2, F-3)
+	// End-to-end proof that a stash can (F-2) recover its EA pull-payment
+	// refund after being outbid, and (F-3) receive an NFT from EA on buy-now
+	// without a manual approveHbarTo. Both were unrecoverable / reverting
+	// before the fixes. Owner-path stash bids (EMPTY_AUTH) — no envelope
+	// needed. No timing waits (outbid + buyNow are immediate).
+	// ============================================
+	describe('F-2 / F-3 — Stash ↔ EnglishAuction integration', function () {
+		this.timeout(240_000);
+		let eaId, eaIface;
+		const { checkNFTOwnership } = require('../utils/hederaMirrorHelpers');
+		const HBAR = 0; // IEnglishAuction.PaymentToken.HBAR
+
+		function nftItem(serial) {
+			return { token: '0x' + nftTokenId.toSolidityAddress(), isNFT: true, serialOrAmount: serial };
+		}
+		function auctionParams(items, startPrice, buyNowPrice) {
+			return {
+				items,
+				payment: HBAR,
+				reservePrice: startPrice, // reserve == start so a lone bid can clear
+				startPrice,
+				buyNowPrice,
+				duration: 60,
+				minStepBps: 0,
+				antiSnipeWindow: 0,
+				antiSnipeExtension: 0,
+			};
+		}
+		async function nextAuctionId(sellerId) {
+			const nonce = await mirrorQuery(eaId, eaIface, 'sellerNonce', [sellerId.toSolidityAddress()]);
+			return ethers.keccak256(ethers.solidityPacked(
+				['address', 'uint64'], ['0x' + sellerId.toSolidityAddress(), Number(nonce[0])],
+			));
+		}
+
+		before(async function () {
+			this.timeout(300_000);
+
+			// Self-sufficiency: when run in isolation (--grep), the P5
+			// stash-deployment test is skipped, so Bob's stash may not exist
+			// yet. Deploy it here if needed so this block can run standalone.
+			if (!bobStashId) {
+				client.setOperator(bobId, bobPK);
+				await contractExecuteFunction(
+					bidderFactoryId, bidderFactoryIface, client, 1_500_000, 'deployStash', [],
+				);
+				client.setOperator(operatorId, operatorKey);
+				await sleep(MIRROR_DELAY);
+				bobStashAddress = (await mirrorQuery(
+					bidderFactoryId, bidderFactoryIface, 'getStashOf', [bobId.toSolidityAddress()],
+				))[0];
+				bobStashId = ContractId.fromEvmAddress(0, 0, bobStashAddress);
+				console.log('F2/F3: deployed Bob stash for isolated run:', bobStashId.toString());
+			}
+
+			// Deploy a fresh EnglishAuction (mirrors EnglishAuction.test.js setup).
+			const eaJson = JSON.parse(fs.readFileSync(
+				'./artifacts/contracts/EnglishAuction.sol/EnglishAuction.json', 'utf8',
+			));
+			eaIface = new ethers.Interface(eaJson.abi);
+			const eaParams = new ContractFunctionParameters()
+				.addAddress(lazyTokenId.toSolidityAddress())
+				.addAddress(lazyGasStationId.toSolidityAddress())
+				.addAddress(ldrContractId.toSolidityAddress())
+				.addAddress(nftTokenId.toSolidityAddress()) // LSH mocks
+				.addAddress(nftTokenId.toSolidityAddress())
+				.addAddress(nftTokenId.toSolidityAddress())
+				.addAddress('0x0000000000000000000000000000000000000000');
+			[eaId] = await contractDeployFunction(client, eaJson.bytecode, 8_000_000, eaParams);
+			console.log('F2/F3: EnglishAuction deployed:', eaId.toString());
+
+			// Let the mirror node ingest EA before the first ESTIMATED call
+			// (post-deploy gas estimation is garbage-low pre-ingestion).
+			await sleep(MIRROR_DELAY);
+
+			await contractExecuteFunction(
+				lazyGasStationId, lazyGasStationIface, client, 200_000,
+				'addContractUser', [eaId.toSolidityAddress()],
+			);
+			await sendHbar(client, operatorId, eaId, 10, HbarUnit.Hbar);
+			await contractExecuteFunction(eaId, eaIface, client, 200_000, 'setDurationLimits', [30, 7 * 86400, 86400]);
+			await contractExecuteFunction(eaId, eaIface, client, 200_000, 'setDefaults', [200, 10, 15]);
+
+			// Wire EA onto Bob's stash.
+			client.setOperator(bobId, bobPK);
+			await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 200_000,
+				'setEnglishAuction', [eaId.toSolidityAddress()],
+			);
+			client.setOperator(operatorId, operatorKey);
+
+			// Ensure Bob's stash is associated with the NFT collection so EA
+			// can deliver a bought NFT to it (F-3). Idempotent — skip if the
+			// stash is already associated (earlier P5 tests associate it, but
+			// this makes the block self-sufficient if run in isolation).
+			const stashNftBal = await checkMirrorBalance(env, bobStashId, nftTokenId);
+			if (stashNftBal == null) {
+				client.setOperator(bobId, bobPK);
+				await contractExecuteFunction(
+					bobStashId, bidderContractIface, client, 1_500_000,
+					'associateToken', [nftTokenId.toSolidityAddress()],
+				);
+				client.setOperator(operatorId, operatorKey);
+				await sleep(MIRROR_DELAY);
+			}
+
+			// Fund Bob's stash with HBAR for its bids / buy-now.
+			await sendHbar(client, operatorId, bobStashId, 20, HbarUnit.Hbar);
+
+			// Operator is the auction SELLER — grant EA the NFT allowance +
+			// the custody-hop HBAR allowance for the seller→EA escrow hop.
+			await setNFTAllowanceAll(client, [nftTokenId], operatorId, eaId);
+			await setHbarAllowance(client, operatorId, eaId, 1, HbarUnit.Hbar);
+			await sleep(MIRROR_DELAY);
+		});
+
+		it('F2: stash recovers its bid via claimFromAuction after being outbid', async function () {
+			const startPrice = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
+			const serial = await mintFreshSerial(); // operator (seller) owns it
+			const auctionId = await nextAuctionId(operatorId);
+			await contractExecuteFunction(
+				eaId, eaIface, client, 3_000_000,
+				'createAuction', [auctionParams([nftItem(serial)], startPrice, 0), EMPTY_AUTH],
+			);
+			await sleep(MIRROR_DELAY);
+
+			// Bob's stash bids startPrice (owner path). Stash forwards its own HBAR.
+			client.setOperator(bobId, bobPK);
+			const [rxBid] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 1_500_000,
+				'placeAuctionBid', [auctionId, startPrice, false, EMPTY_AUTH],
+			);
+			expect(rxBid.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			// Carol (EOA) outbids directly on EA → stash's bid is refund-queued.
+			const carolBid = Number(new Hbar(2, HbarUnit.Hbar).toTinybars());
+			client.setOperator(carolId, carolPK);
+			const [rxOut] = await contractExecuteFunction(
+				eaId, eaIface, client, 1_500_000,
+				'placeBid', [auctionId, carolBid, EMPTY_AUTH], new Hbar(carolBid, HbarUnit.Tinybar),
+			);
+			expect(rxOut.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			// F-2 core: EA recorded the STASH as the bidder, so the outbid
+			// refund is queued to the stash in EA's claimable ledger. Assert
+			// on that deterministic contract state (not the stash's HBAR
+			// balance, which carries mirror-ingestion lag + gas-accounting
+			// noise). This is exactly the "stash-queued refund" the audit
+			// flagged as unrecoverable.
+			const queued = Number(
+				(await mirrorQuery(eaId, eaIface, 'claimableHbar', [bobStashAddress]))[0],
+			);
+			expect(queued).to.equal(startPrice);
+
+			// Before the fix the stash had NO function that reaches EA's claim
+			// ledger. claimFromAuction forwards to EA.claim, which pays
+			// msg.sender (the stash) and reverts NothingToClaim on an empty
+			// ledger — so SUCCESS here proves the full queued refund was
+			// claimed back into the stash balance.
+			client.setOperator(bobId, bobPK);
+			const [rxClaim] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 1_000_000,
+				'claimFromAuction', [HBAR],
+			);
+			expect(rxClaim.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			// Ledger drained on-chain (claim zeroes claimableHbar before the
+			// transfer). Mirror may lag, so treat a residual read as a warning
+			// rather than a hard failure — the SUCCESS above already proves the
+			// non-zero claim landed.
+			const remaining = Number(
+				(await mirrorQuery(eaId, eaIface, 'claimableHbar', [bobStashAddress]))[0],
+			);
+			console.log('F2: refund of', startPrice, 'tinybar queued to stash + claimed via claimFromAuction; ledger now', remaining);
+		});
+
+		it('F3: stash buyNow delivers the NFT with no manual approveHbarTo', async function () {
+			const startPrice = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
+			const buyNowPrice = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
+			const serial = await mintFreshSerial();
+			const auctionId = await nextAuctionId(operatorId);
+			await contractExecuteFunction(
+				eaId, eaIface, client, 3_000_000,
+				'createAuction', [auctionParams([nftItem(serial)], startPrice, buyNowPrice), EMPTY_AUTH],
+			);
+			await sleep(MIRROR_DELAY);
+
+			// Bob's stash buy-now: collapse + settle + NFT delivery all in one
+			// tx. Pre-fix this reverted (SPENDER_DOES_NOT_HAVE_ALLOWANCE on the
+			// custody hop); F-3 grants EA the allowance inside buyNowAuction.
+			client.setOperator(bobId, bobPK);
+			const [rxBuy] = await contractExecuteFunction(
+				bobStashId, bidderContractIface, client, 3_500_000,
+				'buyNowAuction', [auctionId, buyNowPrice, false, EMPTY_AUTH],
+			);
+			expect(rxBuy.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			// The stash now holds the serial.
+			const ownership = await checkNFTOwnership(env, nftTokenId, serial);
+			const stashNumeric = await resolveContractNumericId(bobStashAddress);
+			expect(ownership?.owner).to.equal(stashNumeric);
+			console.log('F3: stash received NFT serial', serial, 'via buyNow (custody hop auto-granted)');
+		});
+	});
+
+	// ============================================
 	// Summary (always runs, regardless of clean-up describe)
 	// ============================================
 	after(function () {

@@ -65,6 +65,23 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///             the trade.
     mapping(address => address) public stashOwnerOf;
 
+    /// @notice Per-stash minimum price floors for AGENT-originated listings
+    ///         / auctions (audit finding F-1). The agent-envelope value caps
+    ///         are HBAR/LAZY *spend* limits and provably cannot bound NFT
+    ///         *alienation* (the list/auction dispatch passes 0/0 budget), so
+    ///         a compromised agent could otherwise list every stash NFT at
+    ///         price 0. This floor makes agent listings a bounded action:
+    ///         an agent-originated listing/auction whose price is below the
+    ///         owner-set floor for its payment rail reverts. A rail's floor
+    ///         of 0 means agent listings on that rail are DISABLED
+    ///         (safe-by-default). The owner path (auth.agentKey == 0) is
+    ///         never floor-checked. Keyed by stash address.
+    struct AgentListingFloor {
+        uint96 minTinybar; // HBAR-rail floor (tinybars); 0 = agent HBAR listing disabled
+        uint96 minLazy;    // LAZY-rail floor (base units); 0 = agent LAZY listing disabled
+    }
+    mapping(address => AgentListingFloor) public agentListingFloorOf;
+
     /// @notice Token-based bid discovery (CLOB efficiency)
     mapping(address => bytes32[]) public tokenToBids;
 
@@ -369,6 +386,10 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///         cancelled bid).
     error BidNotActive();
     error BidStillFunded();
+    /// @notice Agent-originated listing/auction priced below the owner's
+    ///         floor for its payment rail, or the rail's floor is unset
+    ///         (0 = agent listing disabled on that rail). Audit finding F-1.
+    error AgentListingBelowFloor();
 
     // ============================================
     // Constructor
@@ -1265,6 +1286,58 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
      *             only escrows via approval).
      * @return tradeId Created trade identifier.
      */
+    /// @notice Emitted when a stash owner sets their agent-listing price
+    ///         floors (audit finding F-1).
+    event AgentListingFloorsSet(
+        address indexed owner,
+        address indexed stash,
+        uint96 minTinybar,
+        uint96 minLazy
+    );
+
+    /**
+     * @notice Set the minimum price floors for AGENT-originated listings /
+     *         auctions on the caller's stash (audit finding F-1). Resolves
+     *         the caller (`msg.sender`, the human owner) to their deployed
+     *         stash. A rail floor of 0 disables agent listings on that rail
+     *         (safe-by-default). The owner's own listings are never
+     *         floor-checked.
+     * @param minTinybar HBAR-rail floor in tinybars (0 = agent HBAR listing off).
+     * @param minLazy    LAZY-rail floor in base units (0 = agent LAZY listing off).
+     */
+    function setAgentListingFloors(uint96 minTinybar, uint96 minLazy) external {
+        address stash = userToStash[msg.sender];
+        if (stash == address(0)) revert NoStashForUser();
+        agentListingFloorOf[stash] = AgentListingFloor(minTinybar, minLazy);
+        emit AgentListingFloorsSet(msg.sender, stash, minTinybar, minLazy);
+    }
+
+    /// @inheritdoc IBidderContractFactory
+    function assertAgentAuctionAllowed(
+        bool isLazy,
+        uint96 startPrice,
+        uint96 buyNowPrice
+    ) external view {
+        // Caller is the stash (its `createAuctionListing` forwards here on
+        // the agent path). Both the clearing floor (startPrice) and any
+        // buy-now collapse price must meet the owner's rail floor.
+        _assertListingFloor(msg.sender, isLazy, startPrice);
+        if (buyNowPrice != 0) _assertListingFloor(msg.sender, isLazy, buyNowPrice);
+    }
+
+    /// @dev Revert `AgentListingBelowFloor` if `price` is below the stash's
+    ///      floor for the given rail, or the rail's floor is unset (0). A
+    ///      zero floor means agent listings on that rail are disabled.
+    function _assertListingFloor(
+        address stash,
+        bool isLazy,
+        uint256 price
+    ) internal view {
+        AgentListingFloor storage f = agentListingFloorOf[stash];
+        uint256 floorAmt = isLazy ? f.minLazy : f.minTinybar;
+        if (floorAmt == 0 || price < floorAmt) revert AgentListingBelowFloor();
+    }
+
     function createTradeOnBehalfOfStash(
         address token,
         uint256 serial,
@@ -1280,7 +1353,11 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         }
 
         // Agent envelope check (when agent path active). Budget = 0/0:
-        // listing escrows via NFT approval, no new fund commitment.
+        // listing escrows via NFT approval, no new fund commitment. The
+        // value caps therefore can't bound NFT alienation, so we ALSO
+        // enforce the owner's per-rail listing floor here (F-1): an
+        // agent-originated trade priced below the floor (incl. a price-0
+        // closed trade to a colluder) reverts.
         if (auth.agentKey != address(0)) {
             BidderContract(payable(msg.sender)).spendForAgent(
                 auth,
@@ -1288,6 +1365,15 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
                 0,
                 0
             );
+            if (tinybarPrice != 0) {
+                _assertListingFloor(msg.sender, false, tinybarPrice);
+            } else if (lazyPrice != 0) {
+                _assertListingFloor(msg.sender, true, lazyPrice);
+            } else {
+                // Both rails zero — a free give-away; never allowed on the
+                // agent path (LST permits price-0 for closed trades).
+                revert AgentListingBelowFloor();
+            }
         }
 
         // The stash (msg.sender) is recorded as both NFT holder AND
@@ -1432,6 +1518,25 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         // sub-floor bid through this entry point. See Bug 5 / Phase 1.
         if (bid.hbarAmount < bid.minAcceptablePrice) {
             revert ArbitrageProfitInsufficient();
+        }
+
+        // F-1 (audit Finding 2): executeAgainstBid is an ALIENATION path —
+        // it sells the principal's approved NFT into the resting bid at the
+        // bid price. The `minAcceptablePrice` check above protects the
+        // BIDDER; it does nothing to stop a compromised `TradeExecute` agent
+        // matching a lowball colluding bid below the OWNER's floor. So the
+        // agent path must also clear the owner's listing floor, mirroring
+        // `createTradeOnBehalfOfStash`. `callerStash` is validated as the
+        // principal's stash by `_resolveAgentOrOwner`. Owner path
+        // (agentKeyForEvent == 0) is not floor-checked.
+        if (agentKeyForEvent != address(0)) {
+            if (bid.hbarAmount != 0) {
+                _assertListingFloor(callerStash, false, bid.hbarAmount);
+            } else if (bid.lazyAmount != 0) {
+                _assertListingFloor(callerStash, true, bid.lazyAmount);
+            } else {
+                revert AgentListingBelowFloor();
+            }
         }
 
         // Create trade in LazySecureTrade on behalf of the seller. On

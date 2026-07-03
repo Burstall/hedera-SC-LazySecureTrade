@@ -116,6 +116,24 @@ interface IBidderContractFactory {
     ) external returns (bytes32 tradeId);
 
     /**
+     * @notice Validate an agent-originated auction listing against the
+     *         calling stash's owner-set price floor (F-1). Called by a
+     *         stash (`msg.sender`) from its `createAuctionListing` on the
+     *         agent path. Reverts `AgentListingBelowFloor` if `startPrice`
+     *         (or a non-zero `buyNowPrice`) is below the floor for the
+     *         payment rail, or the rail's floor is unset (0 = agent
+     *         listing disabled on that rail).
+     * @param isLazy       True if the auction settles in $LAZY, else HBAR.
+     * @param startPrice   Auction start price (payment-token base units).
+     * @param buyNowPrice  Optional buy-now price (0 = none).
+     */
+    function assertAgentAuctionAllowed(
+        bool isLazy,
+        uint96 startPrice,
+        uint96 buyNowPrice
+    ) external view;
+
+    /**
      * @notice Cancel a stash-listed trade from the human owner's EOA
      *         (legacy path) OR from an authorized agent (envelope path).
      * @dev Resolves the trade on LST, then calls `_resolveAgentOrOwner`

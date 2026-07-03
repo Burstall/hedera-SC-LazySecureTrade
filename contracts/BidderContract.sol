@@ -1036,6 +1036,25 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
         _ownerOrAgentMsgSender(auth);
         _envelopeVerifyForAuction(auth, IAgentEnvelope.ActionType.AuctionCreate, 0, 0);
 
+        // F-1: the AuctionCreate envelope budget is 0/0 (no fund commitment
+        // at list time), so the value caps can't bound how cheaply an agent
+        // alienates the escrowed NFT. Enforce the owner's per-rail listing
+        // floor via the factory (which holds the floor state). Owner path
+        // (auth.agentKey == 0) is not floor-checked.
+        if (auth.agentKey != address(0)) {
+            IBidderContractFactory(factory).assertAgentAuctionAllowed(
+                params.payment == IEnglishAuction.PaymentToken.LAZY,
+                params.startPrice,
+                params.buyNowPrice
+            );
+        }
+
+        // F-3: ensure EA holds the custody-hop HBAR allowance so a later
+        // NFT return to this stash (auction cancelled / reserve missed)
+        // doesn't revert on the WITHDRAWAL 1-tinybar debit. Mirrors the
+        // LST custody-hop refill in `executeTrade`.
+        _ensureHbarAllowanceForCustodyHop(englishAuction);
+
         // Approve each item to EA so `_persistItemsAndEscrow` can pull
         // them. Per-item / per-serial approval keeps the blast radius
         // bounded if EA is ever compromised.
@@ -1070,6 +1089,10 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             isLazy ? amount : uint96(0)
         );
 
+        // F-3: ensure EA can pull the 1-tinybar custody hop when it later
+        // delivers the NFT to this stash if we win at settle time.
+        _ensureHbarAllowanceForCustodyHop(englishAuction);
+
         if (isLazy) {
             IERC20(lazyToken).approve(englishAuction, amount);
             IEnglishAuction(englishAuction).placeBid(auctionId, amount, auth);
@@ -1097,12 +1120,39 @@ contract BidderContract is TokenStakerV2, ReentrancyGuard {
             isLazy ? buyNowPrice : uint96(0)
         );
 
+        // F-3: buyNow settles in THIS tx (collapse + deliver), so EA must
+        // already hold the custody-hop allowance before we forward, or the
+        // NFT delivery to this stash reverts.
+        _ensureHbarAllowanceForCustodyHop(englishAuction);
+
         if (isLazy) {
             IERC20(lazyToken).approve(englishAuction, buyNowPrice);
             IEnglishAuction(englishAuction).buyNow(auctionId, auth);
         } else {
             IEnglishAuction(englishAuction).buyNow{value: buyNowPrice}(auctionId, auth);
         }
+    }
+
+    /**
+     * @notice Claim this stash's queued EnglishAuction pull-payment refund
+     *         (audit finding F-2). When this stash bids via
+     *         `placeAuctionBid` / `buyNowAuction`, EA records the STASH as
+     *         the bidder, so outbid refunds, buy-now overpayment, and any
+     *         settle bounty are queued to the stash in EA's `claimable*`
+     *         ledger. `EnglishAuction.claim` pays `msg.sender`, so calling
+     *         it FROM the stash routes those funds back into the stash
+     *         balance — from which the owner withdraws via `withdrawHbar` /
+     *         `withdrawLazy` (or `rescueHbar` / `rescueLazy`). Without this
+     *         forwarder the refund is permanently stranded, since the stash
+     *         implementation is an immutable CREATE2 clone. Owner-only.
+     * @param payment HBAR or LAZY rail to claim.
+     */
+    function claimFromAuction(IEnglishAuction.PaymentToken payment)
+        external
+        onlyOwner
+        nonReentrant
+    {
+        IEnglishAuction(englishAuction).claim(payment);
     }
 
     /// @dev Internal helper to invoke `AgentEnvelopeLib.verifyAndConsume`
