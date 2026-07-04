@@ -21,6 +21,7 @@ const {
 	contractExecuteQuery,
 	readOnlyEVMFromMirrorNode,
 } = require('../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../utils/libraryLinking');
 const {
 	accountCreator,
 	associateTokensToAccount,
@@ -384,7 +385,10 @@ describe('Deployment', () => {
 		// import ABI
 		lazySecureTradeIface = ethers.Interface.from(lazySecureTradeJson.abi);
 
-		const contractBytecode = lazySecureTradeJson.bytecode;
+		const lstLibs = await ensureLibraries(client);
+		const contractBytecode = linkLibraries(
+			lazySecureTradeJson.bytecode, lazySecureTradeJson.linkReferences, lstLibs,
+		);
 
 		console.log(
 			'\n- Deploying contract...',

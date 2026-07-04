@@ -26,6 +26,7 @@ const {
 	contractExecuteFunction,
 	readOnlyEVMFromMirrorNode,
 } = require('../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../utils/libraryLinking');
 const {
 	setNFTAllowanceAll,
 	setFTAllowance,
@@ -174,8 +175,9 @@ describe('EnglishAuction tests', function () {
 			.addAddress(nftTokenId.toSolidityAddress()) // LSH_MUTANT mock
 			.addAddress(nftTokenId.toSolidityAddress()) // LSH_GEN2 mock
 			.addAddress('0x0000000000000000000000000000000000000000'); // no staking
+		const eaLibs = await ensureLibraries(client);
 		[auctionId_contractId] = await contractDeployFunction(
-			client, auctionJson.bytecode, 8_000_000, params,
+			client, linkLibraries(auctionJson.bytecode, auctionJson.linkReferences, eaLibs), 8_000_000, params,
 		);
 		console.log('EnglishAuction deployed:', auctionId_contractId.toString());
 
@@ -551,10 +553,28 @@ describe('EnglishAuction tests', function () {
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
 
-			// Auction should be hard-deleted (state = None)
+			// Pull-claim (Finding 1): buyNow SETTLES (proceeds paid) but leaves
+			// the auction in Settled state with the bundle escrowed — it is NOT
+			// hard-deleted until the NFT is claimed.
 			const snap = await mirrorQuery(auctionId_contractId, auctionIface, 'getAuctionSnapshot', [aid]);
-			expect(Number(snap[0].state)).to.equal(State.None);
-			console.log('E5.2: buyNow collapsed + hard-deleted');
+			expect(Number(snap[0].state)).to.equal(State.Settled);
+
+			// Bob (the winner/claimant) pulls the NFT; permissionless + EA funds
+			// the custody hop. After claim the auction is hard-deleted.
+			client.setOperator(bobId, bobPK);
+			const [rxClaim] = await contractExecuteFunction(
+				auctionId_contractId, auctionIface, client, 2_500_000,
+				'claimAuctionNFT', [aid],
+			);
+			expect(rxClaim.status.toString()).to.equal('SUCCESS');
+			client.setOperator(operatorId, operatorKey);
+			await sleep(MIRROR_DELAY);
+
+			const snap2 = await mirrorQuery(auctionId_contractId, auctionIface, 'getAuctionSnapshot', [aid]);
+			expect(Number(snap2[0].state)).to.equal(State.None);
+			const owner = (await checkMirrorBalance(ENV, bobId, nftTokenId)) ?? 0;
+			expect(Number(owner)).to.be.greaterThan(0);
+			console.log('E5.2: buyNow settled → claimAuctionNFT delivered to Bob + hard-deleted');
 		});
 	});
 
@@ -687,10 +707,23 @@ describe('EnglishAuction tests', function () {
 				expect(rx.status.toString()).to.equal('SUCCESS');
 				await sleep(MIRROR_DELAY);
 
-				// Auction hard-deleted
+				// Pull-claim: settle finalises funds but leaves the auction
+				// Settled with the bundle escrowed (not hard-deleted).
 				const snap = await mirrorQuery(auctionId_contractId, auctionIface, 'getAuctionSnapshot', [aid]);
-				expect(Number(snap[0].state)).to.equal(State.None);
-				console.log('E7.1: settled successfully');
+				expect(Number(snap[0].state)).to.equal(State.Settled);
+
+				// Bob (winner) claims the NFT → auction hard-deleted.
+				client.setOperator(bobId, bobPK);
+				const [rxClaim] = await contractExecuteFunction(
+					auctionId_contractId, auctionIface, client, 2_500_000,
+					'claimAuctionNFT', [aid],
+				);
+				expect(rxClaim.status.toString()).to.equal('SUCCESS');
+				client.setOperator(operatorId, operatorKey);
+				await sleep(MIRROR_DELAY);
+				const snap2 = await mirrorQuery(auctionId_contractId, auctionIface, 'getAuctionSnapshot', [aid]);
+				expect(Number(snap2[0].state)).to.equal(State.None);
+				console.log('E7.1: settled + claimed successfully');
 			});
 
 			it('E7.2: claim refund pulls queued HBAR', async function () {

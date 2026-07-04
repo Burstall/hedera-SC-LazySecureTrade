@@ -52,6 +52,12 @@ contract EnglishAuction is
     /// @notice Maximum items per auction bundle. Any mix of NFTs + FTs.
     uint8 public constant MAX_BUNDLE_ITEMS = 10;
 
+    /// @notice Maximum royalty-collector entries snapshotted per auction
+    ///         (audit Finding 5). Each is one payout subcall at settle, so an
+    ///         uncapped fan-out could push settlement past Hedera's 50-subcall
+    ///         ceiling and lock the auction. Rejected at create time.
+    uint8 public constant MAX_ROYALTY_ENTRIES = 12;
+
     /// @notice Basis-points denominator (100% = 10_000 bp).
     uint16 internal constant MAX_BPS = 10_000;
 
@@ -242,6 +248,8 @@ contract EnglishAuction is
     error TimelockNotElapsed();
     // HTSCallFailed(int256 code, bytes4 op) is inherited from TokenStakerV2.
     error NotWinner();
+    error TooManyRoyalties(uint8 max);
+    error AuctionNotSettled(bytes32 id);
 
     // ============================================
     // Modifiers
@@ -432,7 +440,11 @@ contract EnglishAuction is
         a.seller = seller;
         a.state = AuctionState.Open;
         a.payment = params.payment;
-        a.sellerTierAtCreate = uint8(_resolveSellerTier(seller));
+        // Finding 3: resolve the beneficial owner before snapshotting the LSH
+        // fee tier. For a stash seller the LSH tokens live in the human owner's
+        // wallet, so the raw stash resolves to Free tier and voids the
+        // discount. Mirrors LST's Bug-3 fix.
+        a.sellerTierAtCreate = uint8(_resolveSellerTier(_resolveBeneficialOwner(seller)));
         a.minStepBps = params.minStepBps == 0 ? defaultMinStepBps : params.minStepBps;
         a.antiSnipeWindow = params.antiSnipeWindow == 0
             ? defaultAntiSnipeWindow : params.antiSnipeWindow;
@@ -633,13 +645,17 @@ contract EnglishAuction is
         PaymentToken payment = a.payment;
         uint96 reservePrice = a.reservePrice;
         uint8 sellerTier = a.sellerTierAtCreate;
-        AuctionItem[] memory itemsCopy = a.items;
         RoyaltyInfo[] memory royaltiesCopy = a.royalties;
         bool success = winner != address(0) && winningBid >= reservePrice;
 
-        // Hard-delete struct first (CEI). On any subsequent revert the
-        // delete is unwound too.
-        delete auctions[auctionId];
+        // Pull-claim (audit Finding 1): settle pays out the PROCEEDS and
+        // finalises the record, but does NOT deliver the NFT bundle — that is
+        // deferred to `claimAuctionNFT`. The escrowed bundle stays put, so an
+        // unassociated / absent recipient can never brick settlement (the
+        // grief dissolves: it only blocks the recipient's own later claim).
+        // Mark Settled up-front (CEI); `a.items` is intentionally left in
+        // storage for the deferred claim.
+        a.state = AuctionState.Settled;
 
         if (success) {
             uint96 protocolFee = _computeProtocolFee(winningBid, sellerTier);
@@ -669,8 +685,8 @@ contract EnglishAuction is
             _payOrQueue(seller, payment, sellerProceeds);
             if (bounty > 0) _queueRefund(settler, payment, bounty);
 
-            _releaseBundle(itemsCopy, winner);
-
+            // NFT claimant = the winner (a.highBidder already holds it). The
+            // bundle is delivered when the winner calls claimAuctionNFT.
             emit AuctionSettled(
                 auctionId, seller, winner, true,
                 winningBid, protocolFee, totalRoyalty, sellerProceeds,
@@ -680,12 +696,37 @@ contract EnglishAuction is
             if (winner != address(0)) {
                 _queueRefund(winner, payment, winningBid);
             }
-            _releaseBundle(itemsCopy, seller);
+            // Auction failed / reserve not met → the SELLER reclaims the
+            // bundle. Record them as the NFT claimant so claimAuctionNFT
+            // delivers uniformly from `a.highBidder`.
+            a.highBidder = seller;
             emit AuctionSettled(
                 auctionId, seller, winner, false,
                 winningBid, 0, 0, 0, settler, 0, bytes32(0), bytes32(0)
             );
         }
+    }
+
+    /**
+     * @notice Deliver a settled auction's NFT bundle to its claimant — the
+     *         winner on a successful settle, or the seller on a
+     *         failed / reserve-not-met settle. Permissionless: the escrowed
+     *         bundle always goes to the RECORDED claimant, and EnglishAuction
+     *         funds the 1-tinybar custody hop (Finding 4), so the claimant
+     *         needs no HBAR allowance. The claimant must be associated with
+     *         each bundle token; if not, this reverts and can simply be
+     *         re-called after they associate (audit Finding 1 — no lock).
+     * @param auctionId The settled auction to claim.
+     */
+    function claimAuctionNFT(bytes32 auctionId) external nonReentrant {
+        AuctionStorage storage a = auctions[auctionId];
+        if (a.state != AuctionState.Settled) revert AuctionNotSettled(auctionId);
+        address claimant = a.highBidder;
+        AuctionItem[] memory itemsCopy = a.items;
+        // Hard-delete before the external delivery (CEI).
+        delete auctions[auctionId];
+        _releaseBundle(itemsCopy, claimant);
+        emit AuctionBundleClaimed(auctionId, claimant);
     }
 
     // ============================================
@@ -897,6 +938,11 @@ contract EnglishAuction is
         for (uint256 i; i < fees.length; ) {
             IHederaTokenService.RoyaltyFee memory f = fees[i];
             if (f.numerator > 0 && f.denominator > 0) {
+                // Finding 5: bound the total royalty-collector count so
+                // settlement can never exceed Hedera's 50-subcall ceiling.
+                if (a.royalties.length >= MAX_ROYALTY_ENTRIES) {
+                    revert TooManyRoyalties(MAX_ROYALTY_ENTRIES);
+                }
                 // Convert fractional to bps. Cap at MAX_BPS.
                 uint256 bps = (uint256(f.numerator) * MAX_BPS)
                     / uint256(f.denominator);
@@ -919,6 +965,15 @@ contract EnglishAuction is
             if (item.isNFT) {
                 uint256[] memory serials = new uint256[](1);
                 serials[0] = item.serialOrAmount;
+                // Recipient-funded custody hop: the recipient (a stash via
+                // F-3's `_ensureHbarAllowanceForCustodyHop`, or a direct EOA
+                // that granted one) pays the 1-tinybar hop via a HIP-906
+                // allowance to this contract. A contract cannot self-fund the
+                // hop through the cryptoTransfer precompile (that reverts
+                // INVALID_FULL_PREFIX_SIGNATURE_FOR_PRECOMPILE / code 326), so
+                // Finding 4 is instead handled by the pull-claim model: an
+                // unallowanced recipient simply grants the allowance and
+                // re-calls claimAuctionNFT — no lock (Finding 1).
                 moveNFTs(
                     TransferDirection.WITHDRAWAL,
                     item.token,

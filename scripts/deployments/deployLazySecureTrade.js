@@ -10,6 +10,7 @@ const fs = require('fs');
 const { ethers } = require('ethers');
 const readlineSync = require('readline-sync');
 const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../../utils/libraryLinking');
 const { verifyContract } = require('../../utils/sourcifyVerify');
 // const { hethers } = require('@hashgraph/hethers');
 require('dotenv').config();
@@ -286,7 +287,13 @@ const main = async () => {
 		),
 	);
 
-	const contractBytecode = lazySecureTradeJSON.bytecode;
+	// LazySecureTrade links LSHTierLib (getTierFor is external/linked to keep
+	// LST under the 24,576-byte limit). Deploy/reuse the library + substitute
+	// its address into the creation bytecode before deploying.
+	const lstLibs = await ensureLibraries(client);
+	const contractBytecode = linkLibraries(
+		lazySecureTradeJSON.bytecode, lazySecureTradeJSON.linkReferences, lstLibs,
+	);
 
 	console.log(
 		'\n- Deploying contract...',

@@ -114,7 +114,7 @@ library AgentEnvelopeLib {
         uint96 hbarAmount,
         uint96 lazyAmount,
         bool allAgentsPaused
-    ) internal returns (uint96 remHbar, uint96 remLazy) {
+    ) public returns (uint96 remHbar, uint96 remLazy) {
         // ----- Envelope existence + active state -----
         if (env.agentKey == address(0) || (env.flags & FLAG_ACTIVE) == 0) {
             revert IAgentEnvelope.EnvelopeAuthFailed(auth.agentKey, IAgentEnvelope.AuthFailCode.NotFound);

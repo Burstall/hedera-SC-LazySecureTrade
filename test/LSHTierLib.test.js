@@ -26,6 +26,7 @@ const {
 	contractExecuteFunction,
 	readOnlyEVMFromMirrorNode,
 } = require('../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../utils/libraryLinking');
 const { sleep } = require('../utils/nodeHelpers');
 require('dotenv').config();
 
@@ -182,7 +183,10 @@ describe('LSHTierLib unit tests', function () {
 			'utf8',
 		));
 		probeIface = new ethers.Interface(probeJson.abi);
-		[probeId] = await contractDeployFunction(client, probeJson.bytecode, 2_000_000);
+		const probeLibs = await ensureLibraries(client);
+		[probeId] = await contractDeployFunction(
+			client, linkLibraries(probeJson.bytecode, probeJson.linkReferences, probeLibs), 2_000_000,
+		);
 		console.log('Probe:', probeId.toString());
 
 		await sleep(MIRROR_DELAY);

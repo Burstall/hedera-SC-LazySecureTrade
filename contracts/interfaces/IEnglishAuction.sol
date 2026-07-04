@@ -181,6 +181,15 @@ interface IEnglishAuction {
         address indexed seller
     );
 
+    /// @notice Emitted when a settled auction's NFT bundle is delivered to
+    ///         its claimant (winner on success, seller on fail) via the
+    ///         pull-based `claimAuctionNFT`. Settlement (funds) is signalled
+    ///         separately by `AuctionSettled`; delivery is deferred.
+    event AuctionBundleClaimed(
+        bytes32 indexed auctionId,
+        address indexed claimant
+    );
+
     /// @notice Emitted whenever an auction's `closeAt` is pushed
     ///         forward by an anti-snipe bid. Redundant with
     ///         BidCreated.extended; kept for indexer convenience.

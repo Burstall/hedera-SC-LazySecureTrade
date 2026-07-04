@@ -79,7 +79,7 @@ library LSHTierLib {
     function getTierFor(
         address user,
         TierSources memory sources
-    ) internal view returns (Tier) {
+    ) public view returns (Tier) {
         // Holdings first — cheapest path. balanceOf is 1 subcall each.
         if (IERC721(sources.lshGen1).balanceOf(user) > 0) {
             return Tier.Platinum;

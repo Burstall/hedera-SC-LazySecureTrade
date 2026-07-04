@@ -8,6 +8,7 @@ const {
 	ContractFunctionParameters,
 } = require('@hashgraph/sdk');
 const { contractDeployFunction } = require('../../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../../utils/libraryLinking');
 const { verifyContract } = require('../../utils/sourcifyVerify');
 require('dotenv').config();
 
@@ -98,7 +99,13 @@ async function main() {
 	const bidderContractJson = JSON.parse(
 		fs.readFileSync('./artifacts/contracts/BidderContract.sol/BidderContract.json', 'utf8'),
 	);
-	const bidderContractByteCode = bidderContractJson.bytecode;
+	// BidderContract links AgentEnvelopeLib (verifyAndConsume is external/linked
+	// to keep the clone implementation under 24,576 bytes). Deploy/reuse the
+	// library + substitute its address into the impl creation bytecode.
+	const bcfLibs = await ensureLibraries(client);
+	const bidderContractByteCode = linkLibraries(
+		bidderContractJson.bytecode, bidderContractJson.linkReferences, bcfLibs,
+	);
 
 	// contractDeployFunction returns [ContractId, evmAddressString] — destructure
 	// the ID so the .toString()/.toSolidityAddress() calls below operate on a

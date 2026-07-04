@@ -33,6 +33,7 @@ const {
 	HbarUnit,
 } = require('@hashgraph/sdk');
 const { contractDeployFunction, contractExecuteFunction } = require('../../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../../utils/libraryLinking');
 const { sendHbar } = require('../../utils/hederaHelpers');
 const { ethers } = require('ethers');
 require('dotenv').config();
@@ -81,8 +82,11 @@ require('dotenv').config();
 		.addAddress(lshGen2Token.toSolidityAddress())
 		.addAddress(stakingAddress);
 
+	// EnglishAuction links LSHTierLib (getTierFor is external/linked to keep EA
+	// under the 24,576-byte limit). Deploy/reuse the library + link the bytecode.
+	const eaLibs = await ensureLibraries(client);
 	const [auctionContractId, auctionAddr] = await contractDeployFunction(
-		client, auctionJson.bytecode, 8_000_000, params,
+		client, linkLibraries(auctionJson.bytecode, auctionJson.linkReferences, eaLibs), 8_000_000, params,
 	);
 	console.log(`\n✅ EnglishAuction deployed: ${auctionContractId.toString()} / ${auctionAddr}`);
 

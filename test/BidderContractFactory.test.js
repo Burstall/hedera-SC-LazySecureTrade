@@ -18,6 +18,7 @@ const {
 	contractExecuteFunction,
 	readOnlyEVMFromMirrorNode,
 } = require('../utils/solidityHelpers');
+const { ensureLibraries, linkLibraries } = require('../utils/libraryLinking');
 const {
 	accountCreator,
 	associateTokensToAccount,
@@ -178,6 +179,9 @@ let lazySCT, lazyTokenId, lazyGasStationId, ldrContractId, lstContractId;
 let lazyIface, lazyGasStationIface, lstIface;
 let bidderFactoryId, bidderFactoryIface;
 let bidderImplId, bidderContractIface;
+// External-library addresses (LSHTierLib + AgentEnvelopeLib) for linking the
+// size-split LST / EnglishAuction / BidderContract creation bytecode.
+let libs;
 
 // Track which heavy resources we provisioned in THIS run (vs reused via .env).
 // Used by the Clean-up describe to decide what to sweep / clear.
@@ -314,6 +318,10 @@ describe('BidderContractFactory v0.3 Tests', function () {
 		client.setOperator(operatorId, operatorKey);
 		console.log(`\n=== Scaffold: ${env.toUpperCase()} ===`);
 		console.log('Operator:', operatorId.toString());
+
+		// Deploy (or reuse) the external libraries FIRST — LST / EA /
+		// BidderContract creation bytecode is linked against them below.
+		libs = await ensureLibraries(client);
 
 		// --- Create or reuse test accounts (env-gated, with HBAR top-up)
 		// Alice = seller / NFT holder (needs gas for many trade listings)
@@ -510,7 +518,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			// LST deploy gas: bumped from 6M to 8M after the Phase 1
 			// beneficial-owner resolver added ~360 bytes — the original
 			// 6M margin no longer covers initcode at the new size.
-			[lstContractId] = await contractDeployFunction(client, lstJson.bytecode, 8_000_000, lstParams);
+			[lstContractId] = await contractDeployFunction(client, linkLibraries(lstJson.bytecode, lstJson.linkReferences, libs), 8_000_000, lstParams);
 			console.log('LST deployed:', lstContractId.toString());
 
 			// Fund LST with HBAR for gas
@@ -531,7 +539,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			console.log('Reusing BidderContract impl:', bidderImplId.toString());
 		}
 		else {
-			[bidderImplId] = await contractDeployFunction(client, bcJson.bytecode, 6_500_000);
+			[bidderImplId] = await contractDeployFunction(client, linkLibraries(bcJson.bytecode, bcJson.linkReferences, libs), 6_500_000);
 			provisionedThisRun.impl = true;
 			console.log('BidderContract impl deployed:', bidderImplId.toString());
 		}
@@ -2736,7 +2744,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			);
 			// Match the scaffold's impl deploy gas (6.5M) — BidderContract is
 			// too large to deploy at 5M after the v0.3 stash surface growth.
-			const [freshImplId] = await contractDeployFunction(client, bcJson.bytecode, 6_500_000);
+			const [freshImplId] = await contractDeployFunction(client, linkLibraries(bcJson.bytecode, bcJson.linkReferences, libs), 6_500_000);
 
 			// Try to initialize the implementation directly — must revert AlreadyInitialized
 			const result = await contractExecuteFunction(
@@ -3271,7 +3279,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 				.addAddress(nftTokenId.toSolidityAddress())
 				.addAddress(nftTokenId.toSolidityAddress())
 				.addAddress('0x0000000000000000000000000000000000000000');
-			[eaId] = await contractDeployFunction(client, eaJson.bytecode, 8_000_000, eaParams);
+			[eaId] = await contractDeployFunction(client, linkLibraries(eaJson.bytecode, eaJson.linkReferences, libs), 8_000_000, eaParams);
 			console.log('F2/F3: EnglishAuction deployed:', eaId.toString());
 
 			// Let the mirror node ingest EA before the first ESTIMATED call
@@ -3385,7 +3393,7 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			console.log('F2: refund of', startPrice, 'tinybar queued to stash + claimed via claimFromAuction; ledger now', remaining);
 		});
 
-		it('F3: stash buyNow delivers the NFT with no manual approveHbarTo', async function () {
+		it('F3/F1: stash buyNow settles, then claimAuctionNFT delivers (EA-funded hop)', async function () {
 			const startPrice = Number(new Hbar(1, HbarUnit.Hbar).toTinybars());
 			const buyNowPrice = Number(new Hbar(3, HbarUnit.Hbar).toTinybars());
 			const serial = await mintFreshSerial();
@@ -3396,9 +3404,9 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			);
 			await sleep(MIRROR_DELAY);
 
-			// Bob's stash buy-now: collapse + settle + NFT delivery all in one
-			// tx. Pre-fix this reverted (SPENDER_DOES_NOT_HAVE_ALLOWANCE on the
-			// custody hop); F-3 grants EA the allowance inside buyNowAuction.
+			// Bob's stash buy-now: collapses + SETTLES (proceeds paid), but under
+			// the pull-claim model (Finding 1) it does NOT deliver the NFT — the
+			// bundle is recorded claimable by the stash and stays escrowed.
 			client.setOperator(bobId, bobPK);
 			const [rxBuy] = await contractExecuteFunction(
 				bobStashId, bidderContractIface, client, 3_500_000,
@@ -3408,11 +3416,26 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			client.setOperator(operatorId, operatorKey);
 			await sleep(MIRROR_DELAY);
 
+			// NFT is still escrowed in EA (not yet delivered).
+			const stashNumeric = await resolveContractNumericId(bobStashAddress);
+			const midOwner = (await checkNFTOwnership(env, nftTokenId, serial))?.owner;
+			expect(midOwner).to.not.equal(stashNumeric);
+
+			// claimAuctionNFT is PERMISSIONLESS and delivers to the recorded
+			// claimant (the stash), with EA funding the 1-tinybar custody hop
+			// (Finding 4 — no stash allowance needed). Call it from the operator
+			// to prove the permissionless + self-funded delivery.
+			const [rxClaim] = await contractExecuteFunction(
+				eaId, eaIface, client, 2_500_000,
+				'claimAuctionNFT', [auctionId],
+			);
+			expect(rxClaim.status.toString()).to.equal('SUCCESS');
+			await sleep(MIRROR_DELAY);
+
 			// The stash now holds the serial.
 			const ownership = await checkNFTOwnership(env, nftTokenId, serial);
-			const stashNumeric = await resolveContractNumericId(bobStashAddress);
 			expect(ownership?.owner).to.equal(stashNumeric);
-			console.log('F3: stash received NFT serial', serial, 'via buyNow (custody hop auto-granted)');
+			console.log('F3/F1: stash claimed NFT serial', serial, 'via permissionless claimAuctionNFT');
 		});
 	});
 
