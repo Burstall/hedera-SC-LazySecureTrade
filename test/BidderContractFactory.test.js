@@ -2613,16 +2613,26 @@ describe('BidderContractFactory v0.3 Tests', function () {
 			}
 			client.setOperator(operatorId, operatorKey);
 
-			// Read all bids for this serial
-			const serialBids = await mirrorQuery(bidderFactoryId, bidderFactoryIface,
-				'getBidsForTokenSerialPaginated', [nftTokenId.toSolidityAddress(), ser, 0, 100],
-			);
+			// Read all bids for this serial by paging through the bounded-window
+			// scan (NEW-2): each call scans at most `limit` ENTRIES, so collect
+			// matches across windows by advancing offset = nextOffset until the
+			// scan is exhausted (nextOffset stops advancing).
+			const returnedSet = new Set();
+			let offset = 0;
+			for (let guard = 0; guard < 1000; guard++) {
+				const page = await mirrorQuery(bidderFactoryId, bidderFactoryIface,
+					'getBidsForTokenSerialPaginated', [nftTokenId.toSolidityAddress(), ser, offset, 100],
+				);
+				page[0].forEach(b => returnedSet.add(b.toLowerCase()));
+				const next = Number(page[1]);
+				if (next <= offset) break; // exhausted
+				offset = next;
+			}
 			// All 3 created bids should be present
-			const returnedSet = new Set(serialBids[0].map(b => b.toLowerCase()));
 			for (const id of createdIds) {
 				expect(returnedSet.has(id.toLowerCase())).to.be.true;
 			}
-			console.log(`P5.17: ${createdIds.length} bids on serial ${ser} all discoverable via paginated query`);
+			console.log(`P5.17: ${createdIds.length} bids on serial ${ser} all discoverable via paged query`);
 		});
 	});
 

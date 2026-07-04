@@ -913,6 +913,28 @@ contract EnglishAuction is
                     _snapshotRoyalty(a, item.token);
                 }
             } else {
+                // NEW-1 (audit 2026-07-04): reject fungible items whose token
+                // carries a custom fee. A fractional/fixed HTS fee is netted
+                // from (or charged on top of) every transfer, so the amount
+                // escrowed IN and the amount paid OUT diverge — `_releaseBundle`
+                // would then revert on the shortfall and, because bundle release
+                // is all-or-nothing, permanently lock the ENTIRE settled bundle
+                // (NFTs included) after the winner has already paid. Fail fast
+                // at create instead. Fee-FREE fungibles (e.g. $LAZY) still
+                // bundle fine; NFT creator royalties are the intended fee case
+                // and are handled separately (snapshotted here, paid at settle).
+                // Fail-safe: an unreadable fee schedule is refused rather than
+                // risk a post-payment lock.
+                (int256 feeRc, IHederaTokenService.TokenInfo memory ftInfo) =
+                    HederaTokenService.getTokenInfo(item.token);
+                if (
+                    feeRc != HederaResponseCodes.SUCCESS ||
+                    ftInfo.fixedFees.length != 0 ||
+                    ftInfo.fractionalFees.length != 0
+                ) {
+                    revert InvalidBundleItem(i);
+                }
+
                 // Fungible escrow: pull from seller via allowance
                 int256 rc = HederaTokenService.transferToken(
                     item.token,

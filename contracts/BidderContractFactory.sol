@@ -112,6 +112,14 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     ///         the view gas ceiling on a popular collection.
     uint256 public constant MAX_VIEW_PAGINATION = 200;
 
+    /// @notice Maximum serials a single bid may filter on (audit 2026-07-04,
+    ///         NEW-2). `_bidMatchesSerial` loads the whole bid + walks its
+    ///         `serials` array per scanned entry, so an uncapped serials list
+    ///         would let one bid re-inflate the per-entry cost of a
+    ///         `getBidsForTokenSerialPaginated` window scan. Bounding it keeps
+    ///         that view O(limit) regardless of how bids are constructed.
+    uint256 public constant MAX_BID_SERIALS = 32;
+
     /// @notice Track valid stashes deployed by this factory
     mapping(address => bool) public isValidStash;
 
@@ -642,6 +650,11 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         if (bidDetails.expiry != 0 && bidDetails.expiry <= block.timestamp) {
             revert InvalidBidDetails();
         }
+        // NEW-2: bound the serial filter so it can't amplify the per-entry cost
+        // of the paginated serial view (see MAX_BID_SERIALS). Empty = any serial.
+        if (bidDetails.serials.length > MAX_BID_SERIALS) {
+            revert InvalidBidDetails();
+        }
 
         // Agent envelope check (when agent path active). Callback to
         // the stash's spendForAgent which decrements envelope budget.
@@ -802,15 +815,21 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         if (limit == 0 || limit > MAX_VIEW_PAGINATION) {
             revert PaginationLimitTooLarge();
         }
-        bytes32[] memory allBids = tokenToBids[token];
+        // NEW-2 (audit 2026-07-04): index directly into the storage array over
+        // the [offset, offset+limit) window instead of copying the ENTIRE
+        // `tokenToBids[token]` array into memory first. The old whole-array copy
+        // was O(n) regardless of `limit`, so a bloated bid array could blow the
+        // eth_call gas ceiling and brick discovery. This keeps the view O(limit).
+        bytes32[] storage allBids = tokenToBids[token];
+        uint256 len = allBids.length;
 
-        if (offset >= allBids.length) {
+        if (offset >= len) {
             return new bytes32[](0);
         }
 
         uint256 end = offset + limit;
-        if (end > allBids.length) {
-            end = allBids.length;
+        if (end > len) {
+            end = len;
         }
 
         uint256 resultLength = end - offset;
@@ -826,16 +845,21 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     /**
      * @notice Get a page of bids for a specific (token, serial)
      *         combination.
-     * @dev Paginated rewrite of the previous unbounded O(n²) version.
-     *      Scans `tokenToBids[token]` starting at `offset`, testing
-     *      each candidate with `_bidMatchesSerial`, and collects up to
-     *      `limit` matches. Returns the matches plus `nextOffset` so
-     *      callers can resume paging after the window.
+     * @dev Bounded-window scan (audit 2026-07-04, NEW-2). Scans a window of
+     *      at most `limit` ENTRIES of `tokenToBids[token]` starting at
+     *      `offset`, testing each with `_bidMatchesSerial`, and returns the
+     *      matches found WITHIN that window plus `nextOffset`. Per-call cost is
+     *      O(limit) regardless of array size — the previous version copied the
+     *      whole array into memory and scanned until it collected `limit`
+     *      matches, which could walk (and be griefed into walking) the entire
+     *      array. To collect all matches for a serial, page from `offset = 0`
+     *      advancing `offset = nextOffset` until `nextOffset` reaches
+     *      `tokenToBids[token].length`.
      * @param token Token address.
      * @param serial Serial number to match against bid filters.
      * @param offset Starting index into `tokenToBids[token]`.
-     * @param limit Maximum number of matches to return; in (0, 200].
-     * @return matches Array of matching bid IDs (up to `limit`).
+     * @param limit Size of the scan window (entries examined); in (0, 200].
+     * @return matches Matching bid IDs found within this window (<= `limit`).
      * @return nextOffset Index into `tokenToBids[token]` after the last
      *                    scanned element. Pass this as the `offset` of
      *                    the next call to continue paging; a value
@@ -851,17 +875,27 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
         if (limit == 0 || limit > MAX_VIEW_PAGINATION) {
             revert PaginationLimitTooLarge();
         }
-        bytes32[] memory tokenBids = tokenToBids[token];
-        if (offset >= tokenBids.length) {
-            return (new bytes32[](0), tokenBids.length);
+        // NEW-2: window-read the storage array and bound the scan to at most
+        // `limit` entries per call (resume via `nextOffset`) so cost is O(limit),
+        // not O(array length). No whole-array memory copy.
+        bytes32[] storage tokenBids = tokenToBids[token];
+        uint256 len = tokenBids.length;
+        if (offset >= len) {
+            return (new bytes32[](0), len);
+        }
+
+        uint256 scanEnd = offset + limit;
+        if (scanEnd > len) {
+            scanEnd = len;
         }
 
         bytes32[] memory buffer = new bytes32[](limit);
         uint256 found = 0;
         uint256 i = offset;
-        while (i < tokenBids.length && found < limit) {
-            if (_bidMatchesSerial(tokenBids[i], serial)) {
-                buffer[found] = tokenBids[i];
+        while (i < scanEnd) {
+            bytes32 candidate = tokenBids[i];
+            if (_bidMatchesSerial(candidate, serial)) {
+                buffer[found] = candidate;
                 unchecked {
                     ++found;
                 }
@@ -914,16 +948,20 @@ contract BidderContractFactory is Ownable, ReentrancyGuard, IBidderContractFacto
     function getBestBidForToken(
         address token
     ) external view returns (bytes32 bestBidId, uint256 bestHbar) {
-        bytes32[] memory allBids = tokenToBids[token];
+        // NEW-2: read from storage — no whole-array copy, and load only
+        // `hbarAmount` per entry (storage ref) instead of copying the full
+        // BidDetails struct into memory.
+        bytes32[] storage allBids = tokenToBids[token];
         uint256 scanLimit = allBids.length > MAX_VIEW_PAGINATION
             ? MAX_VIEW_PAGINATION
             : allBids.length;
 
         for (uint256 i = 0; i < scanLimit; ) {
-            BidDetails memory bid = bidRegistry[allBids[i]];
+            bytes32 id = allBids[i];
+            BidDetails storage bid = bidRegistry[id];
             if (bid.hbarAmount > bestHbar) {
                 bestHbar = bid.hbarAmount;
-                bestBidId = allBids[i];
+                bestBidId = id;
             }
             unchecked {
                 ++i;
