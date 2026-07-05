@@ -78,6 +78,17 @@
         "internalType": "bytes32",
         "name": "id",
         "type": "bytes32"
+      }
+    ],
+    "name": "AuctionNotSettled",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "id",
+        "type": "bytes32"
       },
       {
         "internalType": "uint64",
@@ -126,12 +137,12 @@
   },
   {
     "inputs": [],
-    "name": "BundleNotAwaitingClaim",
+    "name": "CannotCancelWithBids",
     "type": "error"
   },
   {
     "inputs": [],
-    "name": "CannotCancelWithBids",
+    "name": "ExceedsAccruedFees",
     "type": "error"
   },
   {
@@ -282,6 +293,17 @@
     "type": "error"
   },
   {
+    "inputs": [
+      {
+        "internalType": "uint8",
+        "name": "max",
+        "type": "uint8"
+      }
+    ],
+    "name": "TooManyRoyalties",
+    "type": "error"
+  },
+  {
     "inputs": [],
     "name": "UserNotAuthorized",
     "type": "error"
@@ -301,6 +323,25 @@
     ],
     "name": "WrongPaymentValue",
     "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "auctionId",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "claimant",
+        "type": "address"
+      }
+    ],
+    "name": "AuctionBundleClaimed",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -440,25 +481,6 @@
       }
     ],
     "name": "AuctionExtended",
-    "type": "event"
-  },
-  {
-    "anonymous": false,
-    "inputs": [
-      {
-        "indexed": true,
-        "internalType": "bytes32",
-        "name": "auctionId",
-        "type": "bytes32"
-      },
-      {
-        "indexed": true,
-        "internalType": "address",
-        "name": "winner",
-        "type": "address"
-      }
-    ],
-    "name": "AuctionNFTClaimed",
     "type": "event"
   },
   {
@@ -908,6 +930,19 @@
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "MAX_ROYALTY_ENTRIES",
+    "outputs": [
+      {
+        "internalType": "uint8",
+        "name": "",
+        "type": "uint8"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "address[]",
@@ -1000,13 +1035,13 @@
     "inputs": [
       {
         "internalType": "bytes32",
-        "name": "",
+        "name": "auctionId",
         "type": "bytes32"
       }
     ],
     "name": "claimAuctionNFT",
     "outputs": [],
-    "stateMutability": "pure",
+    "stateMutability": "nonpayable",
     "type": "function"
   },
   {

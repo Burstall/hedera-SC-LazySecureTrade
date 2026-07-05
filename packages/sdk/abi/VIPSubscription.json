@@ -226,6 +226,17 @@
   {
     "inputs": [
       {
+        "internalType": "enum IVIPSubscription.Tier",
+        "name": "tier",
+        "type": "uint8"
+      }
+    ],
+    "name": "TierNotPriced",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "uint16",
         "name": "currentRemaining",
         "type": "uint16"

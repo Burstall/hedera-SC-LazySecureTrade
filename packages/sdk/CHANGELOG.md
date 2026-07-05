@@ -2,6 +2,40 @@
 
 All notable changes to `@lazysuperheroes/marketplace-sdk`.
 
+## 0.3.0 — 2026-07-04
+
+### Changed
+- **Full audit-fixed v0.3 stack redeployed on testnet** under operator
+  `0.0.7934339` (0.0.801xxxx infra epoch). New testnet ids:
+  `lazySecureTrade 0.0.9432413`, `bidderImpl 0.0.9432498`,
+  `bidderFactory 0.0.9432502`, `englishAuction 0.0.9432474`,
+  `vipSubscription 0.0.9432514`, `lazyRebatePool 0.0.9432523`.
+  `lshRebateMultipliers 0.0.9367358` is unchanged (not redeployed).
+  Mainnet/previewnet remain `null`.
+- **ABIs refreshed** to the audit-fixed builds (2026-07-01 A–H, stash↔EA
+  F-1/2/3 + Finding 2, EA settle-liveness pull-claim + library
+  externalization, and the 2026-07-04 re-audit Lows NEW-1/NEW-2).
+
+### Added
+- **`EnglishAuction` pull-claim delivery.** Settlement now pays proceeds and
+  finalises the auction but DEFERS NFT delivery: the winner (or the seller on
+  a failed/reserve-not-met auction) calls the new permissionless
+  `claimAuctionNFT(bytes32 auctionId)` to receive the escrowed bundle. New
+  `AuctionBundleClaimed(bytes32 indexed auctionId, address indexed claimant)`
+  event and `AuctionNotSettled(bytes32)` / `TooManyRoyalties(uint8)` errors,
+  plus the `MAX_ROYALTY_ENTRIES` constant.
+- **`BidderContractFactory` view/bid hardening.** New `MAX_BID_SERIALS` (32)
+  cap on `createBid`. `getBidsForTokenSerialPaginated` is now a bounded-window
+  scan (examines at most `limit` entries per call — page via the returned
+  `nextOffset` to collect all matches).
+
+### Notes
+- **Behavioural change for auction consumers:** after winning or a `buyNow`,
+  the buyer must call `claimAuctionNFT(auctionId)` to take delivery — the NFT
+  is no longer pushed at settle time. A stash claimant already holds the
+  custody-hop HBAR allowance; a direct EOA grants one and (re-)calls
+  `claimAuctionNFT`. No lock — re-callable after association.
+
 ## 0.2.2 — 2026-06-28
 
 ### Added

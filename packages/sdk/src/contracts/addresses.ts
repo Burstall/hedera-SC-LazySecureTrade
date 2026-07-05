@@ -59,15 +59,19 @@ function addr(hederaId: string): ContractAddress {
 }
 
 const TESTNET: MarketplaceAddresses = {
-    // Refreshed 2026-06-29 (SDK 0.2.2): full stack redeployed under the
-    // refresh operator 0.0.7934339 (the prior stack was 0.0.8891352-owned).
-    // VIPSubscription here is the x402-grant build.
-    lazySecureTrade: addr('0.0.9367217'),
-    bidderImpl: addr('0.0.9367257'),
-    bidderFactory: addr('0.0.9367262'),
-    englishAuction: addr('0.0.9367272'),
-    vipSubscription: addr('0.0.9367578'),
-    lazyRebatePool: addr('0.0.9367573'),
+    // Refreshed 2026-07-04 (SDK 0.3.0): full audit-fixed v0.3 stack redeployed
+    // under refresh operator 0.0.7934339 (0.0.801xxxx infra epoch). Carries the
+    // 2026-07-01 audit fixes (A–H), the stash↔EA fixes (F-1/2/3 + Finding 2),
+    // the EA settle-liveness pull-claim + library externalization, and the
+    // 2026-07-04 re-audit Lows (NEW-1 EA fee-FT lock, NEW-2 BCF discovery DoS).
+    // EA now exposes claimAuctionNFT; BCF adds MAX_BID_SERIALS + window-read views.
+    // lshRebateMultipliers was NOT redeployed (pure-view weight ref, untouched).
+    lazySecureTrade: addr('0.0.9432413'),
+    bidderImpl: addr('0.0.9432498'),
+    bidderFactory: addr('0.0.9432502'),
+    englishAuction: addr('0.0.9432474'),
+    vipSubscription: addr('0.0.9432514'),
+    lazyRebatePool: addr('0.0.9432523'),
     lshRebateMultipliers: addr('0.0.9367358'),
 };
 

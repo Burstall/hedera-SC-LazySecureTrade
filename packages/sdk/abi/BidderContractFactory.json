@@ -32,6 +32,11 @@
   },
   {
     "inputs": [],
+    "name": "AgentListingBelowFloor",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "ArbitrageProfitInsufficient",
     "type": "error"
   },
@@ -53,6 +58,11 @@
   {
     "inputs": [],
     "name": "BidNotFound",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "BidStillFunded",
     "type": "error"
   },
   {
@@ -165,6 +175,37 @@
     "inputs": [],
     "name": "UnauthorizedCaller",
     "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "stash",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "minTinybar",
+        "type": "uint96"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint96",
+        "name": "minLazy",
+        "type": "uint96"
+      }
+    ],
+    "name": "AgentListingFloorsSet",
+    "type": "event"
   },
   {
     "anonymous": false,
@@ -887,12 +928,49 @@
   },
   {
     "inputs": [],
+    "name": "MAX_BID_SERIALS",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
     "name": "MAX_VIEW_PAGINATION",
     "outputs": [
       {
         "internalType": "uint256",
         "name": "",
         "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "name": "agentListingFloorOf",
+    "outputs": [
+      {
+        "internalType": "uint96",
+        "name": "minTinybar",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "minLazy",
+        "type": "uint96"
       }
     ],
     "stateMutability": "view",
@@ -959,6 +1037,29 @@
         "type": "uint256"
       }
     ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bool",
+        "name": "isLazy",
+        "type": "bool"
+      },
+      {
+        "internalType": "uint96",
+        "name": "startPrice",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "buyNowPrice",
+        "type": "uint96"
+      }
+    ],
+    "name": "assertAgentAuctionAllowed",
+    "outputs": [],
     "stateMutability": "view",
     "type": "function"
   },
@@ -1938,8 +2039,39 @@
     "type": "function"
   },
   {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "bidId",
+        "type": "bytes32"
+      }
+    ],
+    "name": "pruneUnfundedBid",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
     "inputs": [],
     "name": "renounceOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint96",
+        "name": "minTinybar",
+        "type": "uint96"
+      },
+      {
+        "internalType": "uint96",
+        "name": "minLazy",
+        "type": "uint96"
+      }
+    ],
+    "name": "setAgentListingFloors",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
